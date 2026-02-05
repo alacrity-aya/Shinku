@@ -1,4 +1,13 @@
-project('ebpf-cache-project', 'c', version: '0.1')
+project('ebpf-cache-project', 'c', 
+  version: '0.1',
+  default_options: [
+    'warning_level=2',   
+    'werror=false',      
+    'b_sanitize=address',
+    'buildtype=debug',
+    'b_lundef=false'
+  ]
+)
 
 libbpf_dep = dependency('libbpf')
 clang = find_program('clang')
