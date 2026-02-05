@@ -13,32 +13,44 @@ struct log_event {
     char msg[128];
 };
 
+// NOTE: Comment this to disable log
+// #define ENABLE_BPF_LOG 1
+
 // ==========================================
 // kernel space
 // ==========================================
 #if defined(__VMLINUX_H__) || defined(__BPF_HELPERS__)
+
+    #ifdef ENABLE_BPF_LOG
+
 struct {
     __uint(type, BPF_MAP_TYPE_RINGBUF);
     __uint(max_entries, 256 * 1024);
 } rb_log SEC(".maps");
 
-    #define bpf_log_base(lvl, fmt, ...) \
-        ({ \
-            struct log_event* __e; \
-            __e = bpf_ringbuf_reserve(&rb_log, sizeof(*__e), 0); \
-            if (__e) { \
-                __e->level = lvl; \
-                __u64 __args[] = { 0, ##__VA_ARGS__ }; \
-                bpf_snprintf( \
-                    __e->msg, \
-                    sizeof(__e->msg), \
-                    fmt, \
-                    &__args[1], \
-                    sizeof(__args) - sizeof(__u64) \
-                ); \
-                bpf_ringbuf_submit(__e, 0); \
-            } \
-        })
+        #define bpf_log_base(lvl, fmt, ...) \
+            ({ \
+                struct log_event* __e; \
+                __e = bpf_ringbuf_reserve(&rb_log, sizeof(*__e), 0); \
+                if (__e) { \
+                    __e->level = lvl; \
+                    __u64 __args[] = { 0, ##__VA_ARGS__ }; \
+                    bpf_snprintf( \
+                        __e->msg, \
+                        sizeof(__e->msg), \
+                        fmt, \
+                        &__args[1], \
+                        sizeof(__args) - sizeof(__u64) \
+                    ); \
+                    bpf_ringbuf_submit(__e, 0); \
+                } \
+            })
+
+    #else
+        #define bpf_log_base(lvl, fmt, ...) \
+            do { \
+            } while (0)
+    #endif
 
     #define bpf_debug(fmt, ...) bpf_log_base(LOG_DEBUG, fmt, ##__VA_ARGS__)
     #define bpf_info(fmt, ...) bpf_log_base(LOG_INFO, fmt, ##__VA_ARGS__)
@@ -67,7 +79,7 @@ struct log_options {
     #define COL_GREEN "\033[1;32m"
     #define COL_GRAY "\033[1;30m"
 
-static inline int print_bpf_log(void* ctx, void* data, size_t len) {
+static inline int print_bpf_log(void* ctx, void* data, [[maybe_unused]] size_t len) {
     struct log_event* e = (struct log_event*)data;
     struct log_options* opts = (struct log_options*)ctx;
 

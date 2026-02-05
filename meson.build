@@ -1,8 +1,8 @@
 project('ebpf-cache-project', 'c', 
   version: '0.1',
   default_options: [
-    'warning_level=2',   
-    'werror=false',      
+    'warning_level=2',    
+    'werror=false',       
     'b_sanitize=address',
     'buildtype=debug',
     'b_lundef=false'
@@ -22,14 +22,18 @@ vmlinux_h = custom_target(
   capture: true
 )
 
+inc_src = include_directories('src')
+
 bpf_obj = custom_target(
   'cache.bpf.o',
-  input: 'src/cache.bpf.c',
+  input: 'src/bpf/cache.bpf.c',
   output: 'cache.bpf.o',
   depends: vmlinux_h,
   command: [
     clang, '-g', '-O2', '-target', 'bpf',
-    '-I' + meson.current_build_dir(), 
+    '-DENABLE_BPF_LOG',
+    '-I' + meson.current_build_dir(),      
+    '-I' + meson.current_source_dir() + '/src',
     '-c', '@INPUT@', '-o', '@OUTPUT@'
   ]
 )
@@ -44,10 +48,17 @@ bpf_skel = custom_target(
   capture: true
 )
 
+user_src = files(
+  'src/user/main.c',
+  'src/user/config.c',
+  'src/user/loader.c'
+)
+
 executable(
-  'cache-monitor',
-  'src/main.c',
-  bpf_skel, 
+  'dns-cache',
+  user_src,          
+  bpf_skel,         
   dependencies: libbpf_dep,
+  include_directories: inc_src, 
   install: true
 )
