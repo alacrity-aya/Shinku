@@ -13,12 +13,9 @@ default:
 # ============================================================================
 
 # Compile the project (meson compile)
-build:
-    meson compile -C {{build_dir}}
-
-# Configure/Reset the build directory (meson setup --reconfigure)
-config:
+build: clean
     meson setup {{build_dir}} --reconfigure
+    meson compile -C {{build_dir}}
 
 # Clean the build directory
 clean:

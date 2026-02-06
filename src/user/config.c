@@ -1,7 +1,6 @@
 #include "config.h"
 #include <argp.h>
 #include <string.h>
-#include <strings.h>
 
 const char* argp_program_version = "dns-cache 0.1";
 const char doc[] = "DNS cache";

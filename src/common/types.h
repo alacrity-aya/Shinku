@@ -1,6 +1,7 @@
 #pragma once
 #ifndef __VMLINUX_H__
     #include <linux/types.h>
+    #include <stdint.h>
 #endif
 
 /*
@@ -37,4 +38,10 @@ struct cache_key {
     __u16 qtype;
     __u16 qclass;
     __u32 _pad;
+};
+
+struct dns_event {
+    __u64 timestamp;
+    __u32 len;
+    __u8 payload[];
 };

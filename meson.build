@@ -51,7 +51,8 @@ bpf_skel = custom_target(
 user_src = files(
   'src/user/main.c',
   'src/user/config.c',
-  'src/user/loader.c'
+  'src/user/loader.c',
+  'src/user/parser.c',
 )
 
 executable(

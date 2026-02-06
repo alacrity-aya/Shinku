@@ -29,13 +29,23 @@ int main(int argc, char** argv) {
     printf("BPF System Running... Press Ctrl+C to stop.\n");
 
     while (!exiting) {
-        err = poll_bpf(&ctx, 100);
+        err = dump_bpf_log(&ctx, 100);
         if (err == -EINTR) {
             err = 0;
             break;
         }
         if (err < 0) {
-            fprintf(stderr, "Error polling ring buffer: %d\n", err);
+            fprintf(stderr, "Error polling log ring buffer: %d\n", err);
+            goto cleanup;
+        }
+
+        err = poll_pkt_ring(&ctx, 100);
+        if (err == -EINTR) {
+            err = 0;
+            break;
+        }
+        if (err < 0) {
+            fprintf(stderr, "Error polling pkt ring buffer: %d\n", err);
             goto cleanup;
         }
     }

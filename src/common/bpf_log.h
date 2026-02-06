@@ -26,12 +26,12 @@ struct log_event {
 struct {
     __uint(type, BPF_MAP_TYPE_RINGBUF);
     __uint(max_entries, 256 * 1024);
-} rb_log SEC(".maps");
+} _rb_log SEC(".maps");
 
         #define bpf_log_base(lvl, fmt, ...) \
             ({ \
                 struct log_event* __e; \
-                __e = bpf_ringbuf_reserve(&rb_log, sizeof(*__e), 0); \
+                __e = bpf_ringbuf_reserve(&_rb_log, sizeof(*__e), 0); \
                 if (__e) { \
                     __e->level = lvl; \
                     __u64 __args[] = { 0, ##__VA_ARGS__ }; \

@@ -1,0 +1,16 @@
+If:
+  PathMatch: .*\.bpf\.c
+
+CompileFlags:
+  Remove: 
+    - "-fsanitize=address"
+    - "-fno-omit-frame-pointer"
+
+  Add: 
+    # - "-target"
+    # - "bpf"
+    - "-O2"
+    - "-g"
+    - "-D__TARGET_ARCH_x86"
+    - "-I./src"
+    - "-I./build"
