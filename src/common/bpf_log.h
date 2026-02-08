@@ -34,7 +34,7 @@ struct {
                 __e = bpf_ringbuf_reserve(&_rb_log, sizeof(*__e), 0); \
                 if (__e) { \
                     __e->level = lvl; \
-                    __u64 __args[] = { 0, ##__VA_ARGS__ }; \
+                    __u64 __args[] = { 0, ##__VA_ARGS__, 0 }; \
                     bpf_snprintf( \
                         __e->msg, \
                         sizeof(__e->msg), \

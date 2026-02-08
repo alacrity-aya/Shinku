@@ -21,7 +21,13 @@
 // DNS
 #define DNS_PORT 53
 #define MAX_DNS_NAME_LEN 255
+// TODO: 512 is enough
 #define MAX_DNS_CAPTURE_LEN 1024
+
+// DNS Header Flags (Host Byte Order)
+#define DNS_FLAG_QR 0x8000
+#define DNS_FLAG_TC 0x0200 // Truncated bit
+#define DNS_RCODE_MASK 0x000F
 
 // FNV-1a Hash Constants
 #define FNV_OFFSET_BASIS_32 2166136261UL

@@ -63,3 +63,12 @@ executable(
   include_directories: inc_src, 
   install: true
 )
+
+dns_hash_test_exe = executable(
+    'dns_hash_verify',
+    'tests/dns_hash_test.c',
+    native: true,
+    c_args: ['-g', '-O2']
+)
+
+test('DNS Hash Consistency Check', dns_hash_test_exe)

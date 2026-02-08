@@ -94,7 +94,7 @@ int tc_tx(struct __sk_buff* skb) {
     if (proto != bpf_htons(ETH_P_IP))
         return TC_ACT_OK;
 
-    struct iphdr* ip = (void*)(eth + 1);
+    struct iphdr* ip = next_hdr;
     if ((void*)(ip + 1) > data_end)
         return TC_ACT_OK;
 
@@ -110,26 +110,28 @@ int tc_tx(struct __sk_buff* skb) {
         return TC_ACT_OK;
     }
 
-    __u32 pkt_len = skb->len;
-    if (unlikely(pkt_len == 0)) {
+    __u64 dns_offset = (void*)(udp + 1) - data;
+    if (dns_offset > skb->len) {
         return TC_ACT_OK;
     }
 
-    if (pkt_len > MAX_DNS_CAPTURE_LEN)
-        pkt_len = MAX_DNS_CAPTURE_LEN;
+    __u32 dns_len = skb->len - dns_offset;
+    if (dns_len > MAX_DNS_CAPTURE_LEN) {
+        dns_len = MAX_DNS_CAPTURE_LEN;
+    }
 
     struct dns_event* e = bpf_ringbuf_reserve(&rb_pkt, sizeof(*e) + MAX_DNS_CAPTURE_LEN, 0);
-    if (!e) {
+    if (unlikely(!e)) {
         bpf_warn("[TC] RingBuf full, dropped DNS Resp (len=%u)", skb->len);
         return TC_ACT_OK;
     }
 
     e->timestamp = bpf_ktime_get_ns();
-    e->len = pkt_len;
-    bpf_skb_load_bytes(skb, 0, e->payload, e->len);
+    e->len = dns_len;
+
+    bpf_skb_load_bytes(skb, dns_offset, e->payload, dns_len);
 
     bpf_ringbuf_submit(e, 0);
-
     bpf_info("[TC] Captured DNS Resp: len=%u saved=%u", skb->len, pkt_len);
 
     return TC_ACT_OK;

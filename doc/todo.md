@@ -6,7 +6,7 @@
 
 ### Phase 2: Control Plane & Data Channel (RingBuf)
 
-* [ ] **Implement** a new `SEC("tc")` program in `cache.bpf.c`:
+* [x] **Implement** a new `SEC("tc")` program in `cache.bpf.c`:
     * Attach to the **egress** hook.
     * Capture UDP packets where `src_port == 53`.
     * Submit the raw packet data to a **Ring Buffer**.

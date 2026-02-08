@@ -13,13 +13,17 @@ default:
 # ============================================================================
 
 # Compile the project (meson compile)
-build: clean
-    meson setup {{build_dir}} --reconfigure
+build: 
     meson compile -C {{build_dir}}
 
 # Clean the build directory
 clean:
     rm -rf {{build_dir}}
+
+# Config the build directory
+config:
+    meson setup {{build_dir}} --reconfigure
+    
 
 # ============================================================================
 # Python Network Testing Commands (Requires sudo)

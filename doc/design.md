@@ -1,68 +1,104 @@
-## Project Overview: eBPF Kernel-Level DNS Cache System Based on `bpf_arena`
 
-### 1. Core Design Philosophy & Architectural Advantages
+# Design Specification: Industrial-Grade eBPF DNS Cache
 
-This project aims to build a high-performance, low-latency DNS caching system. It leverages the modern eBPF tech stack (Linux 5.8+ Ring Buffer, Linux 6.9+ BPF Arena) to completely reconstruct traditional kernel-level caching solutions.
+## 1. Core Design Philosophy
 
-* **Fast Path (XDP):** Intercepts and responds to DNS queries directly at the network driver layer (Ingress). By bypassing the entire kernel network stack, it achieves nanosecond-level query response times.
-* **Slow Path (TC + User Space):** Captures upstream DNS responses at the protocol stack exit (Egress). Complex protocol parsing and memory management are handled in user space to bypass the strict eBPF verifier constraints (e.g., handling DNS compression pointers and complex loops).
-* **Zero-Copy & No-Fragmentation (Arena):** Introduces `bpf_arena` to replace traditional `BPF_MAP_TYPE_ARRAY` segmented storage. By sharing memory between the kernel and user space, it enables contiguous storage of variable-length DNS response data and direct pointer access, eliminating memory fragmentation and significantly simplifying code logic.
+This project aims to build a high-performance, low-latency, and **strictly correct** DNS caching system. It utilizes the modern eBPF tech stack (Linux 5.8+ Ring Buffer, Linux 6.9+ BPF Arena) to reconstruct traditional kernel-level caching solutions.
+
+* **Fast Path (XDP Ingress):** "Search & Send". Intercepts queries at the driver layer. It performs O(1) lookups in `bpf_arena` and reflects responses immediately, bypassing the kernel stack.
+* **Slow Path (TC Egress + User Space):** "Capture, Sanitize, & Store". Captures upstream responses, performs protocol normalization (flattening), enforces safety policies (ECS), and manages memory.
+* **Zero-Copy Storage (Arena):** Uses `bpf_arena` to store **linearized, self-contained** DNS packets. This eliminates the complexity of handling compression pointers in the kernel verifier.
 
 ---
 
-### 2. System Components & Tech Stack
+## 2. Architecture & Components
 
 | Component | Location | Core Technology | Primary Responsibility |
 | --- | --- | --- | --- |
-| **Ingress Processor** | Kernel (XDP) | XDP_TX, `bpf_arena` | **"Search & Send"**: Intercept requests, look up cache, atomically replace IDs, and reflect responses. |
-| **Egress Capturer** | Kernel (TC) | `sk_buff`, Ring Buffer | **"Capture & Transport"**: Capture upstream responses and copy Raw Packets to the Ring Buffer. |
-| **Control Plane Service** | User Space | libbpf, `bpf_arena` | **"Parse & Store"**: Consume Ring Buffer, parse DNS protocols, manage Arena memory allocation, and update Hash Maps. |
-| **Storage Backend** | Shared Memory | `BPF_MAP_TYPE_ARENA` | Stores complete, serialized DNS response packets (Header + Question + Answer). |
-| **Index Backend** | Kernel Map | `BPF_MAP_TYPE_HASH` | Key: Domain Hash + QTYPE; Value: Pointer to Arena memory + Metadata (TTL). |
+| **Ingress Filter** | Kernel (XDP) | `XDP_TX`, `bpf_arena` | **Fast Path**: Look up `Cache Key` (Hash+Type), atomically replace Transaction ID, hot-patch MAC/IP, and reflect packet. |
+| **Egress Capturer** | Kernel (TC) | `sk_buff`, RingBuf | **Capture**: Filters UDP/53 responses. Checks basic validity. Copies **Raw Data** (Header + Payload) to Ring Buffer. |
+| **Control Plane** | User Space | libbpf, `bpf_arena` | **Normalization Engine**: Consumes RingBuf. Flattens compression pointers. Filters ECS (EDNS). Allocates Arena memory. Updates Hash Map. |
+| **Index Backend** | Kernel Map | `BPF_MAP_TYPE_HASH` | **Metadata**: Key = `Hash + QType + QClass`. Value = Pointer to Arena data + Expiry Timestamp. |
+| **Storage Backend** | Shared Mem | `BPF_MAP_TYPE_ARENA` | **Payload**: Stores the **Normalized (Flattened)** DNS Packet. |
 
 ---
 
-### 3. Detailed Workflow
+## 3. Detailed Data Workflow
 
-#### Scenario A: Cache Hit (Fast Path - XDP)
+### 3.1. Fast Path: Cache Hit (XDP)
 
-The most frequent execution path, optimized for extreme performance.
+*No changes from original design. Focus is on read-only performance.*
 
-1. **Packet Interception (`xdp_rx_filter`):** Filters for UDP traffic on destination port 53.
-2. **Parsing & Hashing:** Extracts the Transaction ID, QNAME (Domain), and QTYPE. Computes a hash (e.g., FNV-1a).
-3. **Lookup:** Queries the `BPF_MAP_TYPE_HASH`. If it misses, it returns `XDP_PASS`. If it hits, it retrieves the Arena pointer and TTL.
-4. **Validity Check:** Compares `bpf_ktime_get_ns()` with the cached expiration time.
-5. **Response Construction & Hot Patching:** * **Pointer Dereference:** Uses `bpf_arena` to directly read the cached response from shared memory.
-* **ID Replacement:** Overwrites the cached Transaction ID with the current request's ID.
-* **Header Swapping:** Swaps Source/Destination MACs, IPs, and Ports.
-* **Checksum Correction:** Recomputes IP and UDP checksums using incremental update algorithms.
+1. **Parse:** Extract ID, QNAME (Hash), QTYPE.
+2. **Lookup:** Check Hash Map. If miss -> `XDP_PASS`.
+3. **Validate:** Check `bpf_ktime_get_ns() < entry->expire_ts`.
+4. **Reflect:** Direct `memcpy` from Arena to packet buffer (linear copy, no pointer chasing). Patch ID and Checksums. `XDP_TX`.
 
+### 3.2. Slow Path: Cache Fill (User-Space Normalization)
 
-6. **Transmission:** Calls `XDP_TX` to send the modified packet directly back out the same interface.
+This is the critical "Industrial-Grade" logic ensuring data safety and correctness.
 
-#### Scenario B: Cache Miss & Filling (Slow Path - TC + User)
+#### Step 1: Ingestion & Validation
 
-The path for establishing cache; millisecond latency is acceptable.
+Upon receiving a raw packet from the Ring Buffer:
 
-1. **Upstream Query:** XDP-passed requests are handled by the kernel stack and sent to an upstream DNS server.
-2. **Response Capture (`tc_tx_filter`):** A TC program on the Egress hook filters UDP packets from source port 53.
-3. **Data Transfer:** Uses `bpf_skb_load_bytes` to copy the Raw Packet into a Ring Buffer, waking the user-space service.
-4. **User-Space Processing:**
-* **Parse & Normalize:** Uses full-featured DNS libraries (e.g., `miekg/dns`) to handle compression pointers and CNAMEs. Serializes the response into a self-contained format.
-* **Arena Allocation:** Allocates contiguous space in the Arena memory pool via a user-space allocator.
-* **Update Map:** Writes the serialized data to the Arena and updates the `BPF_MAP_TYPE_HASH` with the pointer, TTL, and length.
+* **Protocol Check:** Ensure packet is a Response (`QR=1`) and standard Query (`Opcode=0`).
+* **Truncation Check:** Check the **TC Bit** (`Flags & 0x0200`).
+* *Decision:* If `TC=1`, **DROP**. Do not cache truncated UDP packets. Clients must retry via TCP (which we do not cache in V1).
 
 
+* **RCODE Check:** Only cache `RCODE=0` (NOERROR).
+* **QDCOUNT Check:** Ensure `QDCOUNT=1` (standard single-question query).
+
+#### Step 2: ECS Policy Enforcement (Scope-Zero Strategy)
+
+To prevent "Cache Poisoning" where a subnet-specific IP (e.g., intended for Beijing) is served to a global user (e.g., New York).
+
+* **Scan Additional Section:** Iterate through OPT RRs (Type 41).
+* **Check ECS Option (Code 8):**
+* If **Scope Mask > 0** (Specific): **IGNORE PACKET**. Do not cache. This response is tailored to a specific client subnet.
+* If **Scope Mask == 0** (Global) OR **No ECS present**: **PROCEED**. This is a generic response safe for all users.
+
+
+
+#### Step 3: Protocol Normalization (Flattening)
+
+The XDP verifier struggles with loops and non-linear memory access (compression pointers `0xC0xx`). The User Space Control Plane must "flatten" the packet into a linear format.
+
+1. **New Buffer:** Allocate a flat buffer (e.g., `flat_buf[1500]`).
+2. **Header:** Copy standard header. **Force `ARCOUNT=0**` (Strip OPT/ECS records to ensure the cached response is generic and protocol-compliant for replay).
+3. **Question Section:** Read QNAME from raw packet (handling pointers), write full labels to `flat_buf`. Copy QTYPE/QCLASS.
+4. **Answer/Authority Sections:**
+* Iterate every Record.
+* **Expand Name:** Resolve compression pointers in the `NAME` field to full labels.
+* **Expand RDATA:** If the Record Type is `CNAME`, `NS`, or `PTR`, resolve compression pointers *inside* the RDATA.
+* **Copy Data:** Write `TYPE`, `CLASS`, `TTL`, `RDLENGTH` (re-calculated), and linear `RDATA` to `flat_buf`.
+
+
+
+#### Step 4: Storage & Indexing
+
+1. **Arena Allocation:** Allocate `sizeof(entry) + flat_len` from the user-space managed slab allocator.
+2. **Write:** `memcpy` the `flat_buf` into the Arena memory.
+3. **Commit:** Update the `BPF_MAP_TYPE_HASH` with the Arena offset and TTL.
 
 ---
 
-### 4. Key Technical Challenges & Solutions
+## 4. Key Architectural Decisions & Trade-offs
 
-| Challenge | Risk | Solution (Architectural Decision) |
+| Challenge | Architectural Decision | Justification (Industrial Grade) |
 | --- | --- | --- |
-| **Transaction ID Mismatch** | Direct replay of cached data leads to ID mismatch, causing clients to silently drop the packet. | **XDP Hot Patching:** Extract the request ID and overwrite the ID field in the cached response buffer before sending, then fix the checksum. |
-| **Compression Pointer Invalidity** | Raw packet copies may contain offsets (0xC0xx) pointing to memory outside the stored buffer. | **User-Space Normalization:** The control plane re-serializes the DNS packet into a "flattened" or self-contained format, removing external references. |
-| **Arena Memory Management** | `bpf_arena` does not provide `malloc`/`free`; the kernel cannot dynamically allocate. | **User-Space Allocator:** Implement a Slab/FreeList allocator in user space. The user-space service manages reclamation during TTL expiration or LRU eviction. |
-| **Concurrency/Race Conditions** | XDP might read partial data while the user-space service is writing to the Arena. | **Atomic Update Strategy:** 1. Write complete data to a *new* Arena address. 2. Update the Hash Map pointer in one atomic step. XDP sees either the old or new data, never a "half-written" state. |
-| **TTL Expiration Handling** | Serving stale DNS data causes business logic issues (e.g., delayed IP migration). | **Double Check:** 1. User-space periodically scans and cleans (active). 2. XDP checks the `expire_timestamp` in the Value struct during every lookup (passive). |
+| **Verifier Complexity (Loops)** | **User-Space Normalization** | Instead of storing raw packets with compression pointers (which requires complex unpacking in XDP), we store **flattened, linear packets**. XDP simply performs a `memcpy`, satisfying the verifier and maximizing performance. |
+| **Cache Poisoning (ECS)** | **Scope-Zero Strategy** | We strictly **only cache global responses** (ECS Scope=0). Subnet-specific responses are passed through. This guarantees correctness over hit-rate. Serving a Beijing IP to a New York user is a fatal error; missing a cache is acceptable. |
+| **Privacy & Protocol Safety** | **Strip Additional Section** | We strip the `OPT` RR (ECS data) from the cached payload. This ensures the replayed packet does not contain stale or irrelevant client subnet data, and prevents `UDP Payload Size` negotiation mismatches during replay. |
+| **Truncated Packets (TC)** | **Drop / No-Cache** | Packets with `TC=1` are incomplete. Caching them would serve broken data. We rely on the client's standard retry mechanism (fallback to TCP) and do not cache TCP traffic in V1. |
+| **Memory Fragmentation** | **User-Space Allocator** | Since `bpf_arena` is a raw memory region, the Control Plane implements a Slab/FreeList allocator to manage variable-length DNS entries efficiently without kernel overhead. |
 
+---
+
+## 5. Summary of "Industrial-Grade" Features
+
+1. **Safety First:** The system explicitly filters out risky packets (Truncated, Non-Zero Scope ECS, Multi-Question).
+2. **Verifier Friendly:** By moving the complexity of DNS parsing (de-compression) to user space, the kernel program remains extremely simple and stable.
+3. **Atomic Updates:** The "Prepare in Arena -> Switch Pointer in Map" flow ensures XDP never sees partially written data.
+4. **Correctness:** By adhering to the **Scope-Zero** strategy, the cache guarantees that cached data is universally valid, avoiding geo-location routing errors common in naive DNS caches.
