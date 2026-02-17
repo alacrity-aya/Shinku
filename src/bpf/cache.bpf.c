@@ -16,16 +16,15 @@ static __always_inline __u16 read_u16_unaligned(void* ptr) {
 
 struct {
     __uint(type, BPF_MAP_TYPE_RINGBUF);
-    __uint(max_entries, 1024 * 1024); // 1MB
+    __uint(max_entries, RINGBUF_SIZE_PKT);
 } rb_pkt SEC(".maps");
 
 SEC("xdp")
 int xdp_rx(struct xdp_md* ctx) {
     void* data_end = (void*)(long)ctx->data_end;
-    void* data = (void*)(long)ctx->data;
     void* cursor = NULL;
 
-    bpf_debug("[XDP] RX pkt len=%lu", (__u32)(data_end - data));
+    bpf_debug("[XDP] RX pkt len=%lu", (__u32)(data_end - (void*)(long)ctx->data));
 
     struct dns_hdr* dns = parse_dns_header(ctx, &cursor, data_end);
     if (!dns) {
@@ -37,6 +36,7 @@ int xdp_rx(struct xdp_md* ctx) {
     __u16 qdcount = bpf_ntohs(dns->qdcount);
     __u8 is_response = (flags >> 15) & 0x1;
 
+    // Only process DNS queries with exactly 1 question (ignore responses and multiple questions)
     if (qdcount != 1 || is_response == 1) {
         return XDP_PASS;
     }
@@ -64,6 +64,7 @@ int xdp_rx(struct xdp_md* ctx) {
     return XDP_PASS;
 }
 
+// Capture DNS responses in TC and send to user space via ring buffer
 SEC("tc")
 int tc_tx(struct __sk_buff* skb) {
     void* data_end = (void*)(long)skb->data_end;
@@ -76,20 +77,8 @@ int tc_tx(struct __sk_buff* skb) {
     __u16 proto = eth->h_proto;
     void* next_hdr = (void*)(eth + 1);
 
-    // skip vlan
-#pragma clang loop unroll(full)
-    for (int i = 0; i < 2; i++) {
-        if (proto == bpf_htons(ETH_P_8021Q) || proto == bpf_htons(ETH_P_8021AD)) {
-            struct vlan_hdr* vlan = next_hdr;
-            if ((void*)(vlan + 1) > data_end)
-                return TC_ACT_OK;
-
-            proto = vlan->h_vlan_encapsulated_proto;
-            next_hdr = (void*)(vlan + 1);
-        } else {
-            break;
-        }
-    }
+    // Skip VLAN tags (Q-in-Q support)
+    skip_vlan_tags(&proto, &next_hdr, data_end);
 
     if (proto != bpf_htons(ETH_P_IP))
         return TC_ACT_OK;
@@ -132,7 +121,7 @@ int tc_tx(struct __sk_buff* skb) {
     bpf_skb_load_bytes(skb, dns_offset, e->payload, dns_len);
 
     bpf_ringbuf_submit(e, 0);
-    bpf_info("[TC] Captured DNS Resp: len=%u saved=%u", skb->len, pkt_len);
+    bpf_info("[TC] Captured DNS Resp: len=%u saved=%u", skb->len, dns_len);
 
     return TC_ACT_OK;
 }

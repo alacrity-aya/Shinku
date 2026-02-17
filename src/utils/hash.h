@@ -1,8 +1,12 @@
 #pragma once
 
-#include <vmlinux.h>
-
+#ifndef __VMLINUX_H__
+#include <linux/types.h>
 #include <bpf/bpf_helpers.h>
+#else
+#include <vmlinux.h>
+#endif
+
 #include <common/constants.h>
 
 // Calculate FNV-1a hash of a DNS domain name
@@ -73,3 +77,10 @@ static __always_inline int calculate_dns_name_hash(void** cursor, void* data_end
 
     return -1; // Name too long (exceeded 255 bytes)
 }
+
+// For testing in userspace - same algorithm but accessible outside static context
+#ifndef __BPF__
+int calculate_dns_name_hash_test(void** cursor, void* data_end, __u32* hash_out) {
+    return calculate_dns_name_hash(cursor, data_end, hash_out);
+}
+#endif

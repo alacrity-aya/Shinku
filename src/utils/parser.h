@@ -7,6 +7,26 @@
 #include <common/constants.h>
 #include <common/types.h>
 
+// Skip VLAN tags and return the encapsulated protocol
+// Input: proto = initial Ethertype, next_hdr = pointer after Ethernet header
+// Output: proto = encapsulated protocol, next_hdr = pointer after VLAN headers
+// Returns: 0 on success (always succeeds, just parses)
+static __always_inline void skip_vlan_tags(__u16* proto, void** next_hdr, void* data_end) {
+#pragma clang loop unroll(full)
+    for (int i = 0; i < MAX_VLAN_DEPTH; i++) {
+        if (*proto == bpf_htons(ETH_P_8021Q) || *proto == bpf_htons(ETH_P_8021AD)) {
+            struct vlan_hdr* vlan = *next_hdr;
+            if ((void*)(vlan + 1) > data_end)
+                return;
+
+            *proto = vlan->h_vlan_encapsulated_proto;
+            *next_hdr = (void*)(vlan + 1);
+        } else {
+            break;
+        }
+    }
+}
+
 // Parse up to the DNS header
 // Returns: Pointer to the DNS Header, or NULL on failure
 // Output parameter: Updates 'cursor' to point past the DNS Header (start of the Question section)
@@ -22,19 +42,8 @@ parse_dns_header(struct xdp_md* ctx, void** cursor, void* data_end) {
     __u16 proto = eth->h_proto;
     void* next_hdr = (void*)(eth + 1);
 
-#pragma clang loop unroll(full)
-    for (int i = 0; i < 2; i++) {
-        if (proto == bpf_htons(ETH_P_8021Q) || proto == bpf_htons(ETH_P_8021AD)) {
-            struct vlan_hdr* vlan = next_hdr;
-            if ((void*)(vlan + 1) > data_end)
-                return NULL;
-
-            proto = vlan->h_vlan_encapsulated_proto;
-            next_hdr = (void*)(vlan + 1);
-        } else {
-            break;
-        }
-    }
+    // Skip VLAN tags (Q-in-Q support)
+    skip_vlan_tags(&proto, &next_hdr, data_end);
 
     // After VLAN stripping, we must be looking at IPv4
     if (proto != bpf_htons(ETH_P_IP))

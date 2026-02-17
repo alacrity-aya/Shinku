@@ -5,61 +5,51 @@
 #include <bpf/libbpf.h>
 #include <bpf/libbpf_legacy.h>
 #include <common/bpf_log.h>
+#include <common/constants.h>
 #include <net/if.h>
 #include <stdio.h>
 #include <time.h>
 
-//TODO: move this function to bpf_log.h
-static int libbpf_print_fn(enum libbpf_print_level level, const char* format, va_list args) {
-#define COLOR_RESET "\033[0m"
-#define COLOR_RED "\033[1;31m"
-#define COLOR_YELLOW "\033[1;33m"
-#define COLOR_GREEN "\033[1;32m"
-#define COLOR_GRAY "\033[1;90m"
+// Error codes for setup_bpf
+#define ERR_SKEL_LOAD -1
+#define ERR_RB_CREATE -2
+#define ERR_INVALID_IFACE -3
+#define ERR_XDP_ATTACH -4
+#define ERR_TC_ATTACH -5
 
-    char ts[16];
+static int libbpf_print_fn(enum libbpf_print_level level, const char* format, va_list args) {
+    char ts[LOG_TIMESTAMP_LEN];
     time_t t = time(NULL);
     struct tm* tm_info = localtime(&t);
     strftime(ts, sizeof(ts), "%H:%M:%S", tm_info);
 
-    const char* color_code = COLOR_RESET;
+    const char* color_code = COL_RESET;
     const char* level_str = "INFO";
 
     switch (level) {
         case LIBBPF_WARN:
-            color_code = COLOR_YELLOW;
+            color_code = COL_YELLOW;
             level_str = "WARN";
             break;
         case LIBBPF_INFO:
-            color_code = COLOR_GREEN;
+            color_code = COL_GREEN;
             level_str = "INFO";
             break;
         case LIBBPF_DEBUG:
-            color_code = COLOR_GRAY;
+            color_code = COL_GRAY;
             level_str = "DEBUG";
-
-            // NOTE: skip debug message
-            return 0;
-            break;
+            return 0; // skip debug messages
         default:
-            color_code = COLOR_RED;
+            color_code = COL_RED;
             level_str = "ERROR";
             break;
     }
 
     fprintf(stderr, "%s[%s] [%s] ", color_code, ts, level_str);
-
     int ret = vfprintf(stderr, format, args);
-
-    fprintf(stderr, "%s", COLOR_RESET);
+    fprintf(stderr, "%s", COL_RESET);
 
     return ret;
-
-#undef COLOR_RESET
-#undef COLOR_RED
-#undef COLOR_YELLOW
-#undef COLOR_GREEN
-#undef COLOR_GRAY
 }
 
 static int attach_tc_legacy(struct bpf_ctx* ctx, int ifindex) {
@@ -101,7 +91,7 @@ int setup_bpf(struct bpf_ctx* ctx, const struct env* env) {
     ctx->skel = cache_bpf__open_and_load();
     if (!ctx->skel) {
         fprintf(stderr, "Failed to open and load BPF skeleton\n");
-        return -1;
+        return ERR_SKEL_LOAD;
     }
 
     bpf_program__set_autoattach(ctx->skel->progs.tc_tx, false);
@@ -109,7 +99,7 @@ int setup_bpf(struct bpf_ctx* ctx, const struct env* env) {
     err = cache_bpf__attach(ctx->skel);
     if (err) {
         fprintf(stderr, "Failed to attach BPF skeleton\n");
-        return err;
+        goto cleanup;
     }
 
     // rb_log
@@ -121,14 +111,16 @@ int setup_bpf(struct bpf_ctx* ctx, const struct env* env) {
         ring_buffer__new(bpf_map__fd(ctx->skel->maps._rb_log), print_bpf_log, &ctx->log_opt, NULL);
     if (!ctx->rb_log) {
         fprintf(stderr, "Failed to create ring buffer: rb_log\n");
-        return -1;
+        err = ERR_RB_CREATE;
+        goto cleanup;
     }
 
     // xdp
     uint32_t ifindex = if_nametoindex(env->interface);
     if (ifindex == 0) {
         fprintf(stderr, "Invalid interface name: %s\n", env->interface);
-        return -1;
+        err = ERR_INVALID_IFACE;
+        goto cleanup;
     }
 
     ctx->skel->links.xdp_rx = bpf_program__attach_xdp(ctx->skel->progs.xdp_rx, ifindex);
@@ -136,7 +128,8 @@ int setup_bpf(struct bpf_ctx* ctx, const struct env* env) {
     if (err) {
         fprintf(stderr, "Failed to attach XDP(Ingress) to %s (Error: %d)\n", env->interface, err);
         ctx->skel->links.xdp_rx = NULL;
-        return -1;
+        err = ERR_XDP_ATTACH;
+        goto cleanup;
     }
 
     // tc
@@ -151,11 +144,13 @@ int setup_bpf(struct bpf_ctx* ctx, const struct env* env) {
 
             err = attach_tc_legacy(ctx, ifindex);
             if (err) {
-                return -1;
+                err = ERR_TC_ATTACH;
+                goto cleanup;
             }
         } else {
             ctx->skel->links.tc_tx = NULL;
-            return -1;
+            err = ERR_TC_ATTACH;
+            goto cleanup;
         }
     }
 
@@ -163,12 +158,17 @@ int setup_bpf(struct bpf_ctx* ctx, const struct env* env) {
     ctx->rb_pkt = ring_buffer__new(bpf_map__fd(ctx->skel->maps.rb_pkt), handle_packet, NULL, NULL);
     if (!ctx->rb_pkt) {
         fprintf(stderr, "Failed to create ring buffer: rb_pkt\n");
-        return -1;
+        err = ERR_RB_CREATE;
+        goto cleanup;
     }
 
     printf("Successfully attached to interface: %s (ifindex: %d)\n", env->interface, ifindex);
 
     return 0;
+
+cleanup:
+    cleanup_bpf(ctx);
+    return err;
 }
 
 int poll_pkt_ring(struct bpf_ctx* ctx, int timeout_ms) {

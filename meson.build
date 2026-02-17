@@ -1,3 +1,5 @@
+# Meson build configuration for the eBPF-based DNS cache project.
+# This build script defines the project, its dependencies, and the build targets for both the eBPF program and the user-space application.
 project('ebpf-cache-project', 'c', 
   version: '0.1',
   default_options: [
@@ -67,8 +69,11 @@ executable(
 dns_hash_test_exe = executable(
     'dns_hash_verify',
     'tests/dns_hash_test.c',
+    'src/utils/hash.c',
+    'src/user/parser.c',  # Add parser.c to get access to the testable functions
     native: true,
-    c_args: ['-g', '-O2']
+    c_args: ['-g', '-O2', '-D__BPF__=0'],  # Define __BPF__ as 0 for userspace
+    include_directories: inc_src
 )
 
 test('DNS Hash Consistency Check', dns_hash_test_exe)
