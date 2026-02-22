@@ -1,5 +1,4 @@
-#ifndef __BPF_LOG_H
-#define __BPF_LOG_H
+#pragma once
 
 enum log_level {
     LOG_DEBUG = 0,
@@ -154,5 +153,4 @@ static inline int print_bpf_log(void* ctx, void* data, [[maybe_unused]] size_t l
     #define bpf_warn(fmt, ...)
     #define bpf_err(fmt, ...)
 
-#endif
 #endif

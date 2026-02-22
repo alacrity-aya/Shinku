@@ -4,8 +4,8 @@
 
 #include <bpf/bpf_endian.h>
 #include <bpf/bpf_helpers.h>
-#include "constants.h"
-#include "types.h"
+#include <constants.h>
+#include <types.h>
 
 // Skip VLAN tags and return the encapsulated protocol
 // Input: proto = initial Ethertype, next_hdr = pointer after Ethernet header

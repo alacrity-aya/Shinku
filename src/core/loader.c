@@ -1,11 +1,11 @@
 #include "loader.h"
 
+#include "bpf_log.h"
 #include "cache.skel.h"
+#include "constants.h"
 #include "dns_parser.h"
 #include <bpf/libbpf.h>
 #include <bpf/libbpf_legacy.h>
-#include "bpf_log.h"
-#include "constants.h"
 #include <net/if.h>
 #include <stdio.h>
 #include <time.h>
