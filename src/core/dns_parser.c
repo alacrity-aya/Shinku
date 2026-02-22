@@ -1,6 +1,6 @@
-#include "parser.h"
-#include <common/constants.h>
-#include <common/types.h>
+#include "dns_parser.h"
+#include "constants.h"
+#include "types.h"
 #include <netinet/in.h>
 #include <stdint.h>
 #include <string.h>
@@ -171,7 +171,7 @@ int handle_packet(void* ctx, void* data, size_t len) {
     int flat_offset = 0;
 
     // 3.1 Copy Header
-    memcpy(flat_buf, dns, sizeof(struct dns_hdr));
+    memcpy(flat_buf, dns, sizeof(*dns));
     struct dns_hdr* flat_hdr = (struct dns_hdr*)flat_buf;
     flat_hdr->arcount = 0; // [Strategy]: Strip Additional Section (ECS/OPT)
     flat_offset += sizeof(struct dns_hdr);
@@ -240,7 +240,7 @@ int handle_packet(void* ctx, void* data, size_t len) {
         if (read_offset + rdlen > pkt_len)
             return 0;
 
-        if (rtype == DNS_TYPE_A) { // simplify: ignore DNS_TYPE_AAAA and DNS_TYPE_TXT
+        if (rtype == DNS_TYPE_A) { // simplify: only handle DNS_TYPE_A
             write_u16(flat_buf + flat_offset, rdlen); // Write RDLen
             flat_offset += 2;
             memcpy(flat_buf + flat_offset, pkt_data + read_offset, rdlen); // Write IP

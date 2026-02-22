@@ -7,7 +7,7 @@
 #include <vmlinux.h>
 #endif
 
-#include <common/constants.h>
+#include "constants.h"
 
 // Calculate FNV-1a hash of a DNS domain name
 // Input: cursor (points to the start of QNAME), data_end
@@ -78,9 +78,8 @@ static __always_inline int calculate_dns_name_hash(void** cursor, void* data_end
     return -1; // Name too long (exceeded 255 bytes)
 }
 
-// For testing in userspace - same algorithm but accessible outside static context
-#ifndef __BPF__
-int calculate_dns_name_hash_test(void** cursor, void* data_end, __u32* hash_out) {
-    return calculate_dns_name_hash(cursor, data_end, hash_out);
-}
+// For testing in userspace - declaration only
+// Implementation is in hash.c
+#if !defined(__BPF__) || __BPF__ == 0
+int calculate_dns_name_hash_test(void** cursor, void* data_end, __u32* hash_out);
 #endif

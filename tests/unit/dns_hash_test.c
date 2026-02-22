@@ -22,7 +22,7 @@ typedef uint64_t __u64;
 #endif
 
 // Include source files to access testable functions
-#include "../src/common/constants.h"
+#include "../../src/include/constants.h"
 
 static int test_count = 0;
 static int pass_count = 0;

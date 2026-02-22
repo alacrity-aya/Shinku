@@ -1,6 +1,6 @@
 #pragma once
 
-#include <common/bpf_log.h>
+#include "bpf_log.h"
 
 struct env {
     const char* interface;

@@ -1,5 +1,5 @@
 #include "config.h"
-#include "loader.h"
+#include "core/loader.h"
 #include <signal.h>
 #include <stdio.h>
 

@@ -1,8 +1,8 @@
 #pragma once
 
-#include "common/bpf_log.h"
+#include "bpf_log.h"
 
-#include "config.h"
+#include "cli/config.h"
 #include <bpf/libbpf.h>
 #include <errno.h>
 

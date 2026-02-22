@@ -24,7 +24,7 @@ vmlinux_h = custom_target(
   capture: true
 )
 
-inc_src = include_directories('src')
+inc_src = include_directories('src/include', 'src')
 
 bpf_obj = custom_target(
   'cache.bpf.o',
@@ -35,6 +35,7 @@ bpf_obj = custom_target(
     clang, '-g', '-O2', '-target', 'bpf',
     '-DENABLE_BPF_LOG',
     '-I' + meson.current_build_dir(),      
+    '-I' + meson.current_source_dir() + '/src/include',
     '-I' + meson.current_source_dir() + '/src',
     '-c', '@INPUT@', '-o', '@OUTPUT@'
   ]
@@ -50,16 +51,23 @@ bpf_skel = custom_target(
   capture: true
 )
 
-user_src = files(
-  'src/user/main.c',
-  'src/user/config.c',
-  'src/user/loader.c',
-  'src/user/parser.c',
+# Core library (shared between CLI and tests)
+core_src = files(
+  'src/core/hash.c',
+  'src/core/dns_parser.c',
+  'src/core/loader.c',
+)
+
+# CLI entry point
+cli_src = files(
+  'src/cli/main.c',
+  'src/cli/config.c',
 )
 
 executable(
   'dns-cache',
-  user_src,          
+  cli_src,
+  core_src,          
   bpf_skel,         
   dependencies: libbpf_dep,
   include_directories: inc_src, 
@@ -68,11 +76,11 @@ executable(
 
 dns_hash_test_exe = executable(
     'dns_hash_verify',
-    'tests/dns_hash_test.c',
-    'src/utils/hash.c',
-    'src/user/parser.c',  # Add parser.c to get access to the testable functions
+    'tests/unit/dns_hash_test.c',
+    'src/core/hash.c',
+    'src/core/dns_parser.c',
     native: true,
-    c_args: ['-g', '-O2', '-D__BPF__=0'],  # Define __BPF__ as 0 for userspace
+    c_args: ['-g', '-O2', '-D__BPF__=0'],
     include_directories: inc_src
 )
 

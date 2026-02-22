@@ -2,10 +2,10 @@
 
 #include <bpf/bpf_endian.h>
 #include <bpf/bpf_helpers.h>
-#include <common/bpf_log.h>
-#include <common/types.h>
-#include <utils/hash.h>
-#include <utils/parser.h>
+#include "bpf_log.h"
+#include "types.h"
+#include "core/hash.h"
+#include "xdp_parser.h"
 
 char LICENSE[] SEC("license") = "GPL";
 
