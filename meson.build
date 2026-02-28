@@ -11,6 +11,7 @@ project('ebpf-cache-project', 'c',
   ]
 )
 
+cares_dep = dependency('libcares', fallback : ['c-ares', 'cares_dep'])
 libbpf_dep = dependency('libbpf')
 clang = find_program('clang')
 bpftool = find_program('bpftool')
@@ -44,6 +45,19 @@ bpf_obj = custom_target(
   ]
 )
 
+# Dummy XDP pass-through (needed on veth peer for XDP_TX to work)
+xdp_pass_obj = custom_target(
+  'xdp_pass.bpf.o',
+  input: 'src/bpf/xdp_pass.bpf.c',
+  output: 'xdp_pass.bpf.o',
+  depends: vmlinux_h,
+  command: [
+    clang, '-g', '-O2', '-target', 'bpf',
+    '-I' + meson.current_build_dir(),
+    '-c', '@INPUT@', '-o', '@OUTPUT@'
+  ]
+)
+
 bpf_skel = custom_target(
   'cache.skel.h',
   input: bpf_obj,
@@ -54,13 +68,12 @@ bpf_skel = custom_target(
   capture: true
 )
 
-# ====================
 # Core Library
-# ====================
 core_src = files(
   'src/core/hash.c',
   'src/core/dns_parser.c',
   'src/core/loader.c',
+
 )
 
 # CLI entry point
@@ -74,111 +87,12 @@ executable(
   cli_src,
   core_src,          
   bpf_skel,         
-  dependencies: libbpf_dep,
+  dependencies: [libbpf_dep, cares_dep],
   include_directories: inc_src, 
   install: true
 )
 
 # ====================
-# Unit Tests
+# Tests
 # ====================
-
-# DNS Hash Test (userspace, no BPF)
-dns_hash_test_exe = executable(
-    'dns_hash_verify',
-    'tests/unit/hash/dns_hash_test.c',
-    'src/core/hash.c',
-    'src/core/dns_parser.c',
-    native: true,
-    c_args: ['-g', '-O2', '-D__BPF__=0'],
-    include_directories: inc_src
-)
-
-test('DNS Hash Consistency Check', dns_hash_test_exe)
-
-# ====================
-# Arena List Test
-# ====================
-
-# Arena BPF program
-arena_inc = include_directories('src/bpf/arena', 'src/include', 'src')
-
-arena_list_bpf_obj = custom_target(
-  'arena_list.bpf.o',
-  input: 'tests/unit/arena/arena_list.bpf.c',
-  output: 'arena_list.bpf.o',
-  depends: vmlinux_h,
-  command: [
-    clang, '-g', '-O2', '-target', 'bpf',
-    '-DBPF_NO_KFUNC_PROTOTYPES',
-    '-I' + meson.current_build_dir(),      
-    '-I' + meson.current_source_dir() + '/src/bpf/arena',
-    '-I' + meson.current_source_dir() + '/src/include',
-    '-I' + meson.current_source_dir() + '/src',
-    '-c', '@INPUT@', '-o', '@OUTPUT@'
-  ]
-)
-
-arena_list_skel = custom_target(
-  'arena_list.skel.h',
-  input: arena_list_bpf_obj,
-  output: 'arena_list.skel.h',
-  command: [
-    bpftool, 'gen', 'skeleton', '@INPUT@'
-  ],
-  capture: true
-)
-
-# Arena list test executable (disable ASAN - BPF Arena uses high memory addresses)
-arena_list_test_exe = executable(
-    'arena_list_test',
-    'tests/unit/arena/arena_list_test.c',
-    arena_list_skel,
-    dependencies: libbpf_dep,
-    include_directories: [inc_src, arena_inc],
-    override_options: ['b_sanitize=none'],
-)
-
-test('Arena List Test', arena_list_test_exe)
-
-# ====================
-# Arena Hash Table Test
-# ====================
-
-arena_htab_bpf_obj = custom_target(
-  'arena_htab.bpf.o',
-  input: 'tests/unit/arena/arena_htab.bpf.c',
-  output: 'arena_htab.bpf.o',
-  depends: vmlinux_h,
-  command: [
-    clang, '-g', '-O2', '-target', 'bpf',
-    '-DBPF_NO_KFUNC_PROTOTYPES',
-    '-I' + meson.current_build_dir(),      
-    '-I' + meson.current_source_dir() + '/src/bpf/arena',
-    '-I' + meson.current_source_dir() + '/src/include',
-    '-I' + meson.current_source_dir() + '/src',
-    '-c', '@INPUT@', '-o', '@OUTPUT@'
-  ]
-)
-
-arena_htab_skel = custom_target(
-  'arena_htab.skel.h',
-  input: arena_htab_bpf_obj,
-  output: 'arena_htab.skel.h',
-  command: [
-    bpftool, 'gen', 'skeleton', '@INPUT@'
-  ],
-  capture: true
-)
-
-# Arena hash table test executable (disable ASAN - BPF Arena uses high memory addresses)
-arena_htab_test_exe = executable(
-    'arena_htab_test',
-    'tests/unit/arena/arena_htab_test.c',
-    arena_htab_skel,
-    dependencies: libbpf_dep,
-    include_directories: [inc_src, arena_inc],
-    override_options: ['b_sanitize=none'],
-)
-
-test('Arena Hash Table Test', arena_htab_test_exe)
+subdir('tests/unit')

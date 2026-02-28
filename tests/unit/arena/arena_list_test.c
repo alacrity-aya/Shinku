@@ -8,8 +8,8 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
-#include "bpf_arena_list.h"
 #include "arena_list.skel.h"
+#include "bpf_arena_list.h"
 
 struct elem {
     struct arena_list_node node;
@@ -33,7 +33,7 @@ static int test_arena_list_add_del(int cnt) {
     skel = arena_list_bpf__open_and_load();
     if (!skel) {
         fprintf(stderr, "Failed to open and load BPF skeleton\n");
-        return 1;  // Return error code
+        return 1; // Return error code
     }
 
     skel->bss->cnt = cnt;
@@ -48,7 +48,7 @@ static int test_arena_list_add_del(int cnt) {
     }
     if (skel->bss->skip) {
         printf("SKIP: compiler doesn't support arena_cast\n");
-        ret = 77;  // Skip test exit code
+        ret = 77; // Skip test exit code
         goto out;
     }
     sum = list_sum(skel->bss->list_head);
@@ -74,6 +74,10 @@ out_err:
 }
 
 int main(int argc, char** argv) {
+    if (geteuid() != 0) {
+        fprintf(stderr, "This test must be run as root\n");
+        return 1;
+    }
     int cnt = 10;
 
     if (argc > 1) {

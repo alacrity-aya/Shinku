@@ -1,13 +1,12 @@
 #pragma once
 
-// XDP Actions
+#ifdef __VMLINUX_H__
 #define XDP_DROP 0
 #define XDP_ABORTED 1
 #define XDP_PASS 2
 #define XDP_TX 3
 #define XDP_REDIRECT 4
 
-// TC Actions
 #define TC_ACT_UNSPEC (-1)
 #define TC_ACT_OK 0
 #define TC_ACT_RECLASSIFY 1
@@ -17,6 +16,7 @@
 #define TC_ACT_QUEUED 5
 #define TC_ACT_REPEAT 6
 #define TC_ACT_REDIRECT 7
+#endif
 
 // DNS
 #define DNS_PORT 53
@@ -44,17 +44,26 @@
 #define FNV_OFFSET_BASIS_32 2166136261UL
 #define FNV_PRIME_32 16777619UL
 
-// ETH
-#define ETH_P_8021Q 0x8100 /* 802.1Q VLAN Extended Header  */
-#define ETH_P_IP 0x0800 /* Internet Protocol packet	*/
-#define ETH_P_8021AD 0x88A8 /* 802.1ad Service VLAN		*/
-
+#ifdef __VMLINUX_H__
+#define ETH_P_8021Q 0x8100
+#define ETH_P_IP 0x0800
+#define ETH_P_8021AD 0x88A8
+#endif
 // Network parsing
 #define MAX_VLAN_DEPTH 2 /* Max nested VLAN tags to parse (Q-in-Q support) */
 
 // BPF Ring Buffer
 #define RINGBUF_SIZE_PKT (1024 * 1024) /* 1MB for DNS packet capture */
 #define RINGBUF_SIZE_LOG (256 * 1024)  /* 256KB for BPF logs */
+
+// BPF Arena
+#define ARENA_ENTRY_SIZE 512                    /* Max traditional DNS UDP payload */
+#define ARENA_DEFAULT_PAGES 2112                /* Default: 2112 pages ≈ 8.25MB (fits 16384×512B entries + metadata) */
+#define CACHE_MAP_MAX_ENTRIES 16384             /* Max entries in cache_map */
+
+// EDNS0
+#define DNS_TYPE_OPT 41                         /* OPT pseudo-RR (RFC 6891) */
+#define EDNS0_OPT_CODE_ECS 8                    /* EDNS Client Subnet (RFC 7871) */
 
 // Logging
 #define LOG_TIMESTAMP_LEN 16 /* Buffer size for timestamp string "HH:MM:SS\0" */

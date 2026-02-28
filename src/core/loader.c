@@ -8,6 +8,7 @@
 #include <bpf/libbpf_legacy.h>
 #include <net/if.h>
 #include <stdio.h>
+
 #include <time.h>
 
 // Error codes for setup_bpf
@@ -16,6 +17,7 @@
 #define ERR_INVALID_IFACE -3
 #define ERR_XDP_ATTACH -4
 #define ERR_TC_ATTACH -5
+
 
 static int libbpf_print_fn(enum libbpf_print_level level, const char* format, va_list args) {
     char ts[LOG_TIMESTAMP_LEN];
@@ -88,13 +90,35 @@ int setup_bpf(struct bpf_ctx* ctx, const struct env* env) {
 
     libbpf_set_print(libbpf_print_fn);
 
-    ctx->skel = cache_bpf__open_and_load();
+    /* Open skeleton (don't load yet — need to configure arena size) */
+    ctx->skel = cache_bpf__open();
     if (!ctx->skel) {
-        fprintf(stderr, "Failed to open and load BPF skeleton\n");
+        fprintf(stderr, "Failed to open BPF skeleton\n");
         return ERR_SKEL_LOAD;
     }
 
+    /* Configure arena size from CLI --arena-pages before load */
+    err = bpf_map__set_max_entries(ctx->skel->maps.arena, env->arena_pages);
+    if (err) {
+        fprintf(stderr, "Failed to set arena max_entries to %u: %d\n", env->arena_pages, err);
+        goto cleanup;
+    }
+
     bpf_program__set_autoattach(ctx->skel->progs.tc_tx, false);
+
+    /* Load BPF programs and create maps */
+    err = cache_bpf__load(ctx->skel);
+    if (err) {
+        fprintf(stderr, "Failed to load BPF skeleton: %d\n", err);
+        err = ERR_SKEL_LOAD;
+        goto cleanup;
+    }
+
+    /* Wire up cache context — skeleton auto-mmap's arena via __arena globals */
+    ctx->cache_ctx.entries = ctx->skel->arena->cache_entries;
+    ctx->cache_ctx.next_idx = &ctx->skel->arena->next_entry_idx;
+    ctx->cache_ctx.max_entries = CACHE_MAP_MAX_ENTRIES;
+    ctx->cache_ctx.cache_map_fd = bpf_map__fd(ctx->skel->maps.cache_map);
 
     err = cache_bpf__attach(ctx->skel);
     if (err) {
@@ -154,8 +178,9 @@ int setup_bpf(struct bpf_ctx* ctx, const struct env* env) {
         }
     }
 
-    // rb_pkt
-    ctx->rb_pkt = ring_buffer__new(bpf_map__fd(ctx->skel->maps.rb_pkt), handle_packet, NULL, NULL);
+    // rb_pkt — pass cache_ctx so handle_packet() can write to arena + cache_map
+    ctx->rb_pkt =
+        ring_buffer__new(bpf_map__fd(ctx->skel->maps.rb_pkt), handle_packet, &ctx->cache_ctx, NULL);
     if (!ctx->rb_pkt) {
         fprintf(stderr, "Failed to create ring buffer: rb_pkt\n");
         err = ERR_RB_CREATE;
@@ -189,6 +214,8 @@ void cleanup_bpf(struct bpf_ctx* ctx) {
         ring_buffer__free(ctx->rb_pkt);
         ctx->rb_pkt = NULL;
     }
+
+
 
     /* detach legacy TC */
     if (ctx->tc_hook.ifindex) {

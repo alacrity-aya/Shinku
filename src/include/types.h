@@ -3,6 +3,7 @@
     #include <linux/types.h>
     #include <stdint.h>
 #endif
+#include "constants.h"
 
 /*
  * DNS Header Memory Layout (12 Bytes Total)
@@ -39,6 +40,20 @@ struct cache_key {
     __u16 qclass;
     __u32 _pad;
 };
+
+// Cache Entry - stored in __arena cache_entries[] (shared BPF/userspace memory)
+struct cache_entry {
+    __u8 pkt[ARENA_ENTRY_SIZE]; // Flat DNS packet (512 bytes max)
+};
+
+// Cache Value - stored in cache_map hash, indexes into cache_entries[]
+struct cache_value {
+    __u32 arena_idx;     // Index into cache_entries[] array
+    __u16 pkt_len;       // Actual DNS packet length (<= ARENA_ENTRY_SIZE)
+    __u8  scope;         // ECS Scope (0=global, >0=subnet-specific)
+    __u8  _pad;          // Alignment padding
+    __u64 expire_ts;     // Expiration timestamp (ktime nanoseconds)
+};  // 16 bytes
 
 struct dns_event {
     __u64 timestamp;

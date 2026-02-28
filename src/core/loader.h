@@ -1,6 +1,7 @@
 #pragma once
 
 #include "bpf_log.h"
+#include "dns_parser.h"
 
 #include "cli/config.h"
 #include <bpf/libbpf.h>
@@ -15,6 +16,9 @@ struct bpf_ctx {
     struct log_options log_opt;
 
     struct bpf_tc_hook tc_hook;
+
+    /* Cache context for ring buffer callback */
+    struct cache_ctx cache_ctx;
 };
 
 int setup_bpf(struct bpf_ctx* ctx, const struct env* env);

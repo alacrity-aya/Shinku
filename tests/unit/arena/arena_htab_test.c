@@ -9,8 +9,8 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
-#include "bpf_arena_htab.h"
 #include "arena_htab.skel.h"
+#include "bpf_arena_htab.h"
 
 /* Verify arr1 contents filled by BPF program */
 static int verify_arr1(char* arr, size_t len) {
@@ -18,8 +18,7 @@ static int verify_arr1(char* arr, size_t len) {
     for (size_t i = 0; i < len && i < 1000; i++) {
         if (arr[i] != (char)i) {
             if (errors < 5) {
-                fprintf(stderr, "arr1[%zu] = %d, expected %d\n", i, 
-                        (unsigned char)arr[i], (int)i);
+                fprintf(stderr, "arr1[%zu] = %d, expected %d\n", i, (unsigned char)arr[i], (int)i);
             }
             errors++;
         }
@@ -30,15 +29,15 @@ static int verify_arr1(char* arr, size_t len) {
 /* Count elements in hash table by iterating buckets */
 static int count_htab_elements(htab_t* htab) {
     int count = 0;
-    
+
     if (!htab || !htab->buckets)
         return -1;
-    
+
     for (int i = 0; i < htab->n_buckets; i++) {
         htab_bucket_t* bucket = &htab->buckets[i];
         arena_list_head_t* head = &bucket->head;
         hashtab_elem_t* elem;
-        
+
         list_for_each_entry(elem, head, hash_node) {
             count++;
         }
@@ -49,20 +48,20 @@ static int count_htab_elements(htab_t* htab) {
 /* Verify hash table elements */
 static int verify_htab_elements(htab_t* htab) {
     int errors = 0;
-    
+
     if (!htab || !htab->buckets)
         return -1;
-    
+
     /* Verify the first 1000 elements that were inserted twice */
     for (int i = 0; i < 1000; i++) {
         hashtab_elem_t* found = NULL;
         arena_list_head_t* head = select_bucket(htab, i);
-        
+
         list_for_each_entry(found, head, hash_node) {
             if (found->key == i)
                 break;
         }
-        
+
         if (!found) {
             if (errors < 5) {
                 fprintf(stderr, "Key %d not found in hash table\n", i);
@@ -70,18 +69,17 @@ static int verify_htab_elements(htab_t* htab) {
             errors++;
         } else if (found->value != i) {
             if (errors < 5) {
-                fprintf(stderr, "Key %d has value %d, expected %d\n", 
-                        i, found->value, i);
+                fprintf(stderr, "Key %d has value %d, expected %d\n", i, found->value, i);
             }
             errors++;
         }
     }
-    
+
     return errors;
 }
 
 static int test_arena_htab(int test_size) {
-    (void)test_size;  /* Currently unused, BPF uses fixed size */
+    (void)test_size; /* Currently unused, BPF uses fixed size */
     LIBBPF_OPTS(bpf_test_run_opts, opts);
     struct arena_htab_bpf* skel;
     int ret;
@@ -99,17 +97,17 @@ static int test_arena_htab(int test_size) {
         ret = 1;
         goto out;
     }
-    
+
     if (opts.retval != 0) {
         fprintf(stderr, "arena_htab_llvm returned %d\n", opts.retval);
         ret = 1;
         goto out;
     }
-    
+
     /* Check if arena is supported */
     if (skel->bss->skip) {
         printf("SKIP: compiler doesn't support arena_cast\n");
-        ret = 77;  // Skip test exit code (automake convention)
+        ret = 77; // Skip test exit code (automake convention)
         goto out;
     }
 
@@ -137,10 +135,10 @@ static int test_arena_htab(int test_size) {
     htab_t* htab = (htab_t*)skel->bss->htab_for_user;
     if (htab) {
         printf("Hash table n_buckets: %d\n", htab->n_buckets);
-        
+
         int count = count_htab_elements(htab);
         printf("Hash table element count: %d\n", count);
-        
+
         /* We inserted 100000 elements, then updated 1000 of them */
         /* Expected: 100000 unique elements */
         if (count == 100000) {
@@ -148,7 +146,7 @@ static int test_arena_htab(int test_size) {
         } else {
             printf("Hash table count: FAILED (expected 100000)\n");
         }
-        
+
         /* Verify first 1000 elements */
         int htab_errors = verify_htab_elements(htab);
         if (htab_errors == 0) {
@@ -168,7 +166,12 @@ out:
 }
 
 int main(int argc, char** argv) {
-    int test_size = 100000;  /* Default from BPF program */
+    if (geteuid() != 0) {
+        fprintf(stderr, "This test must be run as root\n");
+        return 1;
+    }
+
+    int test_size = 100000; /* Default from BPF program */
 
     if (argc > 1) {
         test_size = atoi(argv[1]);
