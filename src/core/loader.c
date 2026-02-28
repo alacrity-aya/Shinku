@@ -126,6 +126,7 @@ int setup_bpf(struct bpf_ctx* ctx, const struct env* env) {
         goto cleanup;
     }
 
+    #ifdef ENABLE_BPF_LOG
     // rb_log
     ctx->log_opt.min_level = env->log_level;
     ctx->log_opt.show_timestamp = true;
@@ -138,6 +139,9 @@ int setup_bpf(struct bpf_ctx* ctx, const struct env* env) {
         err = ERR_RB_CREATE;
         goto cleanup;
     }
+#else
+    (void)env->log_level;  /* unused when logging disabled */
+#endif
 
     // xdp
     uint32_t ifindex = if_nametoindex(env->interface);
@@ -201,7 +205,13 @@ int poll_pkt_ring(struct bpf_ctx* ctx, int timeout_ms) {
 }
 
 int dump_bpf_log(struct bpf_ctx* ctx, int timeout_ms) {
+#ifdef ENABLE_BPF_LOG
     return ring_buffer__poll(ctx->rb_log, timeout_ms);
+#else
+    (void)ctx;
+    (void)timeout_ms;
+    return 0;
+#endif
 }
 
 void cleanup_bpf(struct bpf_ctx* ctx) {

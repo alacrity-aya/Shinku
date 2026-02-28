@@ -11,6 +11,9 @@ project('ebpf-cache-project', 'c',
   ]
 )
 
+# Build options
+bpf_log = get_option('bpf_log')
+
 cares_dep = dependency('libcares', fallback : ['c-ares', 'cares_dep'])
 libbpf_dep = dependency('libbpf')
 clang = find_program('clang')
@@ -37,8 +40,8 @@ bpf_obj = custom_target(
   depends: vmlinux_h,
   command: [
     clang, '-g', '-O2', '-target', 'bpf',
-    '-DENABLE_BPF_LOG',
-    '-I' + meson.current_build_dir(),      
+  ] + (bpf_log ? ['-DENABLE_BPF_LOG'] : []) + [
+    '-I' + meson.current_build_dir(),
     '-I' + meson.current_source_dir() + '/src/include',
     '-I' + meson.current_source_dir() + '/src',
     '-c', '@INPUT@', '-o', '@OUTPUT@'
@@ -89,6 +92,7 @@ executable(
   bpf_skel,         
   dependencies: [libbpf_dep, cares_dep],
   include_directories: inc_src, 
+  c_args: bpf_log ? ['-DENABLE_BPF_LOG'] : [],
   install: true
 )
 

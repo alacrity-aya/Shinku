@@ -1,12 +1,13 @@
+# Build output
+build/
 .cache/
+
+# Editor/tool artifacts
 AGENTS.md
+__pycache__/
+.ruff_cache/
 
-## 忽略 Meson 自动下载的源码目录
+# Meson subprojects: ignore fetched sources, keep .wrap definitions
 subprojects/*/
-# 但不要忽略 subprojects 目录本身，否则 .wrap 文件会被漏掉
-
-## 忽略 Meson 缓存的压缩包
 subprojects/packagecache/
-
-## 排除（保留）所有的 .wrap 定义文件
 !subprojects/*.wrap

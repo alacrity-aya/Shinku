@@ -215,16 +215,33 @@ int xdp_rx(struct xdp_md* ctx) {
     if (dns_start + cached_len > (__u8*)data_end)
         return XDP_PASS;
 
-    /* ── Phase 5: Copy cached DNS response from arena ── */
+    /* ── Phase 5: Copy cached DNS response from arena (8-byte wide) ── */
     struct cache_entry __arena *entry = &cache_entries[arena_idx];
 
+    /* 8-byte wide copies: reduces iteration count by ~8x */
+    __u32 copy_words = cached_len >> 3;    /* full 8-byte chunks */
+    __u32 copy_rem   = cached_len & 0x7;   /* remaining bytes */
+
 #pragma clang loop unroll(disable)
-    for (__u32 i = 0; i < ARENA_ENTRY_SIZE; i++) {
-        if (i >= cached_len)
+    for (__u32 i = 0; i < ARENA_ENTRY_SIZE / 8; i++) {
+        if (i >= copy_words)
             break;
-        if (dns_start + i + 1 > (__u8*)data_end)
+        __u32 off = i << 3;
+        if (dns_start + off + 8 > (__u8*)data_end)
             break;
-        dns_start[i] = entry->pkt[i];
+        *(__u64 *)(dns_start + off) = *(__u64 *)(entry->pkt + off);
+    }
+
+    /* Copy remaining 0-7 bytes */
+    __u32 rem_start = copy_words << 3;
+#pragma clang loop unroll(full)
+    for (__u32 i = 0; i < 7; i++) {
+        if (i >= copy_rem)
+            break;
+        __u32 off = rem_start + i;
+        if (dns_start + off + 1 > (__u8*)data_end)
+            break;
+        dns_start[off] = entry->pkt[off];
     }
 
     /* ── Phase 6: Patch transaction ID to match original query ── */
