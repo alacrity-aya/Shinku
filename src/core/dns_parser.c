@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only OR Apache-2.0
 #include "dns_parser.h"
 #include "constants.h"
 #include "types.h"

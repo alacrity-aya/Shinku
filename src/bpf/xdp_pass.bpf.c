@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /* Minimal XDP pass-through program.
  * Required on veth peer interfaces to receive XDP_TX frames.
  * Without this, XDP_TX on the other side of the veth pair silently drops packets. */

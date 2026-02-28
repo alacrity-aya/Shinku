@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only OR Apache-2.0
 #include "config.h"
 #include "constants.h"
 #include <argp.h>

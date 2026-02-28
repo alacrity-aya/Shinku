@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only OR Apache-2.0
 #pragma once
 #ifndef __VMLINUX_H__
     #include <linux/types.h>

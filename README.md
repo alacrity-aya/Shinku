@@ -1,7 +1,7 @@
-# dns-cache
+# Shinku
 
 <p align="center">
-  <img src="asserts/CG.avif" alt="dns-cache" width="600">
+  <img src="asserts/CG.avif" alt="Shinku" width="600">
 </p>
 
 An eBPF-based DNS caching proxy that serves cached responses at the XDP layer for near-line-rate performance.
@@ -135,4 +135,9 @@ For technical details on the implementation, see `docs/design.md`.
 
 ## License
 
-GPL (matches the license of the BPF programs)
+This project uses a dual-license model:
+
+*   **BPF programs** (`src/bpf/`): Licensed under [GPL-2.0-only](LICENSE-GPL2) (required by the Linux kernel for BPF programs that call GPL-only helpers).
+*   **Userspace code** (`src/core/`, `src/cli/`, `src/include/`): Licensed under [GPL-2.0-only](LICENSE-GPL2) OR [Apache-2.0](LICENSE-APACHE), at your option.
+
+See [LICENSE-GPL2](LICENSE-GPL2) and [LICENSE-APACHE](LICENSE-APACHE) for the full text of each license.

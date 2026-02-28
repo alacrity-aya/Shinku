@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only OR Apache-2.0
 // This file provides testable versions of hash functions
 // It includes the header to get access to the static inline functions
 #include "hash.h"
