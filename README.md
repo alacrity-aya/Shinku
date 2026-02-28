@@ -1,5 +1,9 @@
 # dns-cache
 
+<p align="center">
+  <img src="asserts/CG.avif" alt="dns-cache" width="600">
+</p>
+
 An eBPF-based DNS caching proxy that serves cached responses at the XDP layer for near-line-rate performance.
 
 ## Key Features

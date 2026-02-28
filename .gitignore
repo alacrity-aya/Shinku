@@ -11,3 +11,7 @@ __pycache__/
 subprojects/*/
 subprojects/packagecache/
 !subprojects/*.wrap
+
+# Documentation not for version control
+docs/learnings.md
+docs/reference/
