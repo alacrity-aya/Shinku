@@ -131,7 +131,7 @@ For technical details on the implementation, see `docs/design.md`.
 ## References
 
 *   Reference papers located in `docs/reference/`
-*   [BPF Arena kernel documentation](https://docs.kernel.org/bpf/bpf_arena.html)
+*   [BPF Arena documentation](https://docs.ebpf.io/linux/map-type/BPF_MAP_TYPE_ARENA/)
 
 ## License
 
