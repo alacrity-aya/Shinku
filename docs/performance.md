@@ -2,7 +2,7 @@
 
 ## 1. Executive Summary
 
-The dns-cache implementation achieves a 1.22x throughput improvement, increasing from 349K to 425K Queries Per Second (QPS) when compared to a baseline using only Unbound. Most significantly, average latency is reduced by 4.8x, dropping from 24µs to 5µs.
+The shinku implementation achieves a 1.22x throughput improvement, increasing from 349K to 425K Queries Per Second (QPS) when compared to a baseline using only Unbound. Most significantly, average latency is reduced by 4.8x, dropping from 24µs to 5µs.
 
 These results were obtained on a veth pair using generic XDP (SKB mode). Testing on physical hardware with a native XDP driver would likely demonstrate even larger performance gains, as the current environment still involves significant kernel overhead for every packet.
 
@@ -18,7 +18,7 @@ These results were obtained on a veth pair using generic XDP (SKB mode). Testing
      veth-ns (10.99.0.2) <---> veth-host (10.99.0.1)
                                      |-- XDP (ingress) xdp_rx
                                      |-- TC (egress) tc_tx  
-                                     |-- dns-cache userspace
+                                    |-- shinku userspace
                                      |-- Unbound :53
     ```
 *   **dnsperf Parameters:** 10 concurrent clients, 10 seconds duration, 35 popular domain names, unlimited QPS.
@@ -29,8 +29,8 @@ These results were obtained on a veth pair using generic XDP (SKB mode). Testing
 The benchmarking process is automated through `tests/benchmark/run_benchmark.sh` and follows four distinct phases.
 
 1.  **Setup:** Configure the veth topology and start the Unbound server.
-2.  **Baseline:** Warm the Unbound cache, then execute dnsperf directly without dns-cache active.
-3.  **With Cache:** Start dns-cache, warm the XDP cache, and run dnsperf again.
+2.  **Baseline:** Warm the Unbound cache, then execute dnsperf directly without shinku active.
+3.  **With Cache:** Start shinku, warm the XDP cache, and run dnsperf again.
 4.  **Comparison:** Analyze the results from both runs.
 
 All responses recorded during these tests were NOERROR, representing a 100% success rate with 0% query loss. Three separate benchmark runs were performed to isolate the impact of specific optimizations.
@@ -94,4 +94,4 @@ Several factors explain why the throughput improvement is currently limited to 1
 
 ## 8. Conclusions
 
-The dns-cache system successfully serves responses from the XDP layer, providing a 4.8x reduction in latency. While throughput gains are currently limited by the virtualized networking environment, the architecture is fundamentally sound. BPF logging proved to be a major performance hurdle and should remain disabled for production workloads. Transitioning to native XDP on dedicated hardware will likely allow these performance benefits to scale significantly further.
+The shinku system successfully serves responses from the XDP layer, providing a 4.8x reduction in latency. While throughput gains are currently limited by the virtualized networking environment, the architecture is fundamentally sound. BPF logging proved to be a major performance hurdle and should remain disabled for production workloads. Transitioning to native XDP on dedicated hardware will likely allow these performance benefits to scale significantly further.

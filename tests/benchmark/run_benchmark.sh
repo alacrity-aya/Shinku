@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # DNS Cache Benchmark: Measures real-world performance improvement of eBPF XDP DNS cache
-# Compares: dnsperf → Unbound (baseline) vs dnsperf → dns-cache → Unbound (with XDP cache)
+# Compares: dnsperf → Unbound (baseline) vs dnsperf → shinku → Unbound (with XDP cache)
 #
 # Requirements: unbound, dnsperf, sudo
 # Usage: sudo bash tests/benchmark/run_benchmark.sh
@@ -48,11 +48,11 @@ hdr()  { echo -e "\n${CYAN}═════════════════�
 cleanup() {
     log "Cleaning up..."
 
-    # Kill dns-cache
+    # Kill shinku
     if [[ -n "${DNS_CACHE_PID:-}" ]] && kill -0 "$DNS_CACHE_PID" 2>/dev/null; then
         kill "$DNS_CACHE_PID" 2>/dev/null || true
         wait "$DNS_CACHE_PID" 2>/dev/null || true
-        ok "dns-cache stopped"
+        ok "shinku stopped"
     fi
 
     # Kill unbound
@@ -67,7 +67,7 @@ cleanup() {
         rm -f /tmp/unbound-bench.pid
     fi
 
-    # Detach XDP from veth-host (dns-cache attaches it)
+    # Detach XDP from veth-host (shinku attaches it)
     ip link set dev "$VETH_HOST" xdp off 2>/dev/null || true
 
     # Detach TC from veth-host
@@ -93,8 +93,8 @@ check_prereqs() {
         fi
     done
 
-    if [[ ! -x "$PROJECT_ROOT/build/dns-cache" ]]; then
-        err "dns-cache binary not found. Run: meson compile -C build dns-cache"
+    if [[ ! -x "$PROJECT_ROOT/build/shinku" ]]; then
+        err "shinku binary not found. Run: meson compile -C build shinku"
         missing=1
     fi
     if [[ ! -f "$PROJECT_ROOT/build/xdp_pass.bpf.o" ]]; then
@@ -269,20 +269,20 @@ extract_metrics() {
     grep -E "(Queries sent|Queries completed|Queries lost|Run time|Queries per second|Average Latency|Latency StdDev|Minimum Latency|Maximum Latency)" "$outfile" || true
 }
 
-# ─── Start dns-cache ─────────────────────────────────────────────────────
+# ─── Start shinku ─────────────────────────────────────────────────────
 start_dns_cache() {
-    log "Starting dns-cache on ${VETH_HOST}..."
+    log "Starting shinku on ${VETH_HOST}..."
 
-    "$PROJECT_ROOT/build/dns-cache" -i "$VETH_HOST" -l info &
+    "$PROJECT_ROOT/build/shinku" -i "$VETH_HOST" -l info &
     DNS_CACHE_PID=$!
     sleep 2
 
     if ! kill -0 "$DNS_CACHE_PID" 2>/dev/null; then
-        err "dns-cache failed to start"
+        err "shinku failed to start"
         exit 1
     fi
 
-    ok "dns-cache running (PID: $DNS_CACHE_PID)"
+    ok "shinku running (PID: $DNS_CACHE_PID)"
 }
 
 stop_dns_cache() {
@@ -295,7 +295,7 @@ stop_dns_cache() {
         ip link set dev "$VETH_HOST" xdp off 2>/dev/null || true
         tc qdisc del dev "$VETH_HOST" clsact 2>/dev/null || true
 
-        ok "dns-cache stopped and BPF programs detached"
+        ok "shinku stopped and BPF programs detached"
     fi
 }
 
@@ -333,7 +333,7 @@ main() {
     setup_topology
     start_unbound
 
-    # ── Phase 2: Baseline (no dns-cache) ──
+    # ── Phase 2: Baseline (no shinku) ──
     hdr "Phase 2: Baseline — Unbound Only (no XDP cache)"
     log "Warming up Unbound cache..."
     ip netns exec "$NS_NAME" dnsperf \
@@ -346,8 +346,8 @@ main() {
     log "Baseline metrics:"
     extract_metrics "$RESULTS_DIR/baseline.txt"
 
-    # ── Phase 3: With dns-cache ──
-    hdr "Phase 3: With dns-cache (XDP fast path)"
+    # ── Phase 3: With shinku ──
+    hdr "Phase 3: With shinku (XDP fast path)"
     start_dns_cache
 
     warmup_cache

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Integration tests for dns-cache XDP/TC BPF programs.
+"""Integration tests for shinku XDP/TC BPF programs.
 
 Uses only Python stdlib (unittest + subprocess). No pytest, pyroute2, or scapy required.
 Run with: sudo python3 tests/integration/test_dns_cache.py [-v]
@@ -18,7 +18,7 @@ import unittest
 PROJECT_ROOT = os.path.dirname(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 )
-BINARY = os.path.join(PROJECT_ROOT, "build", "dns-cache")
+BINARY = os.path.join(PROJECT_ROOT, "build", "shinku")
 TOPOLOGY = os.path.join(os.path.dirname(__file__), "topology.py")
 DNS_CLIENT = os.path.join(os.path.dirname(__file__), "dns_client.py")
 
@@ -211,7 +211,7 @@ class TestInfrastructure(unittest.TestCase):
         topology_teardown()
 
     def test_binary_exists(self):
-        """Check build/dns-cache exists and is executable."""
+        """Check build/shinku exists and is executable."""
         self.assertTrue(os.path.exists(BINARY), f"Binary not found at {BINARY}")
         self.assertTrue(
             os.access(BINARY, os.X_OK), f"Binary at {BINARY} is not executable"
@@ -246,7 +246,7 @@ class TestInfrastructure(unittest.TestCase):
         )
 
     def test_binary_starts_and_stops(self):
-        """Setup topology, start dns-cache, wait 2s, send SIGINT, verify clean exit."""
+        """Setup topology, start shinku, wait 2s, send SIGINT, verify clean exit."""
         topology_setup()
 
         proc = subprocess.Popen(
@@ -298,7 +298,7 @@ class TestInfrastructure(unittest.TestCase):
             self.fail("Binary hung instead of failing on invalid interface")
 
     def test_xdp_attach_verify(self):
-        """Start dns-cache, verify XDP is attached to veth-host."""
+        """Start shinku, verify XDP is attached to veth-host."""
         topology_setup()
 
         proc = subprocess.Popen(
@@ -325,7 +325,7 @@ class TestInfrastructure(unittest.TestCase):
             proc.wait(timeout=5)
 
     def test_packet_passthrough(self):
-        """Setup topology, start dns-cache, ping from netns to host."""
+        """Setup topology, start shinku, ping from netns to host."""
         topology_setup()
 
         proc = subprocess.Popen(
@@ -372,7 +372,7 @@ class TestDNSCache(unittest.TestCase):
     proc = None
 
     def setUp(self):
-        """Set up full test environment: topology + mock DNS server + dns-cache binary."""
+        """Set up full test environment: topology + mock DNS server + shinku binary."""
         # Clean any leftovers
         topology_teardown()
 
@@ -386,7 +386,7 @@ class TestDNSCache(unittest.TestCase):
         self.server.start()
         time.sleep(0.3)
 
-        # 3. Start dns-cache attached to veth-host
+        # 3. Start shinku attached to veth-host
         self.proc = subprocess.Popen(
             [BINARY, "-i", "veth-host"],
             stdout=subprocess.PIPE,
@@ -401,7 +401,7 @@ class TestDNSCache(unittest.TestCase):
             stdout, stderr = self.proc.communicate(timeout=2)
             self.server.stop()
             self.fail(
-                f"dns-cache exited prematurely with code {poll_result}.\n"
+                f"shinku exited prematurely with code {poll_result}.\n"
                 f"stdout: {stdout.decode(errors='replace')}\n"
                 f"stderr: {stderr.decode(errors='replace')}"
             )

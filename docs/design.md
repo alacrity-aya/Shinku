@@ -198,7 +198,7 @@ The project uses the Meson build system, providing a modern and efficient workfl
 - **BPF Integration**: Meson handles the compilation of BPF source files using Clang, targeting the BPF architecture.
 - **Logging Control**: The `bpf_log` option in `meson_options.txt` toggles the `ENABLE_BPF_LOG` definition. This allows users to easily switch between a verbose debug build and a high-performance production build.
 - **Dependency Management**: The `c-ares` library is managed via Meson subprojects, ensuring it is fetched and built automatically if not found on the system.
-- **Artifacts**: The build produces the `dns-cache` userspace binary and the `xdp_pass.bpf.o` helper program used for veth peer configurations in test environments.
+- **Artifacts**: The build produces the `shinku` userspace binary and the `xdp_pass.bpf.o` helper program used for veth peer configurations in test environments.
 
 ---
 

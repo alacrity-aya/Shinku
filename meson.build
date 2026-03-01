@@ -1,6 +1,6 @@
 # Meson build configuration for the eBPF-based DNS cache project.
 # This build script defines the project, its dependencies, and the build targets for both the eBPF program and the user-space application.
-project('ebpf-cache-project', 'c', 
+project('shinku', 'c',
   version: '0.1',
   default_options: [
     'warning_level=2',    
@@ -86,7 +86,7 @@ cli_src = files(
 )
 
 executable(
-  'dns-cache',
+  'shinku',
   cli_src,
   core_src,          
   bpf_skel,         

@@ -5,7 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-const char* argp_program_version = "dns-cache 0.1";
+const char* argp_program_version = "shinku 0.1";
 const char doc[] = "DNS cache";
 
 static const struct argp_option opts[] = {

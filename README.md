@@ -22,7 +22,7 @@ The system uses a 3-layer design to process DNS traffic:
 
 1.  XDP program (xdp_rx): Handles ingress traffic. It parses DNS queries, performs cache lookups, and serves cached responses using XDP_TX.
 2.  TC program (tc_tx): Handles egress traffic. It captures DNS responses destined for clients and forwards them to userspace via a ring buffer.
-3.  Userspace (dns-cache): Receives responses from the ring buffer, validates and decompresses them, then stores the data into the BPF arena and cache_map.
+3.  Userspace (shinku): Receives responses from the ring buffer, validates and decompresses them, then stores the data into the BPF arena and cache_map.
 
 ```text
        +----------+         +----------+         +------------+
@@ -37,7 +37,7 @@ The system uses a 3-layer design to process DNS traffic:
                                  |
                         +--------v---------+
                         |    Userspace     |
-                        |   (dns-cache)    |
+                        |   (shinku)        |
                         +--------+---------+
                                  |
                         +--------v---------+
@@ -63,13 +63,13 @@ Build the project using Meson:
 
 ```bash
 meson setup build
-meson compile -C build dns-cache xdp_pass.bpf.o
+meson compile -C build shinku xdp_pass.bpf.o
 ```
 
 Run the system:
 
 ```bash
-sudo ./build/dns-cache -i eth0
+sudo ./build/shinku -i eth0
 ```
 
 For development with BPF logging enabled:
@@ -85,7 +85,7 @@ meson setup -Dbpf_log=false build
 ## Usage
 
 ```text
-dns-cache [OPTIONS]
+shinku [OPTIONS]
   -i, --interface IFACE    Network interface to attach (default: lo)
   -l, --log-level LEVEL    Log level: debug, info, warn, error (default: info)
   -a, --arena-pages PAGES  Arena size in pages (default: 2112)
@@ -97,7 +97,7 @@ Note: When using XDP_TX on veth pairs, load `xdp_pass.bpf.o` on the peer interfa
 
 The following results were recorded on a veth pair using generic XDP/SKB mode. Native XDP on physical network interfaces is expected to provide even greater performance gains.
 
-| Metric | Baseline (Unbound) | With dns-cache | Improvement |
+| Metric | Baseline (Unbound) | With shinku | Improvement |
 | :--- | :--- | :--- | :--- |
 | QPS | 349,636 | 425,170 | 1.22x |
 | Avg Latency | 24µs | 5µs | 4.8x |
