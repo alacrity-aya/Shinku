@@ -170,13 +170,16 @@ static int store_to_cache(
     if (flat_len > ARENA_ENTRY_SIZE || flat_len <= 0)
         return -1;
 
+    // TODO: ring-allocate for large responses instead of dropping when arena is full. Requires more complex eviction logic.
     /* Bump-allocate next slot index */
-    uint32_t idx = *cctx->next_idx;
-    if (idx >= cctx->max_entries) {
-        fprintf(stderr, "[Cache] Arena full (idx=%u, max=%u)\n", idx, cctx->max_entries);
-        return -1;
-    }
-    *cctx->next_idx = idx + 1;
+    // uint32_t idx = *cctx->next_idx;
+    // if (idx >= cctx->max_entries) {
+    //     fprintf(stderr, "[Cache] Arena full (idx=%u, max=%u)\n", idx, cctx->max_entries);
+    //     return -1;
+    // }
+    // *cctx->next_idx = idx + 1;
+    uint32_t idx = __sync_fetch_and_add(cctx->next_idx, 1, __ATOMIC_RELAXED);
+    idx %= cctx->max_entries;
 
     /* Copy flattened DNS packet into arena entry */
     memcpy(cctx->entries[idx].pkt, flat_buf, flat_len);
@@ -198,7 +201,13 @@ static int store_to_cache(
         return -1;
     }
 
-    printf("[Cache] Stored: Hash=0x%x Idx=%u Size=%d TTL=%us\n", key->name_hash, idx, flat_len, min_ttl);
+    printf(
+        "[Cache] Stored: Hash=0x%x Idx=%u Size=%d TTL=%us\n",
+        key->name_hash,
+        idx,
+        flat_len,
+        min_ttl
+    );
     return 0;
 }
 
@@ -267,7 +276,11 @@ int handle_packet(void* ctx, void* data, [[maybe_unused]] size_t len) {
 
     for (int i = 0; i < ancount; i++) {
         w_len = flatten_name(
-            pkt_data, read_offset, pkt_len, flat_buf + flat_offset, 1500 - flat_offset
+            pkt_data,
+            read_offset,
+            pkt_len,
+            flat_buf + flat_offset,
+            1500 - flat_offset
         );
         if (w_len < 0)
             return 0;

@@ -38,6 +38,19 @@ dns_parser_test_exe = executable(
 test('DNS Parser Test', dns_parser_test_exe)
 
 # ====================
+# Ring Buffer Allocator Test (userspace, no BPF)
+# ====================
+ring_buffer_test_exe = executable(
+    'ring_buffer_test',
+    'allocator/ring_buffer_test.c',
+    native: true,
+    dependencies: dependency('threads'),
+    c_args: ['-g', '-O2'],
+)
+
+test('Ring Buffer Allocator Test', ring_buffer_test_exe)
+
+# ====================
 # Arena List Test
 # ====================
 arena_inc = include_directories('../../src/bpf/arena', '../../src/include', '../../src')
