@@ -389,15 +389,23 @@ main() {
     fi
 
     # Extract latency for comparison
+    # dnsperf output: "Average Latency (s):  0.000012 (min 0.000004, max 0.001501)"
+    # Field 4 is the average latency value
     local baseline_lat with_cache_lat
-    baseline_lat=$(grep "Average Latency" "$RESULTS_DIR/baseline.txt" | awk '{print $(NF-1)}' | head -1)
-    with_cache_lat=$(grep "Average Latency" "$RESULTS_DIR/with-cache.txt" | awk '{print $(NF-1)}' | head -1)
+    baseline_lat=$(grep "Average Latency" "$RESULTS_DIR/baseline.txt" | awk '{print $4}' | head -1)
+    with_cache_lat=$(grep "Average Latency" "$RESULTS_DIR/with-cache.txt" | awk '{print $4}' | head -1)
 
     if [[ -n "$baseline_lat" && -n "$with_cache_lat" ]]; then
         local lat_reduction
-        lat_reduction=$(echo "scale=2; (1 - $with_cache_lat / $baseline_lat) * 100" | bc 2>/dev/null || echo "N/A")
-        echo -e "  Baseline Avg Latency:   ${baseline_lat}s"
-        echo -e "  With Cache Avg Latency: ${with_cache_lat}s"
+        lat_reduction=$(echo "scale=1; (1 - $with_cache_lat / $baseline_lat) * 100" | bc 2>/dev/null || echo "N/A")
+
+        # Convert to microseconds for readability
+        local baseline_us with_cache_us
+        baseline_us=$(echo "$baseline_lat * 1000000" | bc 2>/dev/null || echo "N/A")
+        with_cache_us=$(echo "$with_cache_lat * 1000000" | bc 2>/dev/null || echo "N/A")
+
+        echo -e "  Baseline Avg Latency:   ${baseline_us} µs"
+        echo -e "  With Cache Avg Latency: ${with_cache_us} µs"
         echo -e "  ${GREEN}Latency Reduction: ${lat_reduction}%${NC}"
         echo "────────────────────────────────────────"
     fi
