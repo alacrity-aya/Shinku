@@ -9,6 +9,7 @@
 #include <bpf/libbpf_legacy.h>
 #include <net/if.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 #include <time.h>
 
@@ -119,6 +120,14 @@ int setup_bpf(struct bpf_ctx* ctx, const struct env* env) {
     ctx->cache_ctx.next_idx = &ctx->skel->arena->next_entry_idx;
     ctx->cache_ctx.max_entries = CACHE_MAP_MAX_ENTRIES;
     ctx->cache_ctx.cache_map_fd = bpf_map__fd(ctx->skel->maps.cache_map);
+    ctx->cache_ctx.next_gen = 0;
+    ctx->cache_ctx.slot_owners =
+        calloc(CACHE_MAP_MAX_ENTRIES, sizeof(struct cache_key));
+    if (!ctx->cache_ctx.slot_owners) {
+        fprintf(stderr, "Failed to allocate slot_owners array\n");
+        err = ERR_SKEL_LOAD;
+        goto cleanup;
+    }
 
     err = cache_bpf__attach(ctx->skel);
     if (err) {
@@ -228,6 +237,9 @@ void cleanup_bpf(struct bpf_ctx* ctx) {
         bpf_tc_hook_destroy(&ctx->tc_hook);
         memset(&ctx->tc_hook, 0, sizeof(ctx->tc_hook));
     }
+
+    free(ctx->cache_ctx.slot_owners);
+    ctx->cache_ctx.slot_owners = NULL;
 
     if (ctx->skel) {
         cache_bpf__destroy(ctx->skel);

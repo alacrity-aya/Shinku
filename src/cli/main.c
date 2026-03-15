@@ -5,9 +5,12 @@
 #include <signal.h>
 #include <stdio.h>
 #include <sys/types.h>
+#include <time.h>
 #include <unistd.h>
 
 static volatile bool exiting = false;
+
+#define CLEANUP_INTERVAL_NS (10ULL * 1000000000ULL)
 
 static void sig_handler([[maybe_unused]] int sig) {
     exiting = true;
@@ -36,6 +39,10 @@ int main(int argc, char** argv) {
 
     printf("BPF System Running... Press Ctrl+C to stop.\n");
 
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    uint64_t last_cleanup_ns = (uint64_t)now.tv_sec * 1000000000ULL + (uint64_t)now.tv_nsec;
+
     while (!exiting) {
         err = dump_bpf_log(&ctx, 100);
         if (err == -EINTR) {
@@ -55,6 +62,13 @@ int main(int argc, char** argv) {
         if (err < 0) {
             fprintf(stderr, "Error polling pkt ring buffer: %d\n", err);
             goto cleanup;
+        }
+
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        uint64_t now_ns = (uint64_t)now.tv_sec * 1000000000ULL + (uint64_t)now.tv_nsec;
+        if (now_ns - last_cleanup_ns >= CLEANUP_INTERVAL_NS) {
+            cleanup_expired_entries(&ctx.cache_ctx);
+            last_cleanup_ns = now_ns;
         }
     }
 

@@ -384,11 +384,11 @@ static void test_oversized_packet() {
     TEST_ASSERT(test_next_idx == 0, "test_oversized_packet: next_idx unchanged");
 }
 
-// 16. test_arena_full
-static void test_arena_full() {
+// 16. test_arena_wraparound
+static void test_arena_wraparound() {
     setup_test();
     test_ctx.max_entries = 1;
-    test_next_idx = 1; // already full
+    test_next_idx = 1;
 
     struct dns_builder b;
     builder_init(&b, 0x1234, 0x8180, 1, 1, 0, 0);
@@ -397,7 +397,7 @@ static void test_arena_full() {
     builder_add_answer(&b, "full.example.com", DNS_TYPE_A, DNS_CLASS_IN, 300, 4, a_rdata);
 
     call_handle_packet(&test_ctx, b.buf, b.len);
-    TEST_ASSERT(test_next_idx == 1, "test_arena_full: next_idx unchanged");
+    TEST_ASSERT(test_next_idx == 2, "test_arena_wraparound: next_idx incremented");
 }
 
 // 17. test_null_ctx
@@ -449,7 +449,7 @@ int main(void) {
     test_reject_unsupported_rtype();
 
     test_oversized_packet();
-    test_arena_full();
+    test_arena_wraparound();
     test_null_ctx();
 
     if (map_fd >= 0) {

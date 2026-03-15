@@ -38,6 +38,24 @@ dns_parser_test_exe = executable(
 test('DNS Parser Test', dns_parser_test_exe)
 
 # ====================
+# Cache Store Correctness Test (userspace, no BPF)
+# ====================
+cache_store_test_exe = executable(
+    'cache_store_test',
+    'cache/cache_store_test.c',
+    files(
+      '../../src/core/hash.c',
+      '../../src/core/dns_parser.c',
+    ),
+    native: true,
+    dependencies: [libbpf_dep, dependency('threads')],
+    c_args: ['-g', '-O2', '-D__BPF__=0'],
+    include_directories: inc_src
+)
+
+test('Cache Store Correctness Test', cache_store_test_exe)
+
+# ====================
 # Ring Buffer Allocator Test (userspace, no BPF)
 # ====================
 ring_buffer_test_exe = executable(

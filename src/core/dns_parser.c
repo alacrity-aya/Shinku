@@ -170,19 +170,32 @@ static int store_to_cache(
     if (flat_len > ARENA_ENTRY_SIZE || flat_len <= 0)
         return -1;
 
-    // TODO: ring-allocate for large responses instead of dropping when arena is full. Requires more complex eviction logic.
-    /* Bump-allocate next slot index */
-    // uint32_t idx = *cctx->next_idx;
-    // if (idx >= cctx->max_entries) {
-    //     fprintf(stderr, "[Cache] Arena full (idx=%u, max=%u)\n", idx, cctx->max_entries);
-    //     return -1;
-    // }
-    // *cctx->next_idx = idx + 1;
-    uint32_t idx = __sync_fetch_and_add(cctx->next_idx, 1, __ATOMIC_RELAXED);
+    uint32_t idx = __sync_fetch_and_add(cctx->next_idx, 1);
     idx %= cctx->max_entries;
 
-    /* Copy flattened DNS packet into arena entry */
+    uint32_t gen = ++cctx->next_gen;
+
+    /* Evict previous occupant of this arena slot if its cache_map entry still
+     * points here. Prevents stale cache_map entries from serving wrong data. */
+    if (cctx->slot_owners) {
+        struct cache_key* old_key = &cctx->slot_owners[idx];
+        if (old_key->name_hash != 0 || old_key->qtype != 0) {
+            struct cache_value old_val;
+            int err = bpf_map_lookup_elem(cctx->cache_map_fd, old_key, &old_val);
+            if (err == 0 && old_val.arena_idx == idx) {
+                bpf_map_delete_elem(cctx->cache_map_fd, old_key);
+            }
+        }
+    }
+
+    /* Seqlock write: odd seq signals write-in-progress to XDP readers */
+    __sync_fetch_and_add(&cctx->entries[idx].seq, 1);
+
+    cctx->entries[idx].gen = gen;
     memcpy(cctx->entries[idx].pkt, flat_buf, flat_len);
+
+    /* Seqlock write complete: even seq signals stable data */
+    __sync_fetch_and_add(&cctx->entries[idx].seq, 1);
 
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -193,7 +206,12 @@ static int store_to_cache(
         .expire_ts = now_ns + (uint64_t)min_ttl * 1000000000ULL,
         .pkt_len = (uint16_t)flat_len,
         .scope = ecs_scope,
+        .gen = gen,
     };
+
+    /* slot_owners must precede bpf_map_update_elem: arena slot is already written */
+    if (cctx->slot_owners)
+        cctx->slot_owners[idx] = *key;
 
     int err = bpf_map_update_elem(cctx->cache_map_fd, key, &val, BPF_ANY);
     if (err) {
@@ -202,13 +220,59 @@ static int store_to_cache(
     }
 
     printf(
-        "[Cache] Stored: Hash=0x%x Idx=%u Size=%d TTL=%us\n",
+        "[Cache] Stored: Hash=0x%x Idx=%u Size=%d TTL=%us Gen=%u\n",
         key->name_hash,
         idx,
         flat_len,
-        min_ttl
+        min_ttl,
+        gen
     );
     return 0;
+}
+
+int cleanup_expired_entries(struct cache_ctx* cctx) {
+    if (!cctx || cctx->cache_map_fd < 0)
+        return -1;
+
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    uint64_t now_ns = (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+
+    struct cache_key key = { 0 };
+    struct cache_key next_key = { 0 };
+    struct cache_value val;
+
+    struct cache_key expired_keys[256];
+    int expired_count = 0;
+
+    /* Collect expired keys (can't delete during iteration) */
+    int err = bpf_map_get_next_key(cctx->cache_map_fd, NULL, &next_key);
+    while (err == 0 && expired_count < 256) {
+        key = next_key;
+        err = bpf_map_get_next_key(cctx->cache_map_fd, &key, &next_key);
+
+        if (bpf_map_lookup_elem(cctx->cache_map_fd, &key, &val) == 0) {
+            if (now_ns >= val.expire_ts) {
+                expired_keys[expired_count++] = key;
+            }
+        }
+    }
+
+    for (int i = 0; i < expired_count; i++) {
+        if (bpf_map_lookup_elem(cctx->cache_map_fd, &expired_keys[i], &val) == 0) {
+            uint32_t idx = val.arena_idx;
+            bpf_map_delete_elem(cctx->cache_map_fd, &expired_keys[i]);
+
+            if (cctx->slot_owners && idx < cctx->max_entries) {
+                memset(&cctx->slot_owners[idx], 0, sizeof(struct cache_key));
+            }
+        }
+    }
+
+    if (expired_count > 0)
+        printf("[Cache] Cleanup: removed %d expired entries\n", expired_count);
+
+    return expired_count;
 }
 
 int handle_packet(void* ctx, void* data, [[maybe_unused]] size_t len) {

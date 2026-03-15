@@ -218,8 +218,20 @@ int xdp_rx(struct xdp_md* ctx) {
     if (dns_start + cached_len > (__u8*)data_end)
         return XDP_PASS;
 
-    /* ── Phase 5: Copy cached DNS response from arena (8-byte wide) ── */
+    /* ── Phase 5: Seqlock read + generation check + arena copy (8-byte wide) ── */
     struct cache_entry __arena* entry = &cache_entries[arena_idx];
+
+    /* Generation check: detect slot reuse between cache_map lookup and arena read */
+    __u32 entry_gen = READ_ONCE(entry->gen);
+    if (entry_gen != val->gen) {
+        bpf_debug("[XDP] Gen mismatch: entry=%u val=%u Hash=0x%x", entry_gen, val->gen, name_hash);
+        return XDP_PASS;
+    }
+
+    /* Seqlock read barrier: seq must be even (no write in progress) */
+    __u32 seq1 = READ_ONCE(entry->seq);
+    if (seq1 & 1)
+        return XDP_PASS;
 
     /* 8-byte wide copies: reduces iteration count by ~8x */
     __u32 copy_words = cached_len >> 3; /* full 8-byte chunks */
@@ -246,6 +258,11 @@ int xdp_rx(struct xdp_md* ctx) {
             break;
         dns_start[off] = entry->pkt[off];
     }
+
+    /* Seqlock validation: seq must not have changed during copy */
+    __u32 seq2 = READ_ONCE(entry->seq);
+    if (seq1 != seq2)
+        return XDP_PASS;
 
     /* ── Phase 6: Patch transaction ID to match original query ── */
     struct dns_hdr* resp = (struct dns_hdr*)dns_start;

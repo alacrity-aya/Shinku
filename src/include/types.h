@@ -43,18 +43,29 @@ struct cache_key {
 };
 
 // Cache Entry - stored in __arena cache_entries[] (shared BPF/userspace memory)
+//
+// Layout (520 bytes):
+//   seq (4B) + gen (4B) + pkt (512B)
+//   pkt[] starts at offset 8, naturally aligned for 8-byte XDP copies.
+//
+// Synchronization protocol (seqlock + generation):
+//   Writer (userspace): seq++ (odd=writing), write gen+pkt, seq++ (even=stable)
+//   Reader (XDP): read seq1, check even, verify gen, copy pkt, read seq2, check seq1==seq2
 struct cache_entry {
+    __u32 seq;                   // Seqlock counter (even=stable, odd=write-in-progress)
+    __u32 gen;                   // Generation counter (must match cache_value.gen)
     __u8 pkt[ARENA_ENTRY_SIZE]; // Flat DNS packet (512 bytes max)
 };
 
-// Cache Value - stored in cache_map hash, indexes into cache_entries[]
 struct cache_value {
-    __u32 arena_idx;     // Index into cache_entries[] array
-    __u16 pkt_len;       // Actual DNS packet length (<= ARENA_ENTRY_SIZE)
-    __u8  scope;         // ECS Scope (0=global, >0=subnet-specific)
-    __u8  _pad;          // Alignment padding
-    __u64 expire_ts;     // Expiration timestamp (ktime nanoseconds)
-};  // 16 bytes
+    __u32 arena_idx;
+    __u16 pkt_len;
+    __u8  scope;
+    __u8  _pad;
+    __u64 expire_ts;
+    __u32 gen;           // Must match cache_entries[arena_idx].gen (detects slot reuse)
+    __u32 _pad2;
+};  // 24 bytes
 
 struct dns_event {
     __u64 timestamp;

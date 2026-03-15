@@ -6,6 +6,10 @@
 #define WRITE_ONCE(x, val) ((*(volatile typeof(x) *) &(x)) = (val))
 #endif
 
+#ifndef READ_ONCE
+#define READ_ONCE(x) (*(volatile typeof(x) *)&(x))
+#endif
+
 #ifndef NUMA_NO_NODE
 #define	NUMA_NO_NODE	(-1)
 #endif
