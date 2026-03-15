@@ -19,7 +19,6 @@
 #define ERR_XDP_ATTACH -4
 #define ERR_TC_ATTACH -5
 
-
 static int libbpf_print_fn(enum libbpf_print_level level, const char* format, va_list args) {
     char ts[LOG_TIMESTAMP_LEN];
     time_t t = time(NULL);
@@ -127,7 +126,7 @@ int setup_bpf(struct bpf_ctx* ctx, const struct env* env) {
         goto cleanup;
     }
 
-    #ifdef ENABLE_BPF_LOG
+#ifdef ENABLE_BPF_LOG
     // rb_log
     ctx->log_opt.min_level = env->log_level;
     ctx->log_opt.show_timestamp = true;
@@ -141,7 +140,7 @@ int setup_bpf(struct bpf_ctx* ctx, const struct env* env) {
         goto cleanup;
     }
 #else
-    (void)env->log_level;  /* unused when logging disabled */
+    (void)env->log_level; /* unused when logging disabled */
 #endif
 
     // xdp
@@ -205,12 +204,10 @@ int poll_pkt_ring(struct bpf_ctx* ctx, int timeout_ms) {
     return ring_buffer__poll(ctx->rb_pkt, timeout_ms);
 }
 
-int dump_bpf_log(struct bpf_ctx* ctx, int timeout_ms) {
+int dump_bpf_log([[maybe_unused]] struct bpf_ctx* ctx, [[maybe_unused]] int timeout_ms) {
 #ifdef ENABLE_BPF_LOG
     return ring_buffer__poll(ctx->rb_log, timeout_ms);
 #else
-    (void)ctx;
-    (void)timeout_ms;
     return 0;
 #endif
 }
@@ -225,8 +222,6 @@ void cleanup_bpf(struct bpf_ctx* ctx) {
         ring_buffer__free(ctx->rb_pkt);
         ctx->rb_pkt = NULL;
     }
-
-
 
     /* detach legacy TC */
     if (ctx->tc_hook.ifindex) {

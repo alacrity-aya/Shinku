@@ -3,10 +3,12 @@
 
 #include <bpf/bpf_endian.h>
 #include <bpf/bpf_helpers.h>
+
 #include "bpf_log.h"
-#include "types.h"
 #include "core/hash.h"
+#include "types.h"
 #include "xdp_parser.h"
+
 #include "bpf/arena/bpf_arena_common.h"
 
 char LICENSE[] SEC("license") = "GPL";
@@ -19,13 +21,13 @@ static __always_inline __u16 read_u16_unaligned(void* ptr) {
 /* Incremental checksum update (RFC 1624).
  * Updates a 16-bit one's complement checksum when a single 16-bit word changes.
  * All values in network byte order. */
-static __always_inline void csum_replace2(__sum16 *csum, __be16 old_val, __be16 new_val) {
+static __always_inline void csum_replace2(__sum16* csum, __be16 old_val, __be16 new_val) {
     __u32 sum;
-    sum  = ~((__u16)*csum) & 0xffff;
+    sum = ~((__u16)*csum) & 0xffff;
     sum += ~((__u16)old_val) & 0xffff;
     sum += (__u16)new_val;
-    sum  = (sum & 0xffff) + (sum >> 16);
-    sum  = (sum & 0xffff) + (sum >> 16);
+    sum = (sum & 0xffff) + (sum >> 16);
+    sum = (sum & 0xffff) + (sum >> 16);
     *csum = (__sum16)(~sum & 0xffff);
 }
 
@@ -60,7 +62,7 @@ __u32 next_entry_idx SEC(".addr_space.1");
 
 SEC("xdp")
 int xdp_rx(struct xdp_md* ctx) {
-    void* data     = (void*)(long)ctx->data;
+    void* data = (void*)(long)ctx->data;
     void* data_end = (void*)(long)ctx->data_end;
 
     bpf_debug("[XDP] RX pkt len=%lu", (__u32)(data_end - data));
@@ -110,7 +112,7 @@ int xdp_rx(struct xdp_md* ctx) {
 
     /* Save query transaction ID (network byte order) for patching later */
     __be16 query_id = dns->id;
-    __u16 flags   = bpf_ntohs(dns->flags);
+    __u16 flags = bpf_ntohs(dns->flags);
     __u16 qdcount = bpf_ntohs(dns->qdcount);
 
     /* Only process queries (QR=0) with exactly 1 question */
@@ -130,7 +132,7 @@ int xdp_rx(struct xdp_md* ctx) {
     /* Read QTYPE and QCLASS (host byte order) */
     if (cursor + 4 > data_end)
         return XDP_PASS;
-    __u16 qtype  = read_u16_unaligned(cursor);
+    __u16 qtype = read_u16_unaligned(cursor);
     __u16 qclass = read_u16_unaligned(cursor + 2);
 
     /* ── Phase 2: Cache lookup ── */
@@ -138,7 +140,7 @@ int xdp_rx(struct xdp_md* ctx) {
 
     bpf_debug("[XDP] Key: Hash=0x%x Type=%d Class=%d", key.name_hash, key.qtype, key.qclass);
 
-    struct cache_value *val = bpf_map_lookup_elem(&cache_map, &key);
+    struct cache_value* val = bpf_map_lookup_elem(&cache_map, &key);
     if (!val)
         return XDP_PASS;
 
@@ -159,16 +161,16 @@ int xdp_rx(struct xdp_md* ctx) {
         return XDP_PASS;
 
     /* ── Phase 3: Resize packet via bpf_xdp_adjust_tail ── */
-    __u32 l2_len = (__u32)((void*)ip - data);  /* ETH + any VLANs */
+    __u32 l2_len = (__u32)((void*)ip - data); /* ETH + any VLANs */
 
     /* Bound hints for the verifier */
     if (l2_len > 64 || ip_hdr_len > 60)
         return XDP_PASS;
 
-    __u32 hdr_total    = l2_len + ip_hdr_len + sizeof(struct udphdr);
-    __u32 current_len  = (__u32)(data_end - data);
-    __u32 new_pkt_len  = hdr_total + cached_len;
-    int   tail_diff    = (int)new_pkt_len - (int)current_len;
+    __u32 hdr_total = l2_len + ip_hdr_len + sizeof(struct udphdr);
+    __u32 current_len = (__u32)(data_end - data);
+    __u32 new_pkt_len = hdr_total + cached_len;
+    int tail_diff = (int)new_pkt_len - (int)current_len;
 
     if (bpf_xdp_adjust_tail(ctx, tail_diff)) {
         bpf_warn("[XDP] adjust_tail failed: diff=%d", tail_diff);
@@ -185,14 +187,14 @@ int xdp_rx(struct xdp_md* ctx) {
      *      32-bit and 64-bit bounds, which is required for pkt pointer
      *      arithmetic.
      */
-    data     = (void*)(long)ctx->data;
+    data = (void*)(long)ctx->data;
     data_end = (void*)(long)ctx->data_end;
 
     /* Force tight 64-bit bounds via AND masks (not conditional checks).
      * l2_len: ETH(14) + up to 2 VLAN tags(8) = max 22, mask with 0x3F (63).
      * ip_hdr_len: 20..60, mask with 0x3F (63).
      * cached_len: 1..512, mask with 0x3FF (1023) — generous to keep 512 valid. */
-    l2_len     &= 0x3F;
+    l2_len &= 0x3F;
     ip_hdr_len &= 0x3F;
     cached_len &= 0x3FF;
     if (cached_len == 0)
@@ -217,11 +219,11 @@ int xdp_rx(struct xdp_md* ctx) {
         return XDP_PASS;
 
     /* ── Phase 5: Copy cached DNS response from arena (8-byte wide) ── */
-    struct cache_entry __arena *entry = &cache_entries[arena_idx];
+    struct cache_entry __arena* entry = &cache_entries[arena_idx];
 
     /* 8-byte wide copies: reduces iteration count by ~8x */
-    __u32 copy_words = cached_len >> 3;    /* full 8-byte chunks */
-    __u32 copy_rem   = cached_len & 0x7;   /* remaining bytes */
+    __u32 copy_words = cached_len >> 3; /* full 8-byte chunks */
+    __u32 copy_rem = cached_len & 0x7; /* remaining bytes */
 
 #pragma clang loop unroll(disable)
     for (__u32 i = 0; i < ARENA_ENTRY_SIZE / 8; i++) {
@@ -230,12 +232,12 @@ int xdp_rx(struct xdp_md* ctx) {
         __u32 off = i << 3;
         if (dns_start + off + 8 > (__u8*)data_end)
             break;
-        *(__u64 *)(dns_start + off) = *(__u64 *)(entry->pkt + off);
+        *(__u64*)(dns_start + off) = *(__u64*)(entry->pkt + off);
     }
 
     /* Copy remaining 0-7 bytes */
     __u32 rem_start = copy_words << 3;
-#pragma clang loop unroll(full)
+#pragma clang loop unroll(enable)
     for (__u32 i = 0; i < 7; i++) {
         if (i >= copy_rem)
             break;
@@ -273,10 +275,10 @@ int xdp_rx(struct xdp_md* ctx) {
     /* Swap UDP ports */
     __be16 tmp_port = udp->source;
     udp->source = udp->dest;
-    udp->dest   = tmp_port;
+    udp->dest = tmp_port;
 
     /* Update UDP length; zero checksum is valid for IPv4 (RFC 768) */
-    udp->len   = bpf_htons((__u16)(sizeof(struct udphdr) + cached_len));
+    udp->len = bpf_htons((__u16)(sizeof(struct udphdr) + cached_len));
     udp->check = 0;
 
     bpf_info("[XDP] Cache HIT -> XDP_TX: Hash=0x%x len=%d", name_hash, cached_len);

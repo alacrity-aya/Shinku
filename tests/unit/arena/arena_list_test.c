@@ -8,8 +8,9 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
-#include "arena_list.skel.h"
 #include "bpf_arena_list.h"
+
+#include "arena_list.skel.h"
 
 struct elem {
     struct arena_list_node node;

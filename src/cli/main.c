@@ -4,15 +4,21 @@
 #include <ares.h>
 #include <signal.h>
 #include <stdio.h>
+#include <sys/types.h>
+#include <unistd.h>
 
 static volatile bool exiting = false;
 
-static void sig_handler(int sig) {
-    (void)sig;
+static void sig_handler([[maybe_unused]] int sig) {
     exiting = true;
 }
 
 int main(int argc, char** argv) {
+    if (geteuid() != 0) {
+        fprintf(stderr, "This program must be run as root.\n");
+        return -1;
+    }
+
     struct env env = { 0 };
     struct bpf_ctx ctx = { 0 };
     int err;

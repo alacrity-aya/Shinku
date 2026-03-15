@@ -1,2 +1,2 @@
-option('bpf_log', type : 'boolean', value : true,
+option('bpf_log', type : 'boolean', value : false,
        description : 'Enable BPF ring buffer logging (disable for production/benchmarks)')
