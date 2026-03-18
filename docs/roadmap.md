@@ -1,28 +1,34 @@
-# P0: 必须完成的核心功能和稳定性改进
 
-2. metrics / health / observability.
-3. 异常场景降级策略
-    - arena 满
-    - userspace 卡死
-    - attach 失败
-    - malformed response
-4. IPv6 支持.
+## # P0: Core Functional Requirements & Stability Improvements
 
-长时间稳定性测试与生产部署文档
+* **Observability:** Implement metrics, health checks, and comprehensive monitoring/logging.
+* **Error Handling & Fallback Strategies:**
+    * **Arena Exhaustion:** Behavior when memory arena is full.
+    * **Userspace Hangs:** Recovery/bypass when the userspace process is unresponsive.
+    * **Attachment Failure:** Fallback logic when eBPF/XDP program fails to attach.
+    * **Malformed Responses:** Validation and handling of corrupted or non-compliant DNS packets.
+* **IPv6 Support:** Full stack compatibility for IPv6 traffic.
+* **Production Readiness:** Long-term stability testing (soak tests) and production deployment documentation.
 
-# P1：强烈建议尽快做
-1. CNAME 支持.
-2. negative caching.
-3. graceful updates / 原子升级.
-4. native XDP on real NIC 验证.
-5. 配置系统与动态 reload
+---
 
-# P2：视目标场景决定
-1. 完整 ECS.
-2. DO bit / DNSSEC 感知
-3. EDNS size / 大包缓存
-4. TCP fallback
-5. 高级 eviction / admission policy
+## # P1: High Priority (Recommended for Immediate Implementation)
+
+* **CNAME Support:** Full resolution and chasing logic for Canonical Name records.
+* **Negative Caching:** Implementation of caching for "domain not found" (NXDOMAIN) or "no data" responses.
+* **Graceful Updates:** Support for atomic upgrades and hitless restarts.
+* **Native XDP Validation:** Performance verification and testing on physical NICs using Native XDP mode.
+* **Configuration Management:** Robust config system with support for dynamic hot-reloads without downtime.
+
+---
+
+## # P2: Strategic Features (Scenario-Dependent)
+
+* **Full ECS Support:** Implementation of EDNS0 Client Subnet for location-aware routing.
+* **DNSSEC Awareness:** Handling of the DO (DNSSEC OK) bit and security-aware resource records.
+* **EDNS Handling:** Support for large packets and adjustable MTU/buffer sizes.
+* **TCP Fallback:** Mechanism to switch from UDP to TCP when truncation (TC bit) occurs.
+* **Advanced Cache Management:** Implementation of sophisticated Eviction and Admission policies (e.g., SLRU, TinyLFU).
 
 
 
