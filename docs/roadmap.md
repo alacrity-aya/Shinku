@@ -1,3 +1,31 @@
+# P0: 必须完成的核心功能和稳定性改进
+
+2. metrics / health / observability.
+3. 异常场景降级策略
+    - arena 满
+    - userspace 卡死
+    - attach 失败
+    - malformed response
+4. IPv6 支持.
+
+长时间稳定性测试与生产部署文档
+
+# P1：强烈建议尽快做
+1. CNAME 支持.
+2. negative caching.
+3. graceful updates / 原子升级.
+4. native XDP on real NIC 验证.
+5. 配置系统与动态 reload
+
+# P2：视目标场景决定
+1. 完整 ECS.
+2. DO bit / DNSSEC 感知
+3. EDNS size / 大包缓存
+4. TCP fallback
+5. 高级 eviction / admission policy
+
+
+
 # DNS Cache Roadmap — Next Steps
 
 This document outlines the planned trajectory for the eBPF DNS cache project, categorized by priority and impact. The goals focus on moving from a functional prototype to a production-ready, high-performance caching layer.
@@ -5,15 +33,12 @@ This document outlines the planned trajectory for the eBPF DNS cache project, ca
 ## Phase 1: Critical Improvements
 High impact items required for stable production deployments.
 
-### 1.1 Arena Memory Reclamation
-*   **Current State**: The system uses a simple bump allocator (`next_entry_idx++`) for the arena memory map. It never frees or reuses entries, meaning the cache stops accepting new records once it reaches the 16,384 entry limit.
-*   **Proposed Solution**: Implement a ring buffer allocator. When `next_entry_idx` reaches the maximum capacity, it wraps back to zero, overwriting the oldest entries.
-*   **Impact**: This is essential for long-running instances. In a DNS context, older entries are naturally less likely to be valid or frequently accessed, making them ideal candidates for overwrite when the arena is full.
 
 ### 1.2 Cache Eviction Policy
 *   **Current State**: Expired entries remain in the `cache_map` until a hash collision occurs or the map fills up. There's no proactive cleanup of stale data.
 *   **Proposed Solution**: Develop a userspace timer component that periodically scans the `cache_map` using `bpf_map_get_next_key` and `bpf_map_lookup_elem`. It will delete any entry where the expiration timestamp is older than the current time. A scan interval of 30 to 60 seconds is recommended.
 *   **Impact**: Prevents stale data from polluting the hash map and preserves arena slots for fresh queries.
+
 
 ### 1.3 IPv6 Support
 *   **Current State**: The XDP program currently only parses `ETH_P_IP` (IPv4). All IPv6 traffic passes through the hook without being inspected or cached.

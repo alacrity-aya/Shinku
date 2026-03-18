@@ -164,7 +164,7 @@ static int store_to_cache(
     uint32_t min_ttl,
     uint8_t ecs_scope
 ) {
-    if (!cctx || cctx->cache_map_fd < 0 || !cctx->entries)
+    if (!cctx || !cctx->entries || !cctx->next_idx)
         return -1;
 
     if (flat_len > ARENA_ENTRY_SIZE || flat_len <= 0)
@@ -172,6 +172,10 @@ static int store_to_cache(
 
     uint32_t idx = __sync_fetch_and_add(cctx->next_idx, 1);
     idx %= cctx->max_entries;
+
+    /* Without a valid BPF map fd, we can only update arena, not the map */
+    if (cctx->cache_map_fd < 0)
+        return -1;
 
     uint32_t gen = ++cctx->next_gen;
 
@@ -337,6 +341,7 @@ int handle_packet(void* ctx, void* data, [[maybe_unused]] size_t len) {
     read_offset = q_end + 4;
 
     uint32_t min_ttl = UINT32_MAX;
+    int has_terminal_rr = 0;
 
     for (int i = 0; i < ancount; i++) {
         w_len = flatten_name(
@@ -369,13 +374,24 @@ int handle_packet(void* ctx, void* data, [[maybe_unused]] size_t len) {
             return 0;
         memcpy(flat_buf + flat_offset, pkt_data + read_offset, 10);
         flat_offset += 10;
-
         read_offset += 10;
 
         if (read_offset + rdlen > pkt_len)
             return 0;
 
         if (rtype == DNS_TYPE_A || rtype == DNS_TYPE_AAAA) {
+            if (rtype == qtype)
+                has_terminal_rr = 1;
+            if (flat_offset + rdlen > 1500)
+                return 0;
+            memcpy(flat_buf + flat_offset, pkt_data + read_offset, rdlen);
+            flat_offset += rdlen;
+        } else if (rtype == DNS_TYPE_CNAME) {
+            int cname_len = flatten_name(pkt_data, read_offset, pkt_len, NULL, 0);
+            if (cname_len < 0)
+                return 0;
+            if ((uint16_t)cname_len != rdlen)
+                return 0;
             if (flat_offset + rdlen > 1500)
                 return 0;
             memcpy(flat_buf + flat_offset, pkt_data + read_offset, rdlen);
@@ -385,6 +401,9 @@ int handle_packet(void* ctx, void* data, [[maybe_unused]] size_t len) {
         }
         read_offset += rdlen;
     }
+
+    if ((qtype == DNS_TYPE_A || qtype == DNS_TYPE_AAAA) && !has_terminal_rr)
+        return 0;
 
     /* Skip Authority Section */
     for (int i = 0; i < nscount; i++) {

@@ -222,6 +222,8 @@ int dump_bpf_log([[maybe_unused]] struct bpf_ctx* ctx, [[maybe_unused]] int time
 }
 
 void cleanup_bpf(struct bpf_ctx* ctx) {
+    stop_cleanup_thread(ctx);
+
     if (ctx->rb_log) {
         ring_buffer__free(ctx->rb_log);
         ctx->rb_log = NULL;
@@ -245,4 +247,56 @@ void cleanup_bpf(struct bpf_ctx* ctx) {
         cache_bpf__destroy(ctx->skel);
         ctx->skel = NULL;
     }
+}
+
+/* ============================================================================
+ * Cleanup Thread
+ * ============================================================================ */
+
+static void* cleanup_thread_func(void* arg) {
+    struct bpf_ctx* ctx = arg;
+    struct timespec sleep_time = {
+        .tv_sec = ctx->cleanup_cfg.interval_secs,
+        .tv_nsec = 0,
+    };
+
+    while (ctx->cleanup_running) {
+        nanosleep(&sleep_time, NULL);
+        if (!ctx->cleanup_running)
+            break;
+
+        int removed = cleanup_expired_entries(&ctx->cache_ctx);
+        (void)removed; /* Log already printed inside cleanup function */
+    }
+
+    return NULL;
+}
+
+int start_cleanup_thread(struct bpf_ctx* ctx, uint32_t interval_secs) {
+    if (interval_secs == 0)
+        interval_secs = 10; /* Default: 10 seconds */
+
+    ctx->cleanup_cfg.interval_secs = interval_secs;
+    ctx->cleanup_running = true;
+
+    int err = pthread_create(&ctx->cleanup_thread, NULL, cleanup_thread_func, ctx);
+    if (err != 0) {
+        fprintf(stderr, "Failed to create cleanup thread: %d\n", err);
+        ctx->cleanup_running = false;
+        return -err;
+    }
+
+    printf("Started cleanup thread (interval: %us)\n", interval_secs);
+    return 0;
+}
+
+void stop_cleanup_thread(struct bpf_ctx* ctx) {
+    if (!ctx->cleanup_running)
+        return;
+
+    ctx->cleanup_running = false;
+
+    /* Wake up the thread by sending a signal or waiting for it to finish */
+    pthread_join(ctx->cleanup_thread, NULL);
+    printf("Cleanup thread stopped\n");
 }

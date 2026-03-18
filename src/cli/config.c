@@ -12,6 +12,7 @@ static const struct argp_option opts[] = {
     { "interface", 'i', "IFACE", 0, "Network interface to attach (default: lo)", 0 },
     { "log-level", 'l', "LEVEL", 0, "Log level: debug, info, warn, error (default: info)", 0 },
     { "arena-pages", 'a', "PAGES", 0, "Arena size in pages (default: 1024 = 4MB)", 0 },
+    { "cleanup-interval", 'c', "SECS", 0, "Cache cleanup interval in seconds (default: 10)", 0 },
     { NULL, 0, NULL, 0, NULL, 0 }
 };
 
@@ -54,6 +55,14 @@ static error_t parse_opt(int key, char* arg, struct argp_state* state) {
             env->arena_pages = (uint32_t)pages;
             break;
         }
+        case 'c': {
+            unsigned long secs = strtoul(arg, NULL, 0);
+            if (secs == 0 || secs > 86400) {
+                argp_error(state, "Invalid cleanup-interval: '%s' (range: 1-86400 seconds)", arg);
+            }
+            env->cleanup_interval = (uint32_t)secs;
+            break;
+        }
         case ARGP_KEY_ARG:
             argp_usage(state);
             break;
@@ -74,5 +83,6 @@ int parse_args(int argc, char** argv, struct env* env) {
     env->interface = "lo";
     env->log_level = LOG_INFO;
     env->arena_pages = ARENA_DEFAULT_PAGES;
+    env->cleanup_interval = 10;  /* Default: 10 seconds */
     return argp_parse(&argp, argc, argv, 0, NULL, env);
 }

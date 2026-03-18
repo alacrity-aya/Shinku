@@ -7,8 +7,8 @@
 
 struct cache_ctx {
     struct cache_entry* entries; /* skel->arena->cache_entries (mmap'd) */
-    uint32_t* next_idx;          /* skel->arena->next_entry_idx (mmap'd) */
-    uint32_t max_entries;         /* CACHE_MAP_MAX_ENTRIES */
+    uint32_t* next_idx; /* skel->arena->next_entry_idx (mmap'd) */
+    uint32_t max_entries; /* CACHE_MAP_MAX_ENTRIES */
     int cache_map_fd;
 
     /* Reverse mapping: slot_owners[arena_idx] = cache_key that currently owns the slot.

@@ -10,8 +10,6 @@
 
 static volatile bool exiting = false;
 
-#define CLEANUP_INTERVAL_NS (10ULL * 1000000000ULL)
-
 static void sig_handler([[maybe_unused]] int sig) {
     exiting = true;
 }
@@ -37,11 +35,12 @@ int main(int argc, char** argv) {
     if (err)
         goto cleanup;
 
-    printf("BPF System Running... Press Ctrl+C to stop.\n");
+    /* Start background cleanup thread */
+    err = start_cleanup_thread(&ctx, env.cleanup_interval);
+    if (err)
+        goto cleanup;
 
-    struct timespec now;
-    clock_gettime(CLOCK_MONOTONIC, &now);
-    uint64_t last_cleanup_ns = (uint64_t)now.tv_sec * 1000000000ULL + (uint64_t)now.tv_nsec;
+    printf("BPF System Running... Press Ctrl+C to stop.\n");
 
     while (!exiting) {
         err = dump_bpf_log(&ctx, 100);
@@ -62,13 +61,6 @@ int main(int argc, char** argv) {
         if (err < 0) {
             fprintf(stderr, "Error polling pkt ring buffer: %d\n", err);
             goto cleanup;
-        }
-
-        clock_gettime(CLOCK_MONOTONIC, &now);
-        uint64_t now_ns = (uint64_t)now.tv_sec * 1000000000ULL + (uint64_t)now.tv_nsec;
-        if (now_ns - last_cleanup_ns >= CLEANUP_INTERVAL_NS) {
-            cleanup_expired_entries(&ctx.cache_ctx);
-            last_cleanup_ns = now_ns;
         }
     }
 

@@ -353,12 +353,96 @@ static void test_reject_unsupported_rtype() {
     struct dns_builder b;
     builder_init(&b, 0x1234, 0x8180, 1, 1, 0, 0);
     builder_add_question(&b, "www.example.com", DNS_TYPE_A, DNS_CLASS_IN);
-    uint8_t cname_rdata[10] = {3, 'b', 'a', 'd', 3, 'c', 'o', 'm', 0}; 
-    // RTYPE = 5 (CNAME)
-    builder_add_answer(&b, "www.example.com", 5, DNS_CLASS_IN, 300, 9, cname_rdata);
+    uint8_t mx_rdata[] = {0x00, 0x0a, 4, 'm', 'a', 'i', 'l', 3, 'c', 'o', 'm', 0};
+    builder_add_answer(
+        &b,
+        "www.example.com",
+        DNS_TYPE_MX,
+        DNS_CLASS_IN,
+        300,
+        sizeof(mx_rdata),
+        mx_rdata
+    );
 
     call_handle_packet(&test_ctx, b.buf, b.len);
     TEST_ASSERT(test_next_idx == 0, "test_reject_unsupported_rtype: next_idx unchanged");
+}
+
+// 14.1 test_cname_with_a_record
+static void test_cname_with_a_record() {
+    setup_test();
+
+    struct dns_builder b;
+    builder_init(&b, 0x1234, 0x8180, 1, 2, 0, 0);
+    builder_add_question(&b, "www.example.com", DNS_TYPE_A, DNS_CLASS_IN);
+
+    uint8_t cname_rdata[] = {3, 'c', 'd', 'n', 7, 'e', 'x', 'a', 'm', 'p', 'l', 'e', 3, 'c', 'o', 'm', 0};
+    builder_add_answer(
+        &b,
+        "www.example.com",
+        DNS_TYPE_CNAME,
+        DNS_CLASS_IN,
+        300,
+        sizeof(cname_rdata),
+        cname_rdata
+    );
+
+    uint8_t a_rdata[4] = {1, 2, 3, 4};
+    builder_add_answer(&b, "cdn.example.com", DNS_TYPE_A, DNS_CLASS_IN, 120, 4, a_rdata);
+
+    int ret = call_handle_packet(&test_ctx, b.buf, b.len);
+    TEST_ASSERT(ret == 0, "test_cname_with_a_record: handle_packet returns 0");
+    if (has_bpf) {
+        TEST_ASSERT(test_next_idx == 1, "test_cname_with_a_record: next_idx incremented");
+    }
+}
+
+// 14.2 test_cname_chain_with_terminal_a
+static void test_cname_chain_with_terminal_a() {
+    setup_test();
+
+    struct dns_builder b;
+    builder_init(&b, 0x4321, 0x8180, 1, 3, 0, 0);
+    builder_add_question(&b, "www.example.com", DNS_TYPE_A, DNS_CLASS_IN);
+
+    uint8_t cname1[] = {3, 'c', 'd', 'n', 1, '1', 7, 'e', 'x', 'a', 'm', 'p', 'l', 'e', 3, 'c', 'o', 'm', 0};
+    builder_add_answer(&b, "www.example.com", DNS_TYPE_CNAME, DNS_CLASS_IN, 300, sizeof(cname1), cname1);
+
+    uint8_t cname2[] = {6, 'o', 'r', 'i', 'g', 'i', 'n', 7, 'e', 'x', 'a', 'm', 'p', 'l', 'e', 3, 'c', 'o', 'm', 0};
+    builder_add_answer(&b, "cdn.1.example.com", DNS_TYPE_CNAME, DNS_CLASS_IN, 200, sizeof(cname2), cname2);
+
+    uint8_t a_rdata[4] = {8, 8, 4, 4};
+    builder_add_answer(&b, "origin.example.com", DNS_TYPE_A, DNS_CLASS_IN, 60, 4, a_rdata);
+
+    int ret = call_handle_packet(&test_ctx, b.buf, b.len);
+    TEST_ASSERT(ret == 0, "test_cname_chain_with_terminal_a: handle_packet returns 0");
+    if (has_bpf) {
+        TEST_ASSERT(test_next_idx == 1, "test_cname_chain_with_terminal_a: next_idx incremented");
+    }
+}
+
+// 14.3 test_reject_cname_only_without_terminal
+static void test_reject_cname_only_without_terminal() {
+    setup_test();
+
+    struct dns_builder b;
+    builder_init(&b, 0x7777, 0x8180, 1, 1, 0, 0);
+    builder_add_question(&b, "www.example.com", DNS_TYPE_A, DNS_CLASS_IN);
+
+    uint8_t cname_rdata[] = {3, 'c', 'd', 'n', 7, 'e', 'x', 'a', 'm', 'p', 'l', 'e', 3, 'c', 'o', 'm', 0};
+    builder_add_answer(
+        &b,
+        "www.example.com",
+        DNS_TYPE_CNAME,
+        DNS_CLASS_IN,
+        300,
+        sizeof(cname_rdata),
+        cname_rdata
+    );
+
+    int ret = call_handle_packet(&test_ctx, b.buf, b.len);
+    TEST_ASSERT(ret == 0, "test_reject_cname_only_without_terminal: handle_packet returns 0");
+    TEST_ASSERT(test_next_idx == 0, "test_reject_cname_only_without_terminal: next_idx unchanged");
 }
 
 /* --- Edge Cases --- */
@@ -447,6 +531,9 @@ int main(void) {
     test_reject_too_short();
     test_reject_ttl_zero();
     test_reject_unsupported_rtype();
+    test_cname_with_a_record();
+    test_cname_chain_with_terminal_a();
+    test_reject_cname_only_without_terminal();
 
     test_oversized_packet();
     test_arena_wraparound();
