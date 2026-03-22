@@ -15,3 +15,6 @@ subprojects/packagecache/
 # Documentation not for version control
 docs/learnings.md
 docs/reference/
+
+# Benchmark results (generated locally)
+tests/benchmark/results/
