@@ -1,123 +1,250 @@
+# Shinku Roadmap (Code-Truth Aligned)
 
-## # P0: Core Functional Requirements & Stability Improvements
+This roadmap is based on the current repository state, not historical assumptions.
 
-* **Observability:** Implement metrics, health checks, and comprehensive monitoring/logging.
-* **Error Handling & Fallback Strategies:**
-    * **Arena Exhaustion:** Behavior when memory arena is full.
-    * **Userspace Hangs:** Recovery/bypass when the userspace process is unresponsive.
-    * **Attachment Failure:** Fallback logic when eBPF/XDP program fails to attach.
-    * **Malformed Responses:** Validation and handling of corrupted or non-compliant DNS packets.
-* **IPv6 Support:** Full stack compatibility for IPv6 traffic.
-* **Production Readiness:** Long-term stability testing (soak tests) and production deployment documentation.
+## 0. Current State Snapshot (What is already done)
+
+### Already implemented
+- XDP hot path cache serve with `XDP_TX` and arena-backed payload copy (`src/bpf/cache.bpf.c`).
+- Userspace ingest path with DNS validation + name flattening + cache insertion (`src/core/dns_parser.c`).
+- Ring allocator semantics for arena slot selection (`next_idx` atomic increment with modulo), not bump-only allocation.
+- Concurrency safety for shared arena entries:
+  - seqlock (`cache_entry.seq`)
+  - generation check (`cache_entry.gen` vs `cache_value.gen`)
+  - stale slot owner eviction (`slot_owners`).
+- TTL expiry cleanup loop in userspace via background cleanup thread (`start_cleanup_thread`, `cleanup_expired_entries`).
+- CNAME ingest support in parser answer loop (with terminal A/AAAA requirement for A/AAAA queries).
+- Unit tests for parser, cache correctness, arena list/hash table, hash consistency, integration smoke tests.
+
+### Partially implemented
+- ECS handling is scope-zero-only (global cache only).
+- CNAME support is ingest-level acceptance; no advanced chain policy controls (loop-depth policy, richer negative interactions).
+- TCX attach fallback exists (legacy TC), but no staged rollout/health-gated deployment flow.
+
+### Not yet implemented
+- IPv6 fast path (XDP ingress/egress mutation for IPv6).
+- Negative caching (NXDOMAIN/NODATA with SOA-derived TTL policy).
+- DNS-over-TCP capture/cache strategy.
+- Production-grade observability stack (`/metrics`, `/healthz`, `/readyz`, structured counters).
+- CI/CD pipeline and release automation (no `.github/workflows`).
 
 ---
 
-## # P1: High Priority (Recommended for Immediate Implementation)
+## 1. Industrialization Gap Analysis
 
-* **CNAME Support:** Full resolution and chasing logic for Canonical Name records.
-* **Negative Caching:** Implementation of caching for "domain not found" (NXDOMAIN) or "no data" responses.
-* **Graceful Updates:** Support for atomic upgrades and hitless restarts.
-* **Native XDP Validation:** Performance verification and testing on physical NICs using Native XDP mode.
-* **Configuration Management:** Robust config system with support for dynamic hot-reloads without downtime.
+To be “industrial-grade,” Shinku must close six categories of gaps:
+
+1. **Protocol coverage and correctness boundaries**
+2. **Cache lifecycle and capacity governance**
+3. **Observability and operability**
+4. **Production deployment and upgrade safety**
+5. **Failure-mode handling and security posture**
+6. **Testing matrix and release engineering**
+
+This plan prioritizes reliability and operability before feature breadth.
 
 ---
 
-## # P2: Strategic Features (Scenario-Dependent)
+## 2. Prioritized Implementation Plan
 
-* **Full ECS Support:** Implementation of EDNS0 Client Subnet for location-aware routing.
-* **DNSSEC Awareness:** Handling of the DO (DNSSEC OK) bit and security-aware resource records.
-* **EDNS Handling:** Support for large packets and adjustable MTU/buffer sizes.
-* **TCP Fallback:** Mechanism to switch from UDP to TCP when truncation (TC bit) occurs.
-* **Advanced Cache Management:** Implementation of sophisticated Eviction and Admission policies (e.g., SLRU, TinyLFU).
+## P0 (Must-have before production rollout)
 
+### P0.1 Observability baseline (metrics + health)
+**Goal:** Make behavior measurable and debuggable in production.
 
+**Implement**
+- Add userspace metrics endpoint (Prometheus text format) with at least:
+  - `shinku_cache_hit_total`
+  - `shinku_cache_miss_total`
+  - `shinku_cache_expired_hit_total`
+  - `shinku_cache_insert_total`
+  - `shinku_cache_insert_fail_total`
+  - `shinku_cache_cleanup_removed_total`
+  - `shinku_parser_reject_total{reason=...}`
+  - `shinku_rb_pkt_drop_total`
+  - `shinku_xdp_tx_total`
+- Add `/healthz` (process live) and `/readyz` (BPF programs attached + rings initialized).
+- Preserve low overhead: use per-thread/per-CPU counters where feasible and batch export in userspace.
 
-# DNS Cache Roadmap — Next Steps
+**Acceptance criteria**
+- Metrics exposed locally and scrapeable.
+- On synthetic failures, counters move predictably.
+- No measurable regression >3% QPS in benchmark mode with metrics enabled.
 
-This document outlines the planned trajectory for the eBPF DNS cache project, categorized by priority and impact. The goals focus on moving from a functional prototype to a production-ready, high-performance caching layer.
+---
 
-## Phase 1: Critical Improvements
-High impact items required for stable production deployments.
+### P0.2 Failure-mode policy and graceful degradation
+**Goal:** Fail safe, not fail opaque.
 
+**Implement**
+- Define and encode explicit behavior for:
+  - userspace lag/ring backlog growth
+  - cleanup thread failure
+  - attach/reattach failure at startup
+  - cache_map update failures
+- Add bounded retry + backoff for startup attach paths.
+- Add explicit “degraded mode” state in userspace logs/metrics.
 
-### 1.2 Cache Eviction Policy
-*   **Current State**: Expired entries remain in the `cache_map` until a hash collision occurs or the map fills up. There's no proactive cleanup of stale data.
-*   **Proposed Solution**: Develop a userspace timer component that periodically scans the `cache_map` using `bpf_map_get_next_key` and `bpf_map_lookup_elem`. It will delete any entry where the expiration timestamp is older than the current time. A scan interval of 30 to 60 seconds is recommended.
-*   **Impact**: Prevents stale data from polluting the hash map and preserves arena slots for fresh queries.
+**Acceptance criteria**
+- Fault injection scenarios produce deterministic fallback behavior.
+- No crash loops under repeated attach failures.
 
+---
 
-### 1.3 IPv6 Support
-*   **Current State**: The XDP program currently only parses `ETH_P_IP` (IPv4). All IPv6 traffic passes through the hook without being inspected or cached.
-*   **Proposed Solution**: Add support for `ETH_P_IPV6` (0x86DD). This requires handling the 40-byte fixed IPv6 header and potentially skipping extension headers. Crucially, UDP checksum calculation must be implemented for IPv6 responses, as it's mandatory and requires a pseudo-header containing 128-bit source and destination addresses.
-*   **Impact**: Modern dual-stack and IPv6-only networks are increasingly common. Without this support, a significant portion of DNS traffic bypasses the cache entirely.
+### P0.3 IPv6 support (end-to-end)
+**Goal:** Remove major protocol coverage gap for dual-stack deployments.
 
-### 1.4 Record Type Expansion (CNAME/MX/TXT)
-*   **Current State**: Only A and AAAA records are cached. Responses containing other types like CNAME chains, MX, or TXT records are currently ignored.
-*   **Proposed Solution**: Enhance the RDATA parsing logic. CNAME records are the highest priority as they often precede A/AAAA records in recursive lookups. Parsing CNAMEs requires handling DNS name compression pointers to flatten the name before storing it in the arena.
-*   **Impact**: Supporting CNAME chains will significantly increase the cache hit rate for major web services that rely on traffic management via aliases.
+**Implement**
+- XDP ingress parse for `ETH_P_IPV6`, extension-header policy, UDP DNS query extraction.
+- Cache hit response rewrite for IPv6 headers and mandatory UDP checksum handling.
+- TC egress capture path for IPv6 UDP/53 responses.
+- Userspace parser acceptance for IPv6-sourced packets (payload logic remains mostly shared).
 
-## Phase 2: Performance Optimizations
-Enhancements to maximize throughput and minimize latency.
+**Acceptance criteria**
+- Integration tests for AAAA queries over IPv6 path.
+- No checksum errors observed in packet captures.
 
-### 2.1 Native XDP on Physical Hardware
-*   **Current State**: Benchmarking has been performed on `veth` pairs using generic XDP mode, where the kernel allocates an `sk_buff` before XDP processing.
-*   **Proposed Solution**: Test and benchmark the system on physical NICs (e.g., Intel i40e, ixgbe, or Mellanox mlx5) that support native XDP.
-*   **Impact**: Moving to native XDP can yield a 3x to 10x performance gain by processing packets directly in the driver before any expensive kernel memory allocation occurs.
+---
 
-### 2.2 XDP Multi-Buffer Support
-*   **Current State**: The current implementation assumes DNS packets fit within a single buffer.
-*   **Proposed Solution**: Implement support for `xdp_buff` fragments (multi-buffer XDP).
-*   **Impact**: While standard 512-byte UDP DNS queries fit in a single frame, EDNS0 allows for payloads up to 4096 bytes. Multi-buffer support ensures the cache can handle large DNSSEC-signed responses or jumbo frames.
+### P0.4 Soak and operational readiness package
+**Goal:** Validate long-run stability and provide deployable runbook.
 
-### 2.3 Batch Ring Buffer Processing
-*   **Current State**: The userspace daemon processes ring buffer events one by one via `ring_buffer__poll`.
-*   **Proposed Solution**: Switch to `ring_buffer__consume` within a tight loop or implement a batch processing strategy to handle multiple events per syscall.
-*   **Impact**: Reduces the overhead of transitions between kernel and userspace when the system is under heavy load and many packets are being captured for caching.
+**Implement**
+- 24h and 72h soak tests with mixed query distributions.
+- Capacity and churn tests (high eviction pressure, TTL churn, domain cardinality spikes).
+- Operational docs:
+  - deployment checklist
+  - rollback checklist
+  - incident triage quick-guide
 
-### 2.4 BPF Map Tuning
-*   **Current State**: The system uses `BPF_MAP_TYPE_HASH` for the main `cache_map`.
-*   **Proposed Solution**: Evaluate `BPF_MAP_TYPE_LRU_HASH`.
-*   **Impact**: An LRU map automatically evicts the least recently used entries when it reaches capacity. This could simplify or even eliminate the need for manual eviction logic, though it comes with a slight increase in per-lookup overhead that needs to be measured.
+**Acceptance criteria**
+- No unbounded memory growth in userspace.
+- Stable cache hit rate envelope under repeated churn.
 
-## Phase 3: Feature Additions
-Functional enhancements for broader utility.
+---
 
-### 3.1 Negative Caching
-*   **Current State**: Only successful resolutions are cached. NXDOMAIN or SERVFAIL responses are ignored.
-*   **Proposed Solution**: Store negative responses (NXDOMAIN) using the TTL found in the Authority section's SOA record.
-*   **Impact**: Reduces load on upstream resolvers caused by typos, bots, or ad-blocking lists that frequently query non-existent domains.
+## P1 (High-value improvements immediately after P0)
 
-### 3.2 DNS-over-TCP Fallback
-*   **Current State**: The cache only monitors UDP port 53.
-*   **Proposed Solution**: Extend the TC program to capture TCP port 53 traffic and implement basic TCP session tracking in userspace to cache responses that were truncated (TC=1) over UDP.
-*   **Impact**: Ensures consistency and coverage for large responses that force a switch to TCP.
+### P1.1 Negative caching
+**Goal:** Cut upstream load and latency for repeated negative lookups.
 
-### 3.3 Subnet-Specific Caching (ECS)
-*   **Current State**: Only global responses (scope-zero) are cached.
-*   **Proposed Solution**: Incorporate EDNS Client Subnet (ECS) info into the `cache_key`.
-*   **Impact**: Allows the cache to serve geographically relevant answers to different client subnets while maintaining correctness for CDN-backed domains.
+**Implement**
+- Cache NXDOMAIN/NODATA with SOA-based TTL bounds.
+- Separate key semantics for negative entries where needed.
+- Add parser rejection/acceptance metrics per negative type.
 
-### 3.4 Metrics and Observability
-*   **Current State**: There is limited visibility into internal cache performance.
-*   **Proposed Solution**: Add per-CPU BPF counters for cache hits, misses, expired hits, and packet actions. Expose these through a Prometheus-compatible `/metrics` endpoint.
-*   **Impact**: Critical for operational monitoring, capacity planning, and identifying bottlenecks in production.
+**Acceptance criteria**
+- Unit + integration tests for NXDOMAIN/NODATA.
+- TTL expiry behavior matches policy.
 
-### 3.5 Graceful Program Updates
-*   **Current State**: Restarting the tool may lead to temporary traffic disruption.
-*   **Proposed Solution**: Use `bpf_link__update_program()` to atomically swap XDP and TC programs without dropping the attached link.
-*   **Impact**: Enables seamless updates to the caching logic while the system is under load.
+---
 
-## Phase 4: Long-Term Research
-Exploratory work for extreme scale and complexity.
+### P1.2 CNAME hardening and integration coverage
+**Goal:** Move from basic support to robust production semantics.
 
-### 4.1 AF_XDP Hybrid Architecture
-*   **Description**: Redirect specific DNS traffic to a specialized userspace responder using AF_XDP zero-copy sockets.
-*   **Reasoning**: For environments with extreme throughput requirements where XDP_TX latency is still a bottleneck, moving response generation to a dedicated userspace application using DPDK or AF_XDP can offer even higher performance.
+**Implement**
+- Add integration tests with mock server returning:
+  - CNAME + A
+  - CNAME chain + terminal A/AAAA
+  - CNAME-only for A/AAAA query (must reject cache insert)
+- Add parser reasons metrics for CNAME reject categories.
+- Optional policy knobs: max accepted chain depth, stricter owner/target linkage checks.
 
-### 4.2 Inline DNSSEC Validation
-*   **Description**: Perform cryptographic validation of DNSSEC signatures within the userspace caching daemon.
-*   **Reasoning**: Currently, the cache trusts the upstream resolver's AD bit. Local validation would provide an additional layer of security, though it adds significant complexity due to the need for RSA/ECDSA verification.
+**Acceptance criteria**
+- Integration suite validates cache-hit behavior for CNAME-backed answers.
+- No regressions in existing parser/cache tests.
 
-### 4.3 Distributed Cache State
-*   **Description**: Share cache entries between multiple nodes in a cluster.
-*   **Reasoning**: Investigating BPF map pinning to `bpffs` for local sharing or a lightweight gossip protocol for network-wide coordination would allow for a unified cache across a fleet of load balancers.
+---
+
+### P1.3 Hitless update path
+**Goal:** Reduce disruption during binary/program upgrades.
+
+**Implement**
+- Introduce controlled upgrade flow for BPF programs (link update strategy).
+- Add pre-flight checks and rollback on failed update.
+
+**Acceptance criteria**
+- Upgrade test shows no sustained DNS outage window.
+
+---
+
+### P1.4 Native XDP validation on physical NIC
+**Goal:** Prove production performance envelope beyond veth/generic mode.
+
+**Implement**
+- Benchmark matrix on at least one native-XDP-capable NIC.
+- Compare SKB/generic vs native mode with same workload.
+
+**Acceptance criteria**
+- Publish reproducible report with hardware/kernel details and confidence intervals.
+
+---
+
+## P2 (Strategic scope expansion)
+
+### P2.1 ECS beyond scope-zero
+**Goal:** Support subnet-sensitive answers without global-cache correctness risk.
+
+### P2.2 EDNS and large-response strategy
+**Goal:** Improve behavior for >512-byte realities while preserving XDP hot-path safety.
+
+### P2.3 DNS-over-TCP handling strategy
+**Goal:** Define and implement coherent policy for truncated/large-answer flows.
+
+### P2.4 Advanced admission/eviction policy
+**Goal:** Improve hit ratio under skew/churn (e.g., admission filtering, smarter eviction).
+
+### P2.5 Security hardening
+**Goal:** Minimize abuse/risk surface (ACLs, anti-reflection posture, least-privilege runtime).
+
+---
+
+## 3. Engineering Program Plan (12-week concrete schedule)
+
+### Weeks 1-2: Observability foundation
+- Implement metrics schema and exporter.
+- Add health/readiness endpoints.
+- Add parser reject reason taxonomy.
+
+### Weeks 3-4: Failure-mode hardening
+- Add degraded mode logic and retries/backoff.
+- Add startup/attach failure scenarios in tests.
+
+### Weeks 5-7: IPv6 end-to-end
+- XDP/TC/userspace IPv6 path implementation.
+- Add unit/integration coverage and packet-level checksum validation.
+
+### Weeks 8-9: Negative caching + CNAME integration suite
+- Implement NXDOMAIN/NODATA caching policy.
+- Expand integration mock server scenarios for CNAME and negatives.
+
+### Weeks 10-11: Native XDP + soak campaign
+- Run native NIC benchmarks.
+- Execute 24h/72h soak and churn scenarios.
+
+### Week 12: Release packaging
+- Deployment/rollback runbooks.
+- Versioned release notes and compatibility matrix.
+
+---
+
+## 4. Definition of “Industrial-Ready v1”
+
+Shinku reaches industrial-ready v1 when all are true:
+
+- P0 items complete and verified.
+- SLO instrumentation exists with alertable metrics.
+- IPv4 and IPv6 fast paths validated.
+- Negative caching operational with TTL policy.
+- CNAME integration tests passing in CI + root integration environment.
+- Soak tests pass with no critical leaks/crashes.
+- Documented rollout and rollback procedures available.
+
+---
+
+## 5. Notes on corrected historical assumptions
+
+- Arena allocation is **not** a pure bump allocator anymore; it is ring-style index progression with slot reuse handling.
+- TTL cleanup is **implemented** via background thread and periodic `cleanup_expired_entries`.
+- CNAME ingest support is **implemented** with terminal RR gating for A/AAAA query correctness.
+- Remaining work focuses on production operations maturity, broader protocol coverage, and release engineering.
