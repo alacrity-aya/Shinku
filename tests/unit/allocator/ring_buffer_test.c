@@ -5,7 +5,6 @@
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
 static int test_count = 0;
@@ -23,7 +22,7 @@ static int pass_count = 0;
     } while (0)
 
 static uint32_t ring_buffer_alloc(uint32_t* next_idx, uint32_t max_entries) {
-    uint32_t idx = __sync_fetch_and_add(next_idx, 1);
+    uint32_t idx = atomic_fetch_add_explicit((atomic_uint*)next_idx, 1, memory_order_relaxed);
     return idx % max_entries;
 }
 

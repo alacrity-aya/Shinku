@@ -2,6 +2,7 @@
 #pragma once
 
 #include "types.h"
+#include "obs_metrics.h"
 #include <stddef.h>
 #include <stdint.h>
 
@@ -19,6 +20,8 @@ struct cache_ctx {
      * written to both cache_entry.gen and cache_value.gen. XDP checks they match to detect
      * slot reuse between cache_map lookup and arena read. */
     uint32_t next_gen;
+
+    struct obs_context* obs;
 };
 
 int handle_packet(void* ctx, void* data, size_t len);

@@ -4,6 +4,20 @@
 #include <bpf/bpf_endian.h>
 #include <bpf/bpf_helpers.h>
 
+#define OBS_BPF_CACHE_HIT 0
+#define OBS_BPF_CACHE_MISS 1
+#define OBS_BPF_CACHE_EXPIRED 2
+#define OBS_BPF_CACHE_GEN_MISMATCH 3
+#define OBS_BPF_CACHE_SEQ_CONFLICT 4
+#define OBS_BPF_XDP_TX 5
+#define OBS_BPF_TC_RINGBUF_DROP 6
+#define OBS_BPF_TC_CAPTURE 7
+#define OBS_BPF_METRIC_MAX 8
+
+#ifndef SHINKU_OBS_BPF_ENABLED
+    #define SHINKU_OBS_BPF_ENABLED 1
+#endif
+
 #include "bpf_log.h"
 #include "core/hash.h"
 #include "types.h"
@@ -48,6 +62,40 @@ struct {
     __uint(max_entries, ARENA_DEFAULT_PAGES);
     __uint(map_flags, BPF_F_MMAPABLE);
 } arena SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(max_entries, OBS_BPF_METRIC_MAX);
+    __type(key, __u32);
+    __type(value, __u64);
+} obs_bpf_metrics SEC(".maps");
+
+const volatile __u32 obs_bpf_enabled = 0;
+const volatile __u32 obs_bpf_sample_mask = 0xff;
+
+static __always_inline int obs_sample_hit(void) {
+#if SHINKU_OBS_BPF_ENABLED
+    if (!obs_bpf_enabled)
+        return 0;
+    return (bpf_get_prandom_u32() & obs_bpf_sample_mask) == 0;
+#else
+    return 0;
+#endif
+}
+
+static __always_inline void obs_count(__u32 metric_id) {
+#if SHINKU_OBS_BPF_ENABLED
+    if (!obs_sample_hit())
+        return;
+
+    __u64* slot = bpf_map_lookup_elem(&obs_bpf_metrics, &metric_id);
+    if (!slot)
+        return;
+    *slot += 1;
+#else
+    (void)metric_id;
+#endif
+}
 
 #if defined(__BPF_FEATURE_ADDR_SPACE_CAST)
 /* Arena-resident cache entry storage — shared with userspace via mmap.
@@ -141,13 +189,16 @@ int xdp_rx(struct xdp_md* ctx) {
     bpf_debug("[XDP] Key: Hash=0x%x Type=%d Class=%d", key.name_hash, key.qtype, key.qclass);
 
     struct cache_value* val = bpf_map_lookup_elem(&cache_map, &key);
-    if (!val)
+    if (!val) {
+        obs_count(OBS_BPF_CACHE_MISS);
         return XDP_PASS;
+    }
 
     /* TTL check: expired entries fall through to upstream */
     __u64 now = bpf_ktime_get_ns();
     if (now >= val->expire_ts) {
         bpf_debug("[XDP] Cache expired: Hash=0x%x", name_hash);
+        obs_count(OBS_BPF_CACHE_EXPIRED);
         return XDP_PASS;
     }
 
@@ -225,6 +276,7 @@ int xdp_rx(struct xdp_md* ctx) {
     __u32 entry_gen = READ_ONCE(entry->gen);
     if (entry_gen != val->gen) {
         bpf_debug("[XDP] Gen mismatch: entry=%u val=%u Hash=0x%x", entry_gen, val->gen, name_hash);
+        obs_count(OBS_BPF_CACHE_GEN_MISMATCH);
         return XDP_PASS;
     }
 
@@ -261,8 +313,10 @@ int xdp_rx(struct xdp_md* ctx) {
 
     /* Seqlock validation: seq must not have changed during copy */
     __u32 seq2 = READ_ONCE(entry->seq);
-    if (seq1 != seq2)
+    if (seq1 != seq2) {
+        obs_count(OBS_BPF_CACHE_SEQ_CONFLICT);
         return XDP_PASS;
+    }
 
     /* ── Phase 6: Patch transaction ID to match original query ── */
     struct dns_hdr* resp = (struct dns_hdr*)dns_start;
@@ -299,6 +353,8 @@ int xdp_rx(struct xdp_md* ctx) {
     udp->check = 0;
 
     bpf_info("[XDP] Cache HIT -> XDP_TX: Hash=0x%x len=%d", name_hash, cached_len);
+    obs_count(OBS_BPF_CACHE_HIT);
+    obs_count(OBS_BPF_XDP_TX);
 
     return XDP_TX;
 }
@@ -360,6 +416,7 @@ int tc_tx(struct __sk_buff* skb) {
     struct dns_event* e = bpf_ringbuf_reserve(&rb_pkt, sizeof(*e) + ARENA_ENTRY_SIZE, 0);
     if (unlikely(!e)) {
         bpf_warn("[TC] RingBuf full, dropped DNS Resp (len=%u)", skb->len);
+        obs_count(OBS_BPF_TC_RINGBUF_DROP);
         return TC_ACT_OK;
     }
 
@@ -377,6 +434,7 @@ int tc_tx(struct __sk_buff* skb) {
 
     bpf_ringbuf_submit(e, 0);
     bpf_info("[TC] Captured DNS Resp: len=%u saved=%u", skb->len, dns_len);
+    obs_count(OBS_BPF_TC_CAPTURE);
 
     return TC_ACT_OK;
 }

@@ -5,12 +5,13 @@
 #include "cache.skel.h"
 #include "constants.h"
 #include "dns_parser.h"
+#include <bpf/bpf.h>
 #include <bpf/libbpf.h>
 #include <bpf/libbpf_legacy.h>
 #include <net/if.h>
 #include <stdio.h>
 #include <stdlib.h>
-
+#include <unistd.h>
 #include <time.h>
 
 // Error codes for setup_bpf
@@ -19,6 +20,33 @@
 #define ERR_INVALID_IFACE -3
 #define ERR_XDP_ATTACH -4
 #define ERR_TC_ATTACH -5
+
+static void sync_bpf_metrics(struct bpf_ctx* ctx) {
+#if SHINKU_OBS_ENABLED
+    if (!ctx || !ctx->metrics.cfg.enabled || !ctx->metrics.cfg.bpf_enabled)
+        return;
+
+    if (!ctx->skel || !ctx->obs_percpu_vals || ctx->obs_ncpu <= 0)
+        return;
+
+    int map_fd = bpf_map__fd(ctx->skel->maps.obs_bpf_metrics);
+    if (map_fd < 0)
+        return;
+
+    for (uint32_t key = 0; key < OBS_BPF_METRIC_MAX; key++) {
+        if (bpf_map_lookup_elem(map_fd, &key, ctx->obs_percpu_vals) != 0)
+            continue;
+
+        uint64_t total = 0;
+        for (int cpu = 0; cpu < ctx->obs_ncpu; cpu++)
+            total += ctx->obs_percpu_vals[cpu];
+
+        atomic_store_explicit(&ctx->metrics.bpf_counters[key].value, total, memory_order_relaxed);
+    }
+#else
+    (void)ctx;
+#endif
+}
 
 static int libbpf_print_fn(enum libbpf_print_level level, const char* format, va_list args) {
     char ts[LOG_TIMESTAMP_LEN];
@@ -89,6 +117,25 @@ static int attach_tc_legacy(struct bpf_ctx* ctx, int ifindex) {
 int setup_bpf(struct bpf_ctx* ctx, const struct env* env) {
     int err;
 
+#if SHINKU_OBS_ENABLED
+    struct obs_metrics_config obs_cfg = {
+        .enabled = env->obs_enabled ? 1 : 0,
+        .bpf_enabled = (env->obs_enabled && env->obs_bpf_enabled) ? 1 : 0,
+        .bpf_sample_mask = env->obs_bpf_sample_mask,
+    };
+#else
+    struct obs_metrics_config obs_cfg = {
+        .enabled = 0,
+        .bpf_enabled = 0,
+        .bpf_sample_mask = 0,
+    };
+#endif
+    obs_metrics_init(&ctx->metrics, &obs_cfg);
+    ctx->obs_ctx.metrics = &ctx->metrics;
+    atomic_store_explicit(&ctx->bpf_ready, false, memory_order_relaxed);
+    ctx->obs_ncpu = 0;
+    ctx->obs_percpu_vals = NULL;
+
     libbpf_set_print(libbpf_print_fn);
 
     /* Open skeleton (don't load yet — need to configure arena size) */
@@ -105,6 +152,9 @@ int setup_bpf(struct bpf_ctx* ctx, const struct env* env) {
         goto cleanup;
     }
 
+    ctx->skel->rodata->obs_bpf_enabled = obs_cfg.bpf_enabled;
+    ctx->skel->rodata->obs_bpf_sample_mask = obs_cfg.bpf_sample_mask;
+
     bpf_program__set_autoattach(ctx->skel->progs.tc_tx, false);
 
     /* Load BPF programs and create maps */
@@ -115,12 +165,29 @@ int setup_bpf(struct bpf_ctx* ctx, const struct env* env) {
         goto cleanup;
     }
 
+    if (ctx->metrics.cfg.bpf_enabled) {
+        ctx->obs_ncpu = libbpf_num_possible_cpus();
+        if (ctx->obs_ncpu <= 0) {
+            fprintf(stderr, "Failed to get possible CPU count for observability metrics\n");
+            err = ERR_SKEL_LOAD;
+            goto cleanup;
+        }
+
+        ctx->obs_percpu_vals = calloc((size_t)ctx->obs_ncpu, sizeof(uint64_t));
+        if (!ctx->obs_percpu_vals) {
+            fprintf(stderr, "Failed to allocate percpu buffer for observability metrics\n");
+            err = ERR_SKEL_LOAD;
+            goto cleanup;
+        }
+    }
+
     /* Wire up cache context — skeleton auto-mmap's arena via __arena globals */
     ctx->cache_ctx.entries = ctx->skel->arena->cache_entries;
     ctx->cache_ctx.next_idx = &ctx->skel->arena->next_entry_idx;
     ctx->cache_ctx.max_entries = CACHE_MAP_MAX_ENTRIES;
     ctx->cache_ctx.cache_map_fd = bpf_map__fd(ctx->skel->maps.cache_map);
     ctx->cache_ctx.next_gen = 0;
+    ctx->cache_ctx.obs = &ctx->obs_ctx;
     ctx->cache_ctx.slot_owners =
         calloc(CACHE_MAP_MAX_ENTRIES, sizeof(struct cache_key));
     if (!ctx->cache_ctx.slot_owners) {
@@ -135,7 +202,7 @@ int setup_bpf(struct bpf_ctx* ctx, const struct env* env) {
         goto cleanup;
     }
 
-#ifdef ENABLE_BPF_LOG
+#if SHINKU_BPF_LOG_ENABLED
     // rb_log
     ctx->log_opt.min_level = env->log_level;
     ctx->log_opt.show_timestamp = true;
@@ -200,6 +267,14 @@ int setup_bpf(struct bpf_ctx* ctx, const struct env* env) {
         goto cleanup;
     }
 
+    if (ctx->metrics.cfg.enabled) {
+        err = obs_http_start(&ctx->obs_http, env->metrics_port, &ctx->metrics, &ctx->bpf_ready);
+        if (err)
+            fprintf(stderr, "Failed to start observability HTTP server on 127.0.0.1:%u\n", env->metrics_port);
+    }
+
+    atomic_store_explicit(&ctx->bpf_ready, true, memory_order_release);
+
     printf("Successfully attached to interface: %s (ifindex: %d)\n", env->interface, ifindex);
 
     return 0;
@@ -210,11 +285,16 @@ cleanup:
 }
 
 int poll_pkt_ring(struct bpf_ctx* ctx, int timeout_ms) {
-    return ring_buffer__poll(ctx->rb_pkt, timeout_ms);
+    int ret = ring_buffer__poll(ctx->rb_pkt, timeout_ms);
+    if (ret < 0)
+        obs_metrics_count_rb_poll_error(&ctx->metrics);
+
+    sync_bpf_metrics(ctx);
+    return ret;
 }
 
 int dump_bpf_log([[maybe_unused]] struct bpf_ctx* ctx, [[maybe_unused]] int timeout_ms) {
-#ifdef ENABLE_BPF_LOG
+#if SHINKU_BPF_LOG_ENABLED
     return ring_buffer__poll(ctx->rb_log, timeout_ms);
 #else
     return 0;
@@ -222,6 +302,8 @@ int dump_bpf_log([[maybe_unused]] struct bpf_ctx* ctx, [[maybe_unused]] int time
 }
 
 void cleanup_bpf(struct bpf_ctx* ctx) {
+    atomic_store_explicit(&ctx->bpf_ready, false, memory_order_release);
+    obs_http_stop(&ctx->obs_http);
     stop_cleanup_thread(ctx);
 
     if (ctx->rb_log) {
@@ -243,6 +325,10 @@ void cleanup_bpf(struct bpf_ctx* ctx) {
     free(ctx->cache_ctx.slot_owners);
     ctx->cache_ctx.slot_owners = NULL;
 
+    free(ctx->obs_percpu_vals);
+    ctx->obs_percpu_vals = NULL;
+    ctx->obs_ncpu = 0;
+
     if (ctx->skel) {
         cache_bpf__destroy(ctx->skel);
         ctx->skel = NULL;
@@ -260,9 +346,9 @@ static void* cleanup_thread_func(void* arg) {
         .tv_nsec = 0,
     };
 
-    while (ctx->cleanup_running) {
+    while (atomic_load_explicit(&ctx->cleanup_running, memory_order_acquire)) {
         nanosleep(&sleep_time, NULL);
-        if (!ctx->cleanup_running)
+        if (!atomic_load_explicit(&ctx->cleanup_running, memory_order_acquire))
             break;
 
         int removed = cleanup_expired_entries(&ctx->cache_ctx);
@@ -277,12 +363,12 @@ int start_cleanup_thread(struct bpf_ctx* ctx, uint32_t interval_secs) {
         interval_secs = 10; /* Default: 10 seconds */
 
     ctx->cleanup_cfg.interval_secs = interval_secs;
-    ctx->cleanup_running = true;
+    atomic_store_explicit(&ctx->cleanup_running, true, memory_order_release);
 
     int err = pthread_create(&ctx->cleanup_thread, NULL, cleanup_thread_func, ctx);
     if (err != 0) {
         fprintf(stderr, "Failed to create cleanup thread: %d\n", err);
-        ctx->cleanup_running = false;
+        atomic_store_explicit(&ctx->cleanup_running, false, memory_order_release);
         return -err;
     }
 
@@ -291,10 +377,10 @@ int start_cleanup_thread(struct bpf_ctx* ctx, uint32_t interval_secs) {
 }
 
 void stop_cleanup_thread(struct bpf_ctx* ctx) {
-    if (!ctx->cleanup_running)
+    if (!atomic_load_explicit(&ctx->cleanup_running, memory_order_acquire))
         return;
 
-    ctx->cleanup_running = false;
+    atomic_store_explicit(&ctx->cleanup_running, false, memory_order_release);
 
     /* Wake up the thread by sending a signal or waiting for it to finish */
     pthread_join(ctx->cleanup_thread, NULL);

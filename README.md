@@ -104,6 +104,84 @@ The following results were recorded on a veth pair using generic XDP/SKB mode. N
 
 Detailed methodology and full results are available in `docs/performance.md`.
 
+## Observability
+
+Shinku exposes Prometheus-compatible metrics via HTTP endpoints for monitoring and debugging.
+
+### Endpoints
+
+| Endpoint | Description |
+| :--- | :--- |
+| `GET /healthz` | Liveness probe — returns `200 OK` with body `ok` |
+| `GET /readyz` | Readiness probe — returns `200 OK` when BPF programs attached, `503` otherwise |
+| `GET /metrics` | Prometheus text format metrics export |
+
+Default port: `9095` (configurable via `--metrics-port`).
+
+### BPF Metrics (sampled)
+
+These counters are sampled in the XDP/TC hot path using `bpf_get_prandom_u32() & sample_mask == 0`. When `--obs-bpf=0` (default), these are zero.
+
+| Metric | Type | Description |
+| :--- | :--- | :--- |
+| `shinku_cache_hit_total` | counter | Sampled XDP cache hits |
+| `shinku_cache_miss_total` | counter | Sampled XDP cache misses |
+| `shinku_cache_expired_hit_total` | counter | Sampled expired cache entries encountered in XDP |
+| `shinku_cache_gen_mismatch_total` | counter | Sampled generation mismatches (slot reuse detection) |
+| `shinku_cache_seq_conflict_total` | counter | Sampled seqlock read conflicts |
+| `shinku_xdp_tx_total` | counter | Sampled XDP_TX responses sent |
+| `shinku_tc_capture_total` | counter | Sampled TC-captured DNS responses |
+| `shinku_tc_ringbuf_drop_total` | counter | Sampled TC ring buffer reservation drops |
+| `shinku_bpf_sample_mask` | gauge | Current sampling mask (events counted when `rand32 & mask == 0`) |
+
+### Userspace Metrics
+
+| Metric | Type | Description |
+| :--- | :--- | :--- |
+| `shinku_parser_reject_total` | counter | Total DNS parser rejections |
+| `shinku_cache_insert_total` | counter | Successful cache inserts |
+| `shinku_cache_insert_fail_total` | counter | Failed cache inserts |
+| `shinku_cache_cleanup_removed_total` | counter | Expired entries removed by cleanup thread |
+| `shinku_rb_pkt_poll_error_total` | counter | Packet ring buffer poll errors |
+
+### Parser Reject Reasons
+
+The `shinku_parser_reject_reason_total` counter provides detailed breakdown by rejection reason:
+
+| Label (`reason=`) | Description |
+| :--- | :--- |
+| `not_response` | Packet is a query, not a response |
+| `bad_qdcount` | Question count is not 1 |
+| `tc` | Truncation flag is set |
+| `rcode` | Response code is non-zero |
+| `no_answer` | Answer count is 0 |
+| `malformed_name` | DNS name parsing failed |
+| `malformed_question` | Question section parsing failed |
+| `malformed_rr` | Resource record parsing failed |
+| `unsupported_rtype` | Record type not supported (not A/AAAA/CNAME) |
+| `cname_no_terminal` | CNAME chain without terminal A/AAAA for A/AAAA query |
+| `bad_ecs` | EDNS Client Subnet with non-zero scope |
+| `bad_ttl` | TTL is 0 or invalid |
+
+### CLI Options
+
+```text
+-o, --obs             Enable userspace observability (default: 1)
+-p, --obs-bpf         Enable BPF observability sampling (default: 0)
+-k, --obs-bpf-mask    BPF sampling mask (default: 0xff)
+-m, --metrics-port    HTTP metrics port (default: 9095)
+```
+
+### Compile-Time Control
+
+For zero-overhead in production, disable at compile time:
+
+```bash
+meson setup -Dobs=false -Dobs_bpf=false build
+```
+
+This removes all instrumentation code paths entirely.
+
 ## Testing
 
 *   Unit tests: Run `meson test -C build`. This includes 48 tests covering the hash function, parser, and c-ares integration.

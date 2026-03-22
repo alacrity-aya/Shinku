@@ -9,6 +9,7 @@ dns_hash_test_exe = executable(
     files(
       '../../src/core/hash.c',
       '../../src/core/dns_parser.c',
+      '../../src/core/obs_metrics.c',
 
     ),
     native: true,
@@ -28,6 +29,7 @@ dns_parser_test_exe = executable(
     files(
       '../../src/core/hash.c',
       '../../src/core/dns_parser.c',
+      '../../src/core/obs_metrics.c',
     ),
     native: true,
     dependencies: [libbpf_dep],
@@ -46,6 +48,7 @@ cache_store_test_exe = executable(
     files(
       '../../src/core/hash.c',
       '../../src/core/dns_parser.c',
+      '../../src/core/obs_metrics.c',
     ),
     native: true,
     dependencies: [libbpf_dep, dependency('threads')],
@@ -164,6 +167,23 @@ cares_expand_test_exe = executable(
 test('Flat DNS Packet test Test', cares_expand_test_exe)
 
 # ====================
+# Observability HTTP Test
+# ====================
+obs_http_test_exe = executable(
+    'obs_http_test',
+    'obs/obs_http_test.c',
+    files(
+      '../../src/core/obs_http.c',
+      '../../src/core/obs_metrics.c',
+    ),
+    native: true,
+    dependencies: dependency('threads'),
+    include_directories: inc_src,
+)
+
+test('Observability HTTP Test', obs_http_test_exe)
+
+# ====================
 # DNS Benchmark (manual, not a test)
 # ====================
 dns_bench_exe = executable(
@@ -172,6 +192,7 @@ dns_bench_exe = executable(
     files(
       '../../src/core/hash.c',
       '../../src/core/dns_parser.c',
+      '../../src/core/obs_metrics.c',
     ),
     native: true,
     dependencies: [libbpf_dep],

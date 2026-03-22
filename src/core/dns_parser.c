@@ -9,6 +9,19 @@
 #include <string.h>
 #include <time.h>
 
+static inline uint32_t ring_buffer_alloc_idx(atomic_uint* next_idx, uint32_t max_entries) {
+    uint32_t idx = atomic_fetch_add_explicit(next_idx, 1, memory_order_relaxed);
+    return idx % max_entries;
+}
+
+static inline void seqlock_write_begin(atomic_uint* seq) {
+    atomic_fetch_add_explicit(seq, 1, memory_order_relaxed);
+}
+
+static inline void seqlock_write_end(atomic_uint* seq) {
+    atomic_fetch_add_explicit(seq, 1, memory_order_relaxed);
+}
+
 static inline void write_u16(uint8_t* ptr, uint16_t val) {
     val = htons(val);
     memcpy(ptr, &val, 2);
@@ -170,8 +183,7 @@ static int store_to_cache(
     if (flat_len > ARENA_ENTRY_SIZE || flat_len <= 0)
         return -1;
 
-    uint32_t idx = __sync_fetch_and_add(cctx->next_idx, 1);
-    idx %= cctx->max_entries;
+    uint32_t idx = ring_buffer_alloc_idx((atomic_uint*)cctx->next_idx, cctx->max_entries);
 
     /* Without a valid BPF map fd, we can only update arena, not the map */
     if (cctx->cache_map_fd < 0)
@@ -193,13 +205,13 @@ static int store_to_cache(
     }
 
     /* Seqlock write: odd seq signals write-in-progress to XDP readers */
-    __sync_fetch_and_add(&cctx->entries[idx].seq, 1);
+    seqlock_write_begin((atomic_uint*)&cctx->entries[idx].seq);
 
     cctx->entries[idx].gen = gen;
     memcpy(cctx->entries[idx].pkt, flat_buf, flat_len);
 
     /* Seqlock write complete: even seq signals stable data */
-    __sync_fetch_and_add(&cctx->entries[idx].seq, 1);
+    seqlock_write_end((atomic_uint*)&cctx->entries[idx].seq);
 
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -220,6 +232,7 @@ static int store_to_cache(
     int err = bpf_map_update_elem(cctx->cache_map_fd, key, &val, BPF_ANY);
     if (err) {
         fprintf(stderr, "[Cache] bpf_map_update_elem failed: %d\n", err);
+        OBS_COUNT_CACHE_INSERT_CTX(cctx, 0);
         return -1;
     }
 
@@ -231,6 +244,7 @@ static int store_to_cache(
         min_ttl,
         gen
     );
+    OBS_COUNT_CACHE_INSERT_CTX(cctx, 1);
     return 0;
 }
 
@@ -276,6 +290,8 @@ int cleanup_expired_entries(struct cache_ctx* cctx) {
     if (expired_count > 0)
         printf("[Cache] Cleanup: removed %d expired entries\n", expired_count);
 
+    OBS_ADD_CLEANUP_REMOVED_CTX(cctx, (uint64_t)expired_count);
+
     return expired_count;
 }
 
@@ -285,8 +301,10 @@ int handle_packet(void* ctx, void* data, [[maybe_unused]] size_t len) {
     uint32_t pkt_len = e->len;
     uint8_t* pkt_data = e->payload;
 
-    if (pkt_len < sizeof(struct dns_hdr))
+    if (pkt_len < sizeof(struct dns_hdr)) {
+        OBS_COUNT_PARSER_REJECT_CTX(cctx, OBS_REJECT_MALFORMED_RR);
         return 0;
+    }
 
     struct dns_hdr* dns = (struct dns_hdr*)pkt_data;
     uint16_t qdcount = ntohs(dns->qdcount);
@@ -295,27 +313,41 @@ int handle_packet(void* ctx, void* data, [[maybe_unused]] size_t len) {
     uint16_t flags = ntohs(dns->flags);
 
     uint8_t is_response = (flags >> 15) & 0x1;
-    if (!is_response)
+    if (!is_response) {
+        OBS_COUNT_PARSER_REJECT_CTX(cctx, OBS_REJECT_NOT_RESPONSE);
         return 0;
-    if (qdcount != 1)
+    }
+    if (qdcount != 1) {
+        OBS_COUNT_PARSER_REJECT_CTX(cctx, OBS_REJECT_BAD_QDCOUNT);
         return 0;
-    if (flags & DNS_FLAG_TC)
+    }
+    if (flags & DNS_FLAG_TC) {
+        OBS_COUNT_PARSER_REJECT_CTX(cctx, OBS_REJECT_TC);
         return 0;
-    if ((flags & DNS_RCODE_MASK) != 0)
+    }
+    if ((flags & DNS_RCODE_MASK) != 0) {
+        OBS_COUNT_PARSER_REJECT_CTX(cctx, OBS_REJECT_RCODE);
         return 0;
-    if (ancount == 0)
+    }
+    if (ancount == 0) {
+        OBS_COUNT_PARSER_REJECT_CTX(cctx, OBS_REJECT_NO_ANSWER);
         return 0;
+    }
 
     uint32_t name_hash = 0;
     uint32_t read_offset = sizeof(struct dns_hdr);
     int qname_len_packet = calculate_hash_strict(pkt_data, read_offset, pkt_len, &name_hash);
 
-    if (qname_len_packet < 0)
+    if (qname_len_packet < 0) {
+        OBS_COUNT_PARSER_REJECT_CTX(cctx, OBS_REJECT_MALFORMED_NAME);
         return 0;
+    }
 
     int q_end = read_offset + qname_len_packet;
-    if ((uint32_t)q_end + 4 > pkt_len)
+    if ((uint32_t)q_end + 4 > pkt_len) {
+        OBS_COUNT_PARSER_REJECT_CTX(cctx, OBS_REJECT_MALFORMED_QUESTION);
         return 0;
+    }
     uint16_t qtype = read_u16(pkt_data + q_end);
     uint16_t qclass = read_u16(pkt_data + q_end + 2);
 
@@ -351,17 +383,23 @@ int handle_packet(void* ctx, void* data, [[maybe_unused]] size_t len) {
             flat_buf + flat_offset,
             1500 - flat_offset
         );
-        if (w_len < 0)
+        if (w_len < 0) {
+            OBS_COUNT_PARSER_REJECT_CTX(cctx, OBS_REJECT_MALFORMED_NAME);
             return 0;
+        }
 
         int name_skip = skip_name(pkt_data, read_offset, pkt_len);
-        if (name_skip < 0)
+        if (name_skip < 0) {
+            OBS_COUNT_PARSER_REJECT_CTX(cctx, OBS_REJECT_MALFORMED_NAME);
             return 0;
+        }
         read_offset += name_skip;
         flat_offset += w_len;
 
-        if (read_offset + 10 > pkt_len)
+        if (read_offset + 10 > pkt_len) {
+            OBS_COUNT_PARSER_REJECT_CTX(cctx, OBS_REJECT_MALFORMED_RR);
             return 0;
+        }
 
         uint16_t rtype = read_u16(pkt_data + read_offset);
         uint32_t ttl = read_u32(pkt_data + read_offset + 4);
@@ -370,49 +408,68 @@ int handle_packet(void* ctx, void* data, [[maybe_unused]] size_t len) {
         if (ttl < min_ttl)
             min_ttl = ttl;
 
-        if (flat_offset + 10 > 1500)
+        if (flat_offset + 10 > 1500) {
+            OBS_COUNT_PARSER_REJECT_CTX(cctx, OBS_REJECT_MALFORMED_RR);
             return 0;
+        }
         memcpy(flat_buf + flat_offset, pkt_data + read_offset, 10);
         flat_offset += 10;
         read_offset += 10;
 
-        if (read_offset + rdlen > pkt_len)
+        if (read_offset + rdlen > pkt_len) {
+            OBS_COUNT_PARSER_REJECT_CTX(cctx, OBS_REJECT_MALFORMED_RR);
             return 0;
+        }
 
         if (rtype == DNS_TYPE_A || rtype == DNS_TYPE_AAAA) {
             if (rtype == qtype)
                 has_terminal_rr = 1;
-            if (flat_offset + rdlen > 1500)
+            if (flat_offset + rdlen > 1500) {
+                OBS_COUNT_PARSER_REJECT_CTX(cctx, OBS_REJECT_MALFORMED_RR);
                 return 0;
+            }
             memcpy(flat_buf + flat_offset, pkt_data + read_offset, rdlen);
             flat_offset += rdlen;
         } else if (rtype == DNS_TYPE_CNAME) {
             int cname_len = flatten_name(pkt_data, read_offset, pkt_len, NULL, 0);
-            if (cname_len < 0)
+            if (cname_len < 0) {
+                OBS_COUNT_PARSER_REJECT_CTX(cctx, OBS_REJECT_MALFORMED_NAME);
                 return 0;
-            if ((uint16_t)cname_len != rdlen)
+            }
+            if ((uint16_t)cname_len != rdlen) {
+                OBS_COUNT_PARSER_REJECT_CTX(cctx, OBS_REJECT_MALFORMED_NAME);
                 return 0;
-            if (flat_offset + rdlen > 1500)
+            }
+            if (flat_offset + rdlen > 1500) {
+                OBS_COUNT_PARSER_REJECT_CTX(cctx, OBS_REJECT_MALFORMED_RR);
                 return 0;
+            }
             memcpy(flat_buf + flat_offset, pkt_data + read_offset, rdlen);
             flat_offset += rdlen;
         } else {
+            OBS_COUNT_PARSER_REJECT_CTX(cctx, OBS_REJECT_UNSUPPORTED_RTYPE);
             return 0;
         }
         read_offset += rdlen;
     }
 
-    if ((qtype == DNS_TYPE_A || qtype == DNS_TYPE_AAAA) && !has_terminal_rr)
+    if ((qtype == DNS_TYPE_A || qtype == DNS_TYPE_AAAA) && !has_terminal_rr) {
+        OBS_COUNT_PARSER_REJECT_CTX(cctx, OBS_REJECT_CNAME_NO_TERMINAL);
         return 0;
+    }
 
     /* Skip Authority Section */
     for (int i = 0; i < nscount; i++) {
         int name_skip = skip_name(pkt_data, read_offset, pkt_len);
-        if (name_skip < 0)
+        if (name_skip < 0) {
+            OBS_COUNT_PARSER_REJECT_CTX(cctx, OBS_REJECT_MALFORMED_NAME);
             return 0;
+        }
         read_offset += name_skip;
-        if (read_offset + 10 > pkt_len)
+        if (read_offset + 10 > pkt_len) {
+            OBS_COUNT_PARSER_REJECT_CTX(cctx, OBS_REJECT_MALFORMED_RR);
             return 0;
+        }
         uint16_t rdlen = read_u16(pkt_data + read_offset + 8);
         read_offset += 10 + rdlen;
     }
@@ -434,19 +491,25 @@ int handle_packet(void* ctx, void* data, [[maybe_unused]] size_t len) {
 
         if (rtype == DNS_TYPE_OPT) {
             int scope = check_ecs_scope(pkt_data, read_offset, pkt_len, rdlen);
-            if (scope > 0)
+            if (scope > 0) {
+                OBS_COUNT_PARSER_REJECT_CTX(cctx, OBS_REJECT_BAD_ECS);
                 return 0;
+            }
             if (scope == 0)
                 ecs_scope = 0;
         }
 
-        if (read_offset + rdlen > pkt_len)
+        if (read_offset + rdlen > pkt_len) {
+            OBS_COUNT_PARSER_REJECT_CTX(cctx, OBS_REJECT_MALFORMED_RR);
             return 0;
+        }
         read_offset += rdlen;
     }
 
-    if (min_ttl == 0 || min_ttl == UINT32_MAX)
+    if (min_ttl == 0 || min_ttl == UINT32_MAX) {
+        OBS_COUNT_PARSER_REJECT_CTX(cctx, OBS_REJECT_BAD_TTL);
         return 0;
+    }
 
     struct cache_key key = { .name_hash = name_hash, .qtype = qtype, .qclass = qclass, ._pad = 0 };
 

@@ -15,6 +15,12 @@ This roadmap is based on the current repository state, not historical assumption
 - TTL expiry cleanup loop in userspace via background cleanup thread (`start_cleanup_thread`, `cleanup_expired_entries`).
 - CNAME ingest support in parser answer loop (with terminal A/AAAA requirement for A/AAAA queries).
 - Unit tests for parser, cache correctness, arena list/hash table, hash consistency, integration smoke tests.
+- **Observability baseline (P0.1 complete)**:
+  - Prometheus `/metrics` endpoint with sampled BPF counters and userspace counters.
+  - `/healthz` and `/readyz` endpoints for health/readiness probes.
+  - Configurable sampling via `--obs-bpf-mask` and toggle via `--obs` / `--obs-bpf`.
+  - Performance-safe: BPF counters use percpu map with sampling; userspace counters use relaxed atomics.
+  - Test coverage: `tests/unit/obs/obs_http_test.c`.
 
 ### Partially implemented
 - ECS handling is scope-zero-only (global cache only).
@@ -25,7 +31,6 @@ This roadmap is based on the current repository state, not historical assumption
 - IPv6 fast path (XDP ingress/egress mutation for IPv6).
 - Negative caching (NXDOMAIN/NODATA with SOA-derived TTL policy).
 - DNS-over-TCP capture/cache strategy.
-- Production-grade observability stack (`/metrics`, `/healthz`, `/readyz`, structured counters).
 - CI/CD pipeline and release automation (no `.github/workflows`).
 
 ---

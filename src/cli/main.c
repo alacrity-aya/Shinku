@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-only OR Apache-2.0
 #include "config.h"
 #include "core/loader.h"
-#include <ares.h>
+#include <errno.h>
 #include <signal.h>
 #include <stdio.h>
 #include <sys/types.h>
-#include <time.h>
 #include <unistd.h>
 
 static volatile bool exiting = false;

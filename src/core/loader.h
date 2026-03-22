@@ -3,12 +3,14 @@
 
 #include "bpf_log.h"
 #include "dns_parser.h"
+#include "obs_http.h"
+#include "obs_metrics.h"
 
 #include "cli/config.h"
 #include <bpf/libbpf.h>
-#include <errno.h>
 #include <pthread.h>
 #include <stdbool.h>
+#include <stdatomic.h>
 
 struct cache_bpf;
 
@@ -28,10 +30,17 @@ struct bpf_ctx {
     /* Cache context for ring buffer callback */
     struct cache_ctx cache_ctx;
 
+    struct obs_metrics metrics;
+    struct obs_context obs_ctx;
+    struct obs_http_server obs_http;
+    atomic_bool bpf_ready;
+    int obs_ncpu;
+    uint64_t* obs_percpu_vals;
+
     /* Cleanup thread */
     pthread_t cleanup_thread;
     struct cleanup_config cleanup_cfg;
-    volatile bool cleanup_running;
+    atomic_bool cleanup_running;
 };
 
 int setup_bpf(struct bpf_ctx* ctx, const struct env* env);

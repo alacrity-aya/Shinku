@@ -20,7 +20,6 @@
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
@@ -370,9 +369,9 @@ static void* seqlock_writer_thread(void* arg) {
     while (!atomic_load_explicit(&ctx->stop, memory_order_relaxed)) {
         uint8_t pattern = (iteration & 1) ? 0x55 : 0xAA;
 
-        __sync_fetch_and_add(&ctx->entry->seq, 1);
+        atomic_fetch_add_explicit((atomic_uint*)&ctx->entry->seq, 1, memory_order_relaxed);
         memset(ctx->entry->pkt, pattern, ARENA_ENTRY_SIZE);
-        __sync_fetch_and_add(&ctx->entry->seq, 1);
+        atomic_fetch_add_explicit((atomic_uint*)&ctx->entry->seq, 1, memory_order_relaxed);
 
         iteration++;
     }

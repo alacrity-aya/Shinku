@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-only OR Apache-2.0
 #pragma once
 
+#ifndef SHINKU_BPF_LOG_ENABLED
+#define SHINKU_BPF_LOG_ENABLED 0
+#endif
+
 enum log_level {
     LOG_DEBUG = 0,
     LOG_INFO = 1,
@@ -13,15 +17,12 @@ struct log_event {
     char msg[128];
 };
 
-// NOTE: Comment this to disable log
-// #define ENABLE_BPF_LOG 1
-
 // ==========================================
 // kernel space
 // ==========================================
 #if defined(__VMLINUX_H__) || defined(__BPF_HELPERS__)
 
-    #ifdef ENABLE_BPF_LOG
+    #if SHINKU_BPF_LOG_ENABLED
 
 struct {
     __uint(type, BPF_MAP_TYPE_RINGBUF);

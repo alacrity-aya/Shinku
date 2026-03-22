@@ -13,6 +13,8 @@ project('shinku', 'c',
 
 # Build options
 bpf_log = get_option('bpf_log')
+obs = get_option('obs')
+obs_bpf = get_option('obs_bpf')
 
 cares_dep = dependency('libcares', fallback : ['c-ares', 'cares_dep'])
 libbpf_dep = dependency('libbpf')
@@ -40,7 +42,7 @@ bpf_obj = custom_target(
   depends: vmlinux_h,
   command: [
     clang, '-g', '-O2', '-target', 'bpf',
-  ] + (bpf_log ? ['-DENABLE_BPF_LOG'] : []) + [
+  ] + (bpf_log ? ['-DSHINKU_BPF_LOG_ENABLED=1'] : ['-DSHINKU_BPF_LOG_ENABLED=0']) + (obs_bpf ? ['-DSHINKU_OBS_BPF_ENABLED=1'] : ['-DSHINKU_OBS_BPF_ENABLED=0']) + [
     '-I' + meson.current_build_dir(),
     '-I' + meson.current_source_dir() + '/src/include',
     '-I' + meson.current_source_dir() + '/src',
@@ -75,6 +77,8 @@ bpf_skel = custom_target(
 core_src = files(
   'src/core/hash.c',
   'src/core/dns_parser.c',
+  'src/core/obs_metrics.c',
+  'src/core/obs_http.c',
   'src/core/loader.c',
 
 )
@@ -90,9 +94,9 @@ executable(
   cli_src,
   core_src,          
   bpf_skel,         
-  dependencies: [libbpf_dep, cares_dep],
+  dependencies: [libbpf_dep],
   include_directories: inc_src, 
-  c_args: bpf_log ? ['-DENABLE_BPF_LOG'] : [],
+  c_args: (bpf_log ? ['-DSHINKU_BPF_LOG_ENABLED=1'] : ['-DSHINKU_BPF_LOG_ENABLED=0']) + (obs ? ['-DSHINKU_OBS_ENABLED=1'] : ['-DSHINKU_OBS_ENABLED=0']),
   install: true
 )
 
