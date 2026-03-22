@@ -104,3 +104,22 @@ executable(
 # Tests
 # ====================
 subdir('tests/unit')
+
+# ====================
+# Static Analysis (clang-tidy)
+# ====================
+clang_tidy = find_program('clang-tidy', required: false)
+
+if clang_tidy.found()
+  run_target('tidy',
+    command: [
+      meson.current_source_dir() / 'scripts/run-clang-tidy.sh'
+    ]
+  )
+  
+  run_target('tidy-fix',
+    command: [
+      meson.current_source_dir() / 'scripts/run-clang-tidy.sh', '--fix'
+    ]
+  )
+endif

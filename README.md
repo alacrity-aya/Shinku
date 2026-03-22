@@ -188,6 +188,35 @@ This removes all instrumentation code paths entirely.
 *   Integration tests: Run `sudo python3 tests/integration/test_dns_cache.py -v`. This suite contains 9 tests.
 *   Benchmarks: Run `sudo bash tests/benchmark/run_benchmark.sh`.
 
+## Development
+
+### Static Analysis
+
+The project uses clang-tidy for static analysis. Install it first:
+
+```bash
+sudo dnf install clang-tools-extra
+```
+
+Run analysis:
+
+```bash
+just tidy          # Check for issues
+just tidy-fix      # Auto-fix where possible
+```
+
+### Code Formatting
+
+Run clang-format on all source files:
+
+```bash
+just fmt
+```
+
+Configuration files:
+*   `.clang-format` — Code formatting rules
+*   `.clang-tidy` — Static analysis checks
+
 ## Project Structure
 
 ```text

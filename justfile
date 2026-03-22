@@ -59,3 +59,19 @@ send *args:
 # Debug: Enter the Netns shell environment
 net-shell:
     sudo ip netns exec {{ns}} bash
+
+# ============================================================================
+# Static Analysis Commands
+# ============================================================================
+
+# Run clang-tidy static analysis
+tidy:
+    ./scripts/run-clang-tidy.sh
+
+# Run clang-tidy with auto-fix
+tidy-fix:
+    ./scripts/run-clang-tidy.sh --fix
+
+# Run clang-format on all source files
+fmt:
+    find src -name "*.c" -o -name "*.h" | xargs clang-format -i
