@@ -75,3 +75,15 @@ tidy-fix:
 # Run clang-format on all source files
 fmt:
     find src -name "*.c" -o -name "*.h" | xargs clang-format -i
+
+# ============================================================================
+# Observability Commands (Prometheus + Grafana)
+# ============================================================================
+
+# Start Prometheus + Grafana stack
+obs-up:
+    ./observability/up.sh
+
+# Stop Prometheus + Grafana stack
+obs-down:
+    ./observability/down.sh
