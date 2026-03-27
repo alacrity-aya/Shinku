@@ -40,21 +40,21 @@ typedef uint16_t __be16;
     #define __always_inline inline
 #endif
 
-#include "../../src/include/constants.h"
 #include "../../src/core/dns_parser.h"
+#include "../../src/include/constants.h"
 
 static int test_count = 0;
 static int pass_count = 0;
 
-#define TEST_ASSERT(cond, msg, ...)                                  \
-    do {                                                             \
-        test_count++;                                                \
-        if (cond) {                                                  \
-            pass_count++;                                            \
-            printf("  [PASS] " msg "\n", ##__VA_ARGS__);             \
-        } else {                                                     \
-            printf("  [FAIL] " msg "\n", ##__VA_ARGS__);             \
-        }                                                            \
+#define TEST_ASSERT(cond, msg, ...) \
+    do { \
+        test_count++; \
+        if (cond) { \
+            pass_count++; \
+            printf("  [PASS] " msg "\n", ##__VA_ARGS__); \
+        } else { \
+            printf("  [FAIL] " msg "\n", ##__VA_ARGS__); \
+        } \
     } while (0)
 
 // =====================================================================
@@ -105,12 +105,8 @@ static void builder_add_name(struct dns_builder* b, const char* name) {
     b->buf[b->len++] = 0;
 }
 
-static void builder_add_question(
-    struct dns_builder* b,
-    const char* name,
-    uint16_t qtype,
-    uint16_t qclass
-) {
+static void
+builder_add_question(struct dns_builder* b, const char* name, uint16_t qtype, uint16_t qclass) {
     builder_add_name(b, name);
     uint16_t* ptr = (uint16_t*)(b->buf + b->len);
     ptr[0] = htons(qtype);
@@ -142,14 +138,14 @@ static void builder_add_answer(
     b->len += rdlen;
 }
 
-static int call_handle_packet(struct cache_ctx* cctx, uint8_t* dns_pkt, uint32_t dns_len) {
+static int call_handle_packet(struct cache_context* cache_ctx, uint8_t* dns_pkt, uint32_t dns_len) {
     uint8_t buf[sizeof(struct dns_event) + 1500];
     memset(buf, 0, sizeof(buf));
     struct dns_event* event = (struct dns_event*)buf;
     event->timestamp = 0;
     event->len = dns_len;
     memcpy(event->payload, dns_pkt, dns_len);
-    return handle_packet(cctx, event, sizeof(*event) + dns_len);
+    return cache_handle_event(cache_ctx, event, sizeof(*event) + dns_len);
 }
 
 // =====================================================================
@@ -170,7 +166,7 @@ static void test_seqlock_write(int cache_map_fd) {
     memset(entries, 0, sizeof(entries));
     memset(slot_owners, 0, sizeof(slot_owners));
 
-    struct cache_ctx ctx = {
+    struct cache_context ctx = {
         .entries = entries,
         .next_idx = &next_idx,
         .max_entries = 4,
@@ -182,14 +178,18 @@ static void test_seqlock_write(int cache_map_fd) {
     TEST_ASSERT(entries[0].seq == 0, "Initial seq == 0 (stable)");
 
     struct dns_builder b;
-    uint8_t ip[4] = {1, 2, 3, 4};
+    uint8_t ip[4] = { 1, 2, 3, 4 };
     builder_init(&b, 0x1234, 0x8180, 1, 1, 0, 0);
     builder_add_question(&b, "test.com", DNS_TYPE_A, DNS_CLASS_IN);
     builder_add_answer(&b, "test.com", DNS_TYPE_A, DNS_CLASS_IN, 300, 4, ip);
 
     call_handle_packet(&ctx, b.buf, b.len);
 
-    TEST_ASSERT(entries[0].seq == 2, "After store: seq == 2 (two increments, got %u)", entries[0].seq);
+    TEST_ASSERT(
+        entries[0].seq == 2,
+        "After store: seq == 2 (two increments, got %u)",
+        entries[0].seq
+    );
     TEST_ASSERT((entries[0].seq & 1) == 0, "seq is even (stable, not write-in-progress)");
 }
 
@@ -209,7 +209,7 @@ static void test_generation_counter(int cache_map_fd, int has_real_bpf_map) {
     memset(entries, 0, sizeof(entries));
     memset(slot_owners, 0, sizeof(slot_owners));
 
-    struct cache_ctx ctx = {
+    struct cache_context ctx = {
         .entries = entries,
         .next_idx = &next_idx,
         .max_entries = 4,
@@ -218,8 +218,8 @@ static void test_generation_counter(int cache_map_fd, int has_real_bpf_map) {
         .next_gen = 0,
     };
 
-    const char* domains[3] = {"alpha.com", "beta.com", "gamma.com"};
-    uint8_t ips[3][4] = {{10, 0, 0, 1}, {10, 0, 0, 2}, {10, 0, 0, 3}};
+    const char* domains[3] = { "alpha.com", "beta.com", "gamma.com" };
+    uint8_t ips[3][4] = { { 10, 0, 0, 1 }, { 10, 0, 0, 2 }, { 10, 0, 0, 3 } };
 
     for (int i = 0; i < 3; i++) {
         struct dns_builder b;
@@ -281,7 +281,7 @@ static void test_eviction_on_wraparound(int cache_map_fd, int has_real_bpf_map) 
     memset(entries, 0, sizeof(entries));
     memset(slot_owners, 0, sizeof(slot_owners));
 
-    struct cache_ctx ctx = {
+    struct cache_context ctx = {
         .entries = entries,
         .next_idx = &next_idx,
         .max_entries = 3,
@@ -290,8 +290,8 @@ static void test_eviction_on_wraparound(int cache_map_fd, int has_real_bpf_map) 
         .next_gen = 0,
     };
 
-    const char* domains[4] = {"first.com", "second.com", "third.com", "fourth.com"};
-    uint8_t ips[4][4] = {{1, 1, 1, 1}, {2, 2, 2, 2}, {3, 3, 3, 3}, {4, 4, 4, 4}};
+    const char* domains[4] = { "first.com", "second.com", "third.com", "fourth.com" };
+    uint8_t ips[4][4] = { { 1, 1, 1, 1 }, { 2, 2, 2, 2 }, { 3, 3, 3, 3 }, { 4, 4, 4, 4 } };
     struct dns_builder builders[4];
 
     for (int i = 0; i < 4; i++) {
@@ -307,11 +307,14 @@ static void test_eviction_on_wraparound(int cache_map_fd, int has_real_bpf_map) 
 
     uint32_t first_hash = 0;
     calculate_hash_strict_impl(
-        builders[0].buf, sizeof(struct dns_hdr), builders[0].len, &first_hash
+        builders[0].buf,
+        sizeof(struct dns_hdr),
+        builders[0].len,
+        &first_hash
     );
-    struct cache_key first_key = {
-        .name_hash = first_hash, .qtype = DNS_TYPE_A, .qclass = DNS_CLASS_IN
-    };
+    struct cache_key first_key = { .name_hash = first_hash,
+                                   .qtype = DNS_TYPE_A,
+                                   .qclass = DNS_CLASS_IN };
     struct cache_value first_val;
     int err = bpf_map_lookup_elem(cache_map_fd, &first_key, &first_val);
 
@@ -323,11 +326,14 @@ static void test_eviction_on_wraparound(int cache_map_fd, int has_real_bpf_map) 
 
     uint32_t fourth_hash = 0;
     calculate_hash_strict_impl(
-        builders[3].buf, sizeof(struct dns_hdr), builders[3].len, &fourth_hash
+        builders[3].buf,
+        sizeof(struct dns_hdr),
+        builders[3].len,
+        &fourth_hash
     );
-    struct cache_key fourth_key = {
-        .name_hash = fourth_hash, .qtype = DNS_TYPE_A, .qclass = DNS_CLASS_IN
-    };
+    struct cache_key fourth_key = { .name_hash = fourth_hash,
+                                    .qtype = DNS_TYPE_A,
+                                    .qclass = DNS_CLASS_IN };
     struct cache_value fourth_val;
     err = bpf_map_lookup_elem(cache_map_fd, &fourth_key, &fourth_val);
 
@@ -436,7 +442,7 @@ static void test_seqlock_torn_read_detection(void) {
     pthread_create(&writer, NULL, seqlock_writer_thread, &ctx);
     pthread_create(&reader, NULL, seqlock_reader_thread, &ctx);
 
-    struct timespec ts = {.tv_sec = 0, .tv_nsec = 200 * 1000000};
+    struct timespec ts = { .tv_sec = 0, .tv_nsec = 200 * 1000000 };
     nanosleep(&ts, NULL);
 
     atomic_store_explicit(&ctx.stop, 1, memory_order_relaxed);
@@ -450,10 +456,7 @@ static void test_seqlock_torn_read_detection(void) {
     printf("  Total reads: %d, Detected conflicts: %d, Clean reads: %d\n", total, detected, clean);
 
     TEST_ASSERT(clean > 0, "Seqlock allows clean reads (%d clean reads)", clean);
-    TEST_ASSERT(
-        clean > 0,
-        "FIX: All accepted reads are consistent (seqlock rejects torn reads)"
-    );
+    TEST_ASSERT(clean > 0, "FIX: All accepted reads are consistent (seqlock rejects torn reads)");
 
     if (detected > 0) {
         printf("  [INFO] Seqlock correctly detected %d concurrent write conflicts\n", detected);
@@ -478,7 +481,7 @@ static void test_ttl_cleanup(int cache_map_fd, int has_real_bpf_map) {
     memset(entries, 0, sizeof(entries));
     memset(slot_owners, 0, sizeof(slot_owners));
 
-    struct cache_ctx ctx = {
+    struct cache_context ctx = {
         .entries = entries,
         .next_idx = &next_idx,
         .max_entries = 4,
@@ -487,14 +490,14 @@ static void test_ttl_cleanup(int cache_map_fd, int has_real_bpf_map) {
         .next_gen = 0,
     };
 
-    uint8_t ip1[4] = {10, 0, 0, 1};
+    uint8_t ip1[4] = { 10, 0, 0, 1 };
     struct dns_builder b1;
     builder_init(&b1, 0x2000, 0x8180, 1, 1, 0, 0);
     builder_add_question(&b1, "short-ttl.com", DNS_TYPE_A, DNS_CLASS_IN);
     builder_add_answer(&b1, "short-ttl.com", DNS_TYPE_A, DNS_CLASS_IN, 1, 4, ip1);
     call_handle_packet(&ctx, b1.buf, b1.len);
 
-    uint8_t ip2[4] = {10, 0, 0, 2};
+    uint8_t ip2[4] = { 10, 0, 0, 2 };
     struct dns_builder b2;
     builder_init(&b2, 0x2001, 0x8180, 1, 1, 0, 0);
     builder_add_question(&b2, "long-ttl.com", DNS_TYPE_A, DNS_CLASS_IN);
@@ -504,7 +507,7 @@ static void test_ttl_cleanup(int cache_map_fd, int has_real_bpf_map) {
     printf("  Waiting 2 seconds for short-ttl.com to expire...\n");
     sleep(2);
 
-    int cleaned = cleanup_expired_entries(&ctx);
+    int cleaned = cache_cleanup_expired_entries(&ctx);
     TEST_ASSERT(cleaned >= 1, "Cleanup removed %d expired entries (expected >= 1)", cleaned);
 
     uint32_t hash1 = 0;
@@ -540,7 +543,7 @@ static void test_slot_owners_tracking(int cache_map_fd) {
     memset(entries, 0, sizeof(entries));
     memset(slot_owners, 0, sizeof(slot_owners));
 
-    struct cache_ctx ctx = {
+    struct cache_context ctx = {
         .entries = entries,
         .next_idx = &next_idx,
         .max_entries = 4,
@@ -549,8 +552,8 @@ static void test_slot_owners_tracking(int cache_map_fd) {
         .next_gen = 0,
     };
 
-    const char* domains[3] = {"aaa.com", "bbb.com", "ccc.com"};
-    uint8_t ips[3][4] = {{1, 0, 0, 1}, {2, 0, 0, 2}, {3, 0, 0, 3}};
+    const char* domains[3] = { "aaa.com", "bbb.com", "ccc.com" };
+    uint8_t ips[3][4] = { { 1, 0, 0, 1 }, { 2, 0, 0, 2 }, { 3, 0, 0, 3 } };
 
     for (int i = 0; i < 3; i++) {
         struct dns_builder b;

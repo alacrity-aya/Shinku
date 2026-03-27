@@ -34,10 +34,12 @@ int main(int argc, char** argv) {
     if (err)
         goto cleanup;
 
-    /* Start background cleanup thread */
     err = start_cleanup_thread(&ctx, env.cleanup_interval);
-    if (err)
-        goto cleanup;
+    if (err) {
+        fprintf(stderr, "Cleanup thread unavailable, continuing in degraded mode: %d\n", err);
+        obs_metrics_mark_degraded(&ctx.metrics, OBS_DEGRADED_CLEANUP_THREAD_DOWN);
+        err = 0;
+    }
 
     printf("BPF System Running... Press Ctrl+C to stop.\n");
 
@@ -47,10 +49,8 @@ int main(int argc, char** argv) {
             err = 0;
             break;
         }
-        if (err < 0) {
-            fprintf(stderr, "Error polling log ring buffer: %d\n", err);
-            goto cleanup;
-        }
+        if (err < 0)
+            fprintf(stderr, "Error polling log ring buffer: %d (continuing)\n", err);
 
         err = poll_pkt_ring(&ctx, 100);
         if (err == -EINTR) {
@@ -58,8 +58,9 @@ int main(int argc, char** argv) {
             break;
         }
         if (err < 0) {
-            fprintf(stderr, "Error polling pkt ring buffer: %d\n", err);
-            goto cleanup;
+            fprintf(stderr, "Error polling pkt ring buffer: %d (degraded, continuing)\n", err);
+            usleep(50000);
+            continue;
         }
     }
 

@@ -45,6 +45,19 @@ enum obs_parser_reject_reason {
     OBS_REJECT_MAX = 12,
 };
 
+enum obs_degraded_reason {
+    OBS_DEGRADED_STARTUP_ATTACH_RETRY = 0,
+    OBS_DEGRADED_STARTUP_ATTACH_FAILED = 1,
+    OBS_DEGRADED_TCX_ATTACH_FAILED = 2,
+    OBS_DEGRADED_CLEANUP_THREAD_DOWN = 3,
+    OBS_DEGRADED_PKT_POLL_ERRORS = 4,
+    OBS_DEGRADED_RING_BACKLOG = 5,
+    OBS_DEGRADED_OBS_HTTP_DOWN = 6,
+    OBS_DEGRADED_BPF_METRICS_SYNC_FAIL = 7,
+    OBS_DEGRADED_CACHE_MAP_UPDATE_FAIL = 8,
+    OBS_DEGRADED_MAX = 9,
+};
+
 struct obs_metrics {
     struct obs_metrics_config cfg;
     struct obs_aligned_counter parser_reject_total;
@@ -53,6 +66,9 @@ struct obs_metrics {
     struct obs_aligned_counter cache_insert_fail_total;
     struct obs_aligned_counter cleanup_removed_total;
     struct obs_aligned_counter rb_pkt_poll_error_total;
+    struct obs_aligned_counter degraded_mode;
+    struct obs_aligned_counter degraded_transition_total;
+    struct obs_aligned_counter degraded_reason_total[OBS_DEGRADED_MAX];
     struct obs_aligned_counter bpf_counters[OBS_BPF_METRIC_MAX];
 };
 
@@ -69,10 +85,13 @@ struct obs_context {
         obs_metrics_count_cache_insert(OBS_METRICS_FROM_CACHE_CTX(_cctx), (_success))
     #define OBS_ADD_CLEANUP_REMOVED_CTX(_cctx, _removed) \
         obs_metrics_add_cleanup_removed(OBS_METRICS_FROM_CACHE_CTX(_cctx), (_removed))
+    #define OBS_MARK_DEGRADED_CTX(_cctx, _reason) \
+        obs_metrics_mark_degraded(OBS_METRICS_FROM_CACHE_CTX(_cctx), (_reason))
 #else
     #define OBS_COUNT_PARSER_REJECT_CTX(_cctx, _reason) ((void)0)
     #define OBS_COUNT_CACHE_INSERT_CTX(_cctx, _success) ((void)0)
     #define OBS_ADD_CLEANUP_REMOVED_CTX(_cctx, _removed) ((void)0)
+    #define OBS_MARK_DEGRADED_CTX(_cctx, _reason) ((void)0)
 #endif
 
 void obs_metrics_init(struct obs_metrics* metrics, const struct obs_metrics_config* cfg);
@@ -83,3 +102,4 @@ void obs_metrics_count_parser_reject(
 void obs_metrics_count_cache_insert(struct obs_metrics* metrics, int success);
 void obs_metrics_add_cleanup_removed(struct obs_metrics* metrics, uint64_t removed);
 void obs_metrics_count_rb_poll_error(struct obs_metrics* metrics);
+void obs_metrics_mark_degraded(struct obs_metrics* metrics, enum obs_degraded_reason reason);

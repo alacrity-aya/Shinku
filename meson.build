@@ -75,6 +75,7 @@ bpf_skel = custom_target(
 
 # Core Library
 core_src = files(
+  'src/core/degraded_mode.c',
   'src/core/hash.c',
   'src/core/dns_parser.c',
   'src/core/obs_metrics.c',

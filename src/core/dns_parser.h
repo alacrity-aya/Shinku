@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: GPL-2.0-only OR Apache-2.0
 #pragma once
 
-#include "types.h"
+#include "degraded_mode.h"
 #include "obs_metrics.h"
+#include "types.h"
 #include <stddef.h>
 #include <stdint.h>
 
-struct cache_ctx {
+struct cache_context {
     struct cache_entry* entries; /* skel->arena->cache_entries (mmap'd) */
     uint32_t* next_idx; /* skel->arena->next_entry_idx (mmap'd) */
     uint32_t max_entries; /* CACHE_MAP_MAX_ENTRIES */
@@ -22,13 +23,16 @@ struct cache_ctx {
     uint32_t next_gen;
 
     struct obs_context* obs;
+    struct degraded_state* degraded;
 };
 
+int cache_handle_event(void* ctx, void* data, size_t len);
 int handle_packet(void* ctx, void* data, size_t len);
 
 /* Remove expired cache_map entries and clear their slot_owners mappings.
  * Called periodically from main loop (e.g., every 10 seconds). */
-int cleanup_expired_entries(struct cache_ctx* cctx);
+int cache_cleanup_expired_entries(struct cache_context* cache_ctx);
+int cleanup_expired_entries(struct cache_context* cache_ctx);
 
 int calculate_hash_strict_impl(const uint8_t* packet, int offset, int max_len, uint32_t* out_hash);
 int flatten_name_impl(const uint8_t* packet, int offset, int max_len, uint8_t* dest, int dest_max);

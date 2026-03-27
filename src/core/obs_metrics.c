@@ -48,3 +48,26 @@ void obs_metrics_count_rb_poll_error(struct obs_metrics* metrics) {
 
     atomic_fetch_add_explicit(&metrics->rb_pkt_poll_error_total.value, 1, memory_order_relaxed);
 }
+
+void obs_metrics_mark_degraded(struct obs_metrics* metrics, enum obs_degraded_reason reason) {
+    if (!metrics || !metrics->cfg.enabled)
+        return;
+
+    uint64_t prev =
+        atomic_exchange_explicit(&metrics->degraded_mode.value, 1, memory_order_relaxed);
+    if (prev == 0) {
+        atomic_fetch_add_explicit(
+            &metrics->degraded_transition_total.value,
+            1,
+            memory_order_relaxed
+        );
+    }
+
+    if ((unsigned int)reason < OBS_DEGRADED_MAX) {
+        atomic_fetch_add_explicit(
+            &metrics->degraded_reason_total[reason].value,
+            1,
+            memory_order_relaxed
+        );
+    }
+}

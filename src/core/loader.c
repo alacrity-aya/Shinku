@@ -11,8 +11,8 @@
 #include <net/if.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <unistd.h>
 #include <time.h>
+#include <unistd.h>
 
 // Error codes for setup_bpf
 #define ERR_SKEL_LOAD -1
@@ -21,25 +21,35 @@
 #define ERR_XDP_ATTACH -4
 #define ERR_TC_ATTACH -5
 
+#define ATTACH_RETRY_MAX 5
+#define ATTACH_RETRY_BASE_MS 50
+#define ATTACH_RETRY_MAX_MS 800
+
 static void sync_bpf_metrics(struct bpf_ctx* ctx) {
 #if SHINKU_OBS_ENABLED
     if (!ctx || !ctx->metrics.cfg.enabled || !ctx->metrics.cfg.bpf_enabled)
         return;
 
-    if (!ctx->skel || !ctx->obs_percpu_vals || ctx->obs_ncpu <= 0)
+    if (!ctx->skel || !ctx->obs_percpu_vals || ctx->obs_ncpu <= 0) {
         return;
+    }
 
     int map_fd = bpf_map__fd(ctx->skel->maps.obs_bpf_metrics);
-    if (map_fd < 0)
+    if (map_fd < 0) {
+        obs_metrics_mark_degraded(&ctx->metrics, OBS_DEGRADED_BPF_METRICS_SYNC_FAIL);
         return;
+    }
 
     for (uint32_t key = 0; key < OBS_BPF_METRIC_MAX; key++) {
-        if (bpf_map_lookup_elem(map_fd, &key, ctx->obs_percpu_vals) != 0)
+        if (bpf_map_lookup_elem(map_fd, &key, ctx->obs_percpu_vals) != 0) {
+            obs_metrics_mark_degraded(&ctx->metrics, OBS_DEGRADED_BPF_METRICS_SYNC_FAIL);
             continue;
+        }
 
         uint64_t total = 0;
-        for (int cpu = 0; cpu < ctx->obs_ncpu; cpu++)
+        for (int cpu = 0; cpu < ctx->obs_ncpu; cpu++) {
             total += ctx->obs_percpu_vals[cpu];
+        }
 
         atomic_store_explicit(&ctx->metrics.bpf_counters[key].value, total, memory_order_relaxed);
     }
@@ -51,8 +61,9 @@ static void sync_bpf_metrics(struct bpf_ctx* ctx) {
 static int libbpf_print_fn(enum libbpf_print_level level, const char* format, va_list args) {
     char ts[LOG_TIMESTAMP_LEN];
     time_t t = time(NULL);
-    struct tm* tm_info = localtime(&t);
-    strftime(ts, sizeof(ts), "%H:%M:%S", tm_info);
+    struct tm tm_info;
+    localtime_r(&t, &tm_info);
+    strftime(ts, sizeof(ts), "%H:%M:%S", &tm_info);
 
     const char* color_code = COL_RESET;
     const char* level_str = "INFO";
@@ -131,10 +142,13 @@ int setup_bpf(struct bpf_ctx* ctx, const struct env* env) {
     };
 #endif
     obs_metrics_init(&ctx->metrics, &obs_cfg);
+    degraded_state_init(&ctx->degraded);
     ctx->obs_ctx.metrics = &ctx->metrics;
     atomic_store_explicit(&ctx->bpf_ready, false, memory_order_relaxed);
     ctx->obs_ncpu = 0;
     ctx->obs_percpu_vals = NULL;
+    ctx->pkt_poll_err_streak = 0;
+    ctx->rb_backlog_streak = 0;
 
     libbpf_set_print(libbpf_print_fn);
 
@@ -169,31 +183,34 @@ int setup_bpf(struct bpf_ctx* ctx, const struct env* env) {
         ctx->obs_ncpu = libbpf_num_possible_cpus();
         if (ctx->obs_ncpu <= 0) {
             fprintf(stderr, "Failed to get possible CPU count for observability metrics\n");
-            err = ERR_SKEL_LOAD;
-            goto cleanup;
+            obs_metrics_mark_degraded(&ctx->metrics, OBS_DEGRADED_BPF_METRICS_SYNC_FAIL);
+            ctx->metrics.cfg.bpf_enabled = 0;
+            ctx->obs_ncpu = 0;
         }
 
-        ctx->obs_percpu_vals = calloc((size_t)ctx->obs_ncpu, sizeof(uint64_t));
-        if (!ctx->obs_percpu_vals) {
-            fprintf(stderr, "Failed to allocate percpu buffer for observability metrics\n");
-            err = ERR_SKEL_LOAD;
-            goto cleanup;
+        if (ctx->obs_ncpu > 0) {
+            ctx->obs_percpu_vals = calloc((size_t)ctx->obs_ncpu, sizeof(uint64_t));
+            if (!ctx->obs_percpu_vals) {
+                fprintf(stderr, "Failed to allocate percpu buffer for observability metrics\n");
+                obs_metrics_mark_degraded(&ctx->metrics, OBS_DEGRADED_BPF_METRICS_SYNC_FAIL);
+                ctx->metrics.cfg.bpf_enabled = 0;
+                ctx->obs_ncpu = 0;
+            }
         }
     }
 
     /* Wire up cache context — skeleton auto-mmap's arena via __arena globals */
-    ctx->cache_ctx.entries = ctx->skel->arena->cache_entries;
-    ctx->cache_ctx.next_idx = &ctx->skel->arena->next_entry_idx;
-    ctx->cache_ctx.max_entries = CACHE_MAP_MAX_ENTRIES;
-    ctx->cache_ctx.cache_map_fd = bpf_map__fd(ctx->skel->maps.cache_map);
-    ctx->cache_ctx.next_gen = 0;
-    ctx->cache_ctx.obs = &ctx->obs_ctx;
-    ctx->cache_ctx.slot_owners =
-        calloc(CACHE_MAP_MAX_ENTRIES, sizeof(struct cache_key));
-    if (!ctx->cache_ctx.slot_owners) {
-        fprintf(stderr, "Failed to allocate slot_owners array\n");
-        err = ERR_SKEL_LOAD;
-        goto cleanup;
+    ctx->cache_context.entries = ctx->skel->arena->cache_entries;
+    ctx->cache_context.next_idx = &ctx->skel->arena->next_entry_idx;
+    ctx->cache_context.max_entries = CACHE_MAP_MAX_ENTRIES;
+    ctx->cache_context.cache_map_fd = bpf_map__fd(ctx->skel->maps.cache_map);
+    ctx->cache_context.next_gen = 0;
+    ctx->cache_context.obs = &ctx->obs_ctx;
+    ctx->cache_context.degraded = &ctx->degraded;
+    ctx->cache_context.slot_owners = calloc(CACHE_MAP_MAX_ENTRIES, sizeof(struct cache_key));
+    if (!ctx->cache_context.slot_owners) {
+        fprintf(stderr, "Failed to allocate slot_owners array, continuing in degraded mode\n");
+        obs_metrics_mark_degraded(&ctx->metrics, OBS_DEGRADED_CACHE_MAP_UPDATE_FAIL);
     }
 
     err = cache_bpf__attach(ctx->skel);
@@ -219,7 +236,6 @@ int setup_bpf(struct bpf_ctx* ctx, const struct env* env) {
     (void)env->log_level; /* unused when logging disabled */
 #endif
 
-    // xdp
     uint32_t ifindex = if_nametoindex(env->interface);
     if (ifindex == 0) {
         fprintf(stderr, "Invalid interface name: %s\n", env->interface);
@@ -227,40 +243,96 @@ int setup_bpf(struct bpf_ctx* ctx, const struct env* env) {
         goto cleanup;
     }
 
-    ctx->skel->links.xdp_rx = bpf_program__attach_xdp(ctx->skel->progs.xdp_rx, ifindex);
-    err = libbpf_get_error(ctx->skel->links.xdp_rx);
-    if (err) {
-        fprintf(stderr, "Failed to attach XDP(Ingress) to %s (Error: %d)\n", env->interface, err);
+    int attached = 0;
+    for (int attempt = 0; attempt < ATTACH_RETRY_MAX; attempt++) {
+        ctx->skel->links.xdp_rx = bpf_program__attach_xdp(ctx->skel->progs.xdp_rx, ifindex);
+        err = libbpf_get_error(ctx->skel->links.xdp_rx);
+        if (!err) {
+            attached = 1;
+            break;
+        }
+
         ctx->skel->links.xdp_rx = NULL;
+        degraded_set_reason(&ctx->degraded, DEGRADED_REASON_STARTUP_ATTACH_RETRY);
+        int backoff_ms = ATTACH_RETRY_BASE_MS << attempt;
+        if (backoff_ms > ATTACH_RETRY_MAX_MS) {
+            backoff_ms = ATTACH_RETRY_MAX_MS;
+        }
+
+        fprintf(
+            stderr,
+            "Attach retry (XDP) attempt %d/%d failed: %d, backoff=%dms\n",
+            attempt + 1,
+            ATTACH_RETRY_MAX,
+            err,
+            backoff_ms
+        );
+        usleep((useconds_t)backoff_ms * 1000U);
+    }
+
+    if (!attached) {
+        obs_metrics_mark_degraded(&ctx->metrics, OBS_DEGRADED_STARTUP_ATTACH_FAILED);
         err = ERR_XDP_ATTACH;
         goto cleanup;
     }
 
-    // tc
-    // TODO: why tcx failed? I have no idea about that
-    ctx->skel->links.tc_tx = bpf_program__attach_tcx(ctx->skel->progs.tc_tx, ifindex, NULL);
-    err = libbpf_get_error(ctx->skel->links.tc_tx);
-    if (err) {
-        fprintf(stderr, "Failed to attach TCX(Egress) to %s (Error: %d)\n", env->interface, err);
+    attached = 0;
+    for (int attempt = 0; attempt < ATTACH_RETRY_MAX; attempt++) {
+        ctx->skel->links.tc_tx = bpf_program__attach_tcx(ctx->skel->progs.tc_tx, ifindex, NULL);
+        err = libbpf_get_error(ctx->skel->links.tc_tx);
+        if (!err) {
+            attached = 1;
+            break;
+        }
+
         if (err == -EOPNOTSUPP || err == -EINVAL) {
             fprintf(stderr, "TCX not supported on %s, falling back to TC\n", env->interface);
+            obs_metrics_mark_degraded(&ctx->metrics, OBS_DEGRADED_TCX_ATTACH_FAILED);
             ctx->skel->links.tc_tx = NULL;
-
             err = attach_tc_legacy(ctx, ifindex);
-            if (err) {
-                err = ERR_TC_ATTACH;
-                goto cleanup;
+            if (!err) {
+                attached = 1;
+                break;
             }
-        } else {
-            ctx->skel->links.tc_tx = NULL;
-            err = ERR_TC_ATTACH;
-            goto cleanup;
         }
+
+        ctx->skel->links.tc_tx = NULL;
+        degraded_set_reason(&ctx->degraded, DEGRADED_REASON_STARTUP_ATTACH_RETRY);
+        int backoff_ms = ATTACH_RETRY_BASE_MS << attempt;
+        if (backoff_ms > ATTACH_RETRY_MAX_MS) {
+            backoff_ms = ATTACH_RETRY_MAX_MS;
+        }
+
+        fprintf(
+            stderr,
+            "Attach retry (TC) attempt %d/%d failed: %d, backoff=%dms\n",
+            attempt + 1,
+            ATTACH_RETRY_MAX,
+            err,
+            backoff_ms
+        );
+        usleep((useconds_t)backoff_ms * 1000U);
     }
 
-    // rb_pkt — pass cache_ctx so handle_packet() can write to arena + cache_map
-    ctx->rb_pkt =
-        ring_buffer__new(bpf_map__fd(ctx->skel->maps.rb_pkt), handle_packet, &ctx->cache_ctx, NULL);
+    if (!attached) {
+        obs_metrics_mark_degraded(&ctx->metrics, OBS_DEGRADED_STARTUP_ATTACH_FAILED);
+        err = ERR_TC_ATTACH;
+        goto cleanup;
+    }
+
+    if (degraded_is_active(&ctx->degraded)
+        && (degraded_get_reason_flags(&ctx->degraded) & DEGRADED_REASON_STARTUP_ATTACH_RETRY) != 0)
+    {
+        fprintf(stderr, "Startup attach recovered after retries; degraded reason cleared\n");
+        degraded_clear_reason(&ctx->degraded, DEGRADED_REASON_STARTUP_ATTACH_RETRY);
+    }
+
+    ctx->rb_pkt = ring_buffer__new(
+        bpf_map__fd(ctx->skel->maps.rb_pkt),
+        cache_handle_event,
+        &ctx->cache_context,
+        NULL
+    );
     if (!ctx->rb_pkt) {
         fprintf(stderr, "Failed to create ring buffer: rb_pkt\n");
         err = ERR_RB_CREATE;
@@ -268,9 +340,21 @@ int setup_bpf(struct bpf_ctx* ctx, const struct env* env) {
     }
 
     if (ctx->metrics.cfg.enabled) {
-        err = obs_http_start(&ctx->obs_http, env->metrics_port, &ctx->metrics, &ctx->bpf_ready);
+        err = obs_http_start(
+            &ctx->obs_http,
+            env->metrics_port,
+            &ctx->metrics,
+            &ctx->degraded,
+            &ctx->bpf_ready
+        );
         if (err)
-            fprintf(stderr, "Failed to start observability HTTP server on 127.0.0.1:%u\n", env->metrics_port);
+            fprintf(
+                stderr,
+                "Failed to start observability HTTP server on 127.0.0.1:%u\n",
+                env->metrics_port
+            );
+        if (err)
+            obs_metrics_mark_degraded(&ctx->metrics, OBS_DEGRADED_OBS_HTTP_DOWN);
     }
 
     atomic_store_explicit(&ctx->bpf_ready, true, memory_order_release);
@@ -286,8 +370,24 @@ cleanup:
 
 int poll_pkt_ring(struct bpf_ctx* ctx, int timeout_ms) {
     int ret = ring_buffer__poll(ctx->rb_pkt, timeout_ms);
-    if (ret < 0)
+    if (ret < 0) {
+        ctx->pkt_poll_err_streak++;
         obs_metrics_count_rb_poll_error(&ctx->metrics);
+        degraded_note_poll_load(&ctx->degraded, 0);
+        ctx->rb_backlog_streak = 0;
+        if (ctx->pkt_poll_err_streak >= 3)
+            obs_metrics_mark_degraded(&ctx->metrics, OBS_DEGRADED_PKT_POLL_ERRORS);
+    } else {
+        ctx->pkt_poll_err_streak = 0;
+        degraded_note_poll_load(&ctx->degraded, ret);
+        if (ret >= SHINKU_LAG_POLL_HIGH_WATERMARK) {
+            ctx->rb_backlog_streak++;
+            if (ctx->rb_backlog_streak >= SHINKU_LAG_STREAK_THRESHOLD)
+                obs_metrics_mark_degraded(&ctx->metrics, OBS_DEGRADED_RING_BACKLOG);
+        } else {
+            ctx->rb_backlog_streak = 0;
+        }
+    }
 
     sync_bpf_metrics(ctx);
     return ret;
@@ -322,8 +422,8 @@ void cleanup_bpf(struct bpf_ctx* ctx) {
         memset(&ctx->tc_hook, 0, sizeof(ctx->tc_hook));
     }
 
-    free(ctx->cache_ctx.slot_owners);
-    ctx->cache_ctx.slot_owners = NULL;
+    free(ctx->cache_context.slot_owners);
+    ctx->cache_context.slot_owners = NULL;
 
     free(ctx->obs_percpu_vals);
     ctx->obs_percpu_vals = NULL;
@@ -348,19 +448,24 @@ static void* cleanup_thread_func(void* arg) {
 
     while (atomic_load_explicit(&ctx->cleanup_running, memory_order_acquire)) {
         nanosleep(&sleep_time, NULL);
-        if (!atomic_load_explicit(&ctx->cleanup_running, memory_order_acquire))
+        if (!atomic_load_explicit(&ctx->cleanup_running, memory_order_acquire)) {
             break;
+        }
 
-        int removed = cleanup_expired_entries(&ctx->cache_ctx);
-        (void)removed; /* Log already printed inside cleanup function */
+        int removed = cache_cleanup_expired_entries(&ctx->cache_context);
+        degraded_note_cleanup_result(&ctx->degraded, removed);
+        if (removed < 0) {
+            obs_metrics_mark_degraded(&ctx->metrics, OBS_DEGRADED_CLEANUP_THREAD_DOWN);
+        }
     }
 
     return NULL;
 }
 
 int start_cleanup_thread(struct bpf_ctx* ctx, uint32_t interval_secs) {
-    if (interval_secs == 0)
+    if (interval_secs == 0) {
         interval_secs = 10; /* Default: 10 seconds */
+    }
 
     ctx->cleanup_cfg.interval_secs = interval_secs;
     atomic_store_explicit(&ctx->cleanup_running, true, memory_order_release);

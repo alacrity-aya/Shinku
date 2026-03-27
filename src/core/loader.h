@@ -2,6 +2,7 @@
 #pragma once
 
 #include "bpf_log.h"
+#include "degraded_mode.h"
 #include "dns_parser.h"
 #include "obs_http.h"
 #include "obs_metrics.h"
@@ -9,14 +10,14 @@
 #include "cli/config.h"
 #include <bpf/libbpf.h>
 #include <pthread.h>
-#include <stdbool.h>
 #include <stdatomic.h>
+#include <stdbool.h>
 
 struct cache_bpf;
 
 /* Cleanup thread configuration */
 struct cleanup_config {
-    uint32_t interval_secs;    /* Cleanup interval in seconds */
+    uint32_t interval_secs; /* Cleanup interval in seconds */
 };
 
 struct bpf_ctx {
@@ -28,14 +29,17 @@ struct bpf_ctx {
     struct bpf_tc_hook tc_hook;
 
     /* Cache context for ring buffer callback */
-    struct cache_ctx cache_ctx;
+    struct cache_context cache_context;
 
     struct obs_metrics metrics;
     struct obs_context obs_ctx;
+    struct degraded_state degraded;
     struct obs_http_server obs_http;
     atomic_bool bpf_ready;
     int obs_ncpu;
     uint64_t* obs_percpu_vals;
+    uint32_t pkt_poll_err_streak;
+    uint32_t rb_backlog_streak;
 
     /* Cleanup thread */
     pthread_t cleanup_thread;

@@ -21,6 +21,24 @@ This roadmap is based on the current repository state, not historical assumption
   - Configurable sampling via `--obs-bpf-mask` and toggle via `--obs` / `--obs-bpf`.
   - Performance-safe: BPF counters use percpu map with sampling; userspace counters use relaxed atomics.
   - Test coverage: `tests/unit/obs/obs_http_test.c`.
+- **Failure-mode policy baseline (P0.2 complete)**:
+  - Bounded retry + exponential backoff in startup attach paths (XDP/TC) to prevent crash-loop behavior.
+  - Explicit degraded-mode state machine in userspace with reason flags:
+    - `userspace_lag`
+    - `cleanup_failure`
+    - `startup_attach_retry`
+    - `cache_map_update_failure`
+  - Deterministic degradation activation based on streak thresholds (lag/cleanup/cache_map update failures).
+  - Degraded mode exported via `/metrics`:
+    - `shinku_degraded_mode`
+    - `shinku_degraded_reason_active{reason=...}`
+    - `shinku_degraded_transitions_total`
+    - `shinku_degraded_reason_set_total{reason=...}`
+  - Performance-first implementation:
+    - no locking in hot path (relaxed atomics only)
+    - bounded integer threshold checks
+    - no extra allocations in fast path.
+  - Test coverage: `tests/unit/degraded/degraded_mode_test.c`.
 
 ### Partially implemented
 - ECS handling is scope-zero-only (global cache only).
@@ -78,7 +96,7 @@ This plan prioritizes reliability and operability before feature breadth.
 
 ---
 
-### P0.2 Failure-mode policy and graceful degradation
+### P0.2 Failure-mode policy and graceful degradation ✅
 **Goal:** Fail safe, not fail opaque.
 
 **Implement**
@@ -93,6 +111,8 @@ This plan prioritizes reliability and operability before feature breadth.
 **Acceptance criteria**
 - Fault injection scenarios produce deterministic fallback behavior.
 - No crash loops under repeated attach failures.
+
+**Status:** Implemented in baseline form with startup retry/backoff + degraded state metrics + deterministic threshold policy.
 
 ---
 

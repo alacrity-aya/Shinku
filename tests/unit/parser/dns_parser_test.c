@@ -1,13 +1,13 @@
+#include <arpa/inet.h>
 #include <assert.h>
+#include <bpf/bpf.h>
+#include <bpf/libbpf.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
-#include <arpa/inet.h>
-#include <bpf/bpf.h>
-#include <bpf/libbpf.h>
 
 #ifndef __BPF__
     #define __BPF__ 0
@@ -21,8 +21,8 @@ typedef uint16_t __be16;
     #define __always_inline inline
 #endif
 
-#include "../../src/include/constants.h"
 #include "../../src/core/dns_parser.h"
+#include "../../src/include/constants.h"
 
 static int test_count = 0;
 static int pass_count = 0;
@@ -38,17 +38,17 @@ static int pass_count = 0;
         } \
     } while (0)
 
-static int call_handle_packet(struct cache_ctx* cctx, uint8_t* dns_pkt, uint32_t dns_len) {
+static int call_handle_packet(struct cache_context* cache_ctx, uint8_t* dns_pkt, uint32_t dns_len) {
     uint8_t buf[sizeof(struct dns_event) + 1500];
     memset(buf, 0, sizeof(buf));
     struct dns_event* event = (struct dns_event*)buf;
     event->timestamp = 0;
     event->len = dns_len;
     memcpy(event->payload, dns_pkt, dns_len);
-    return handle_packet(cctx, event, sizeof(*event) + dns_len);
+    return cache_handle_event(cache_ctx, event, sizeof(*event) + dns_len);
 }
 
-static struct cache_ctx test_ctx;
+static struct cache_context test_ctx;
 static uint32_t test_next_idx = 0;
 static struct cache_entry test_entries[10];
 static int has_bpf = 0;
@@ -56,9 +56,12 @@ static int has_bpf = 0;
 static void setup_test() {
     test_next_idx = 0;
     memset(test_entries, 0, sizeof(test_entries));
+    static struct cache_key slot_owners[10];
+    memset(slot_owners, 0, sizeof(slot_owners));
     test_ctx.entries = test_entries;
     test_ctx.next_idx = &test_next_idx;
     test_ctx.max_entries = 10;
+    test_ctx.slot_owners = slot_owners;
 }
 
 struct dns_builder {
@@ -66,7 +69,15 @@ struct dns_builder {
     uint32_t len;
 };
 
-static void builder_init(struct dns_builder* b, uint16_t id, uint16_t flags, uint16_t qd, uint16_t an, uint16_t ns, uint16_t ar) {
+static void builder_init(
+    struct dns_builder* b,
+    uint16_t id,
+    uint16_t flags,
+    uint16_t qd,
+    uint16_t an,
+    uint16_t ns,
+    uint16_t ar
+) {
     memset(b, 0, sizeof(*b));
     struct dns_hdr* hdr = (struct dns_hdr*)b->buf;
     hdr->id = htons(id);
@@ -90,13 +101,15 @@ static void builder_add_name(struct dns_builder* b, const char* name) {
         b->buf[b->len++] = len;
         memcpy(b->buf + b->len, p, len);
         b->len += len;
-        if (!dot) break;
+        if (!dot)
+            break;
         p = dot + 1;
     }
     b->buf[b->len++] = 0;
 }
 
-static void builder_add_question(struct dns_builder* b, const char* name, uint16_t qtype, uint16_t qclass) {
+static void
+builder_add_question(struct dns_builder* b, const char* name, uint16_t qtype, uint16_t qclass) {
     builder_add_name(b, name);
     uint16_t* ptr = (uint16_t*)(b->buf + b->len);
     ptr[0] = htons(qtype);
@@ -104,7 +117,15 @@ static void builder_add_question(struct dns_builder* b, const char* name, uint16
     b->len += 4;
 }
 
-static void builder_add_answer(struct dns_builder* b, const char* name, uint16_t rtype, uint16_t rclass, uint32_t ttl, uint16_t rdlen, const uint8_t* rdata) {
+static void builder_add_answer(
+    struct dns_builder* b,
+    const char* name,
+    uint16_t rtype,
+    uint16_t rclass,
+    uint32_t ttl,
+    uint16_t rdlen,
+    const uint8_t* rdata
+) {
     builder_add_name(b, name);
     uint16_t* ptr16 = (uint16_t*)(b->buf + b->len);
     ptr16[0] = htons(rtype);
@@ -128,7 +149,7 @@ static void test_simple_a_record() {
     struct dns_builder b;
     builder_init(&b, 0x1234, 0x8180, 1, 1, 0, 0);
     builder_add_question(&b, "www.example.com", DNS_TYPE_A, DNS_CLASS_IN);
-    uint8_t a_rdata[4] = {1, 2, 3, 4};
+    uint8_t a_rdata[4] = { 1, 2, 3, 4 };
     builder_add_answer(&b, "www.example.com", DNS_TYPE_A, DNS_CLASS_IN, 300, 4, a_rdata);
 
     int ret = call_handle_packet(&test_ctx, b.buf, b.len);
@@ -147,7 +168,7 @@ static void test_simple_aaaa_record() {
     struct dns_builder b;
     builder_init(&b, 0x1234, 0x8180, 1, 1, 0, 0);
     builder_add_question(&b, "www.example.com", DNS_TYPE_AAAA, DNS_CLASS_IN);
-    uint8_t aaaa_rdata[16] = {0x20, 0x01, 0x0d, 0xb8, 0,0,0,0, 0,0,0,0, 0,0,0,1};
+    uint8_t aaaa_rdata[16] = { 0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1 };
     builder_add_answer(&b, "www.example.com", DNS_TYPE_AAAA, DNS_CLASS_IN, 600, 16, aaaa_rdata);
 
     int ret = call_handle_packet(&test_ctx, b.buf, b.len);
@@ -163,9 +184,9 @@ static void test_multiple_a_records() {
     struct dns_builder b;
     builder_init(&b, 0x1234, 0x8180, 1, 2, 0, 0);
     builder_add_question(&b, "www.example.com", DNS_TYPE_A, DNS_CLASS_IN);
-    uint8_t a_rdata1[4] = {1, 2, 3, 4};
+    uint8_t a_rdata1[4] = { 1, 2, 3, 4 };
     builder_add_answer(&b, "www.example.com", DNS_TYPE_A, DNS_CLASS_IN, 300, 4, a_rdata1);
-    uint8_t a_rdata2[4] = {5, 6, 7, 8};
+    uint8_t a_rdata2[4] = { 5, 6, 7, 8 };
     builder_add_answer(&b, "www.example.com", DNS_TYPE_A, DNS_CLASS_IN, 60, 4, a_rdata2);
 
     int ret = call_handle_packet(&test_ctx, b.buf, b.len);
@@ -181,7 +202,7 @@ static void test_min_ttl_selection() {
     struct dns_builder b;
     builder_init(&b, 0x1234, 0x8180, 1, 3, 0, 0);
     builder_add_question(&b, "min.ttl.test", DNS_TYPE_A, DNS_CLASS_IN);
-    uint8_t rdata[4] = {0,0,0,0};
+    uint8_t rdata[4] = { 0, 0, 0, 0 };
     builder_add_answer(&b, "min.ttl.test", DNS_TYPE_A, DNS_CLASS_IN, 3600, 4, rdata);
     builder_add_answer(&b, "min.ttl.test", DNS_TYPE_A, DNS_CLASS_IN, 120, 4, rdata);
     builder_add_answer(&b, "min.ttl.test", DNS_TYPE_A, DNS_CLASS_IN, 1800, 4, rdata);
@@ -194,7 +215,10 @@ static void test_min_ttl_selection() {
         // We only have bpf_map_lookup_elem if we use it, but qname_hash needs to be known.
         uint32_t expected_hash = 0;
         calculate_hash_strict_impl(b.buf, sizeof(struct dns_hdr), b.len, &expected_hash);
-        struct cache_key key = { .name_hash = expected_hash, .qtype = DNS_TYPE_A, .qclass = DNS_CLASS_IN, ._pad = 0 };
+        struct cache_key key = { .name_hash = expected_hash,
+                                 .qtype = DNS_TYPE_A,
+                                 .qclass = DNS_CLASS_IN,
+                                 ._pad = 0 };
         struct cache_value val;
         int err = bpf_map_lookup_elem(test_ctx.cache_map_fd, &key, &val);
         TEST_ASSERT(err == 0, "test_min_ttl_selection: cache entry found in map");
@@ -204,7 +228,10 @@ static void test_min_ttl_selection() {
             uint64_t now_ns = (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
             uint64_t ttl_ns = val.expire_ts - now_ns;
             // TTL should be around 120s (allow small timing variance)
-            TEST_ASSERT(ttl_ns <= 121ULL * 1000000000ULL && ttl_ns >= 119ULL * 1000000000ULL, "test_min_ttl_selection: min TTL correctly chosen as 120");
+            TEST_ASSERT(
+                ttl_ns <= 121ULL * 1000000000ULL && ttl_ns >= 119ULL * 1000000000ULL,
+                "test_min_ttl_selection: min TTL correctly chosen as 120"
+            );
         }
     }
 }
@@ -215,7 +242,7 @@ static void test_cache_key_construction() {
     struct dns_builder b;
     builder_init(&b, 0x9999, 0x8180, 1, 1, 0, 0);
     builder_add_question(&b, "key.test.com", DNS_TYPE_A, DNS_CLASS_IN);
-    uint8_t a_rdata[4] = {8, 8, 8, 8};
+    uint8_t a_rdata[4] = { 8, 8, 8, 8 };
     builder_add_answer(&b, "key.test.com", DNS_TYPE_A, DNS_CLASS_IN, 300, 4, a_rdata);
 
     int ret = call_handle_packet(&test_ctx, b.buf, b.len);
@@ -223,7 +250,10 @@ static void test_cache_key_construction() {
     if (has_bpf) {
         uint32_t expected_hash = 0;
         calculate_hash_strict_impl(b.buf, sizeof(struct dns_hdr), b.len, &expected_hash);
-        struct cache_key key = { .name_hash = expected_hash, .qtype = DNS_TYPE_A, .qclass = DNS_CLASS_IN, ._pad = 0 };
+        struct cache_key key = { .name_hash = expected_hash,
+                                 .qtype = DNS_TYPE_A,
+                                 .qclass = DNS_CLASS_IN,
+                                 ._pad = 0 };
         struct cache_value val;
         int err = bpf_map_lookup_elem(test_ctx.cache_map_fd, &key, &val);
         TEST_ASSERT(err == 0, "test_cache_key_construction: exact cache key matched");
@@ -233,14 +263,14 @@ static void test_cache_key_construction() {
 // 6. test_sequential_stores
 static void test_sequential_stores() {
     setup_test();
-    
+
     struct dns_builder b1, b2, b3;
-    uint8_t a_rdata[4] = {1, 1, 1, 1};
-    
+    uint8_t a_rdata[4] = { 1, 1, 1, 1 };
+
     builder_init(&b1, 1, 0x8180, 1, 1, 0, 0);
     builder_add_question(&b1, "seq1.com", DNS_TYPE_A, DNS_CLASS_IN);
     builder_add_answer(&b1, "seq1.com", DNS_TYPE_A, DNS_CLASS_IN, 300, 4, a_rdata);
-    
+
     builder_init(&b2, 2, 0x8180, 1, 1, 0, 0);
     builder_add_question(&b2, "seq2.com", DNS_TYPE_A, DNS_CLASS_IN);
     builder_add_answer(&b2, "seq2.com", DNS_TYPE_A, DNS_CLASS_IN, 300, 4, a_rdata);
@@ -252,12 +282,18 @@ static void test_sequential_stores() {
     int ret1 = call_handle_packet(&test_ctx, b1.buf, b1.len);
     int ret2 = call_handle_packet(&test_ctx, b2.buf, b2.len);
     int ret3 = call_handle_packet(&test_ctx, b3.buf, b3.len);
-    TEST_ASSERT(ret1 == 0 && ret2 == 0 && ret3 == 0, "test_sequential_stores: handle_packet returns 0");
+    TEST_ASSERT(
+        ret1 == 0 && ret2 == 0 && ret3 == 0,
+        "test_sequential_stores: handle_packet returns 0"
+    );
 
     if (has_bpf) {
         TEST_ASSERT(test_next_idx == 3, "test_sequential_stores: next_idx is 3");
         // Verify distinct packets
-        TEST_ASSERT(memcmp(test_entries[0].pkt, test_entries[1].pkt, 32) != 0, "test_sequential_stores: entries differ");
+        TEST_ASSERT(
+            memcmp(test_entries[0].pkt, test_entries[1].pkt, 32) != 0,
+            "test_sequential_stores: entries differ"
+        );
     }
 }
 
@@ -282,7 +318,7 @@ static void test_reject_truncated() {
     // TC=1 -> flags = 0x8380
     builder_init(&b, 0x1234, 0x8380, 1, 1, 0, 0);
     builder_add_question(&b, "www.example.com", DNS_TYPE_A, DNS_CLASS_IN);
-    uint8_t a_rdata[4] = {1, 2, 3, 4};
+    uint8_t a_rdata[4] = { 1, 2, 3, 4 };
     builder_add_answer(&b, "www.example.com", DNS_TYPE_A, DNS_CLASS_IN, 300, 4, a_rdata);
 
     call_handle_packet(&test_ctx, b.buf, b.len);
@@ -319,7 +355,7 @@ static void test_reject_qdcount_not_one() {
     builder_init(&b, 0x1234, 0x8180, 2, 1, 0, 0);
     builder_add_question(&b, "one.com", DNS_TYPE_A, DNS_CLASS_IN);
     builder_add_question(&b, "two.com", DNS_TYPE_A, DNS_CLASS_IN);
-    uint8_t a_rdata[4] = {1, 2, 3, 4};
+    uint8_t a_rdata[4] = { 1, 2, 3, 4 };
     builder_add_answer(&b, "one.com", DNS_TYPE_A, DNS_CLASS_IN, 300, 4, a_rdata);
 
     call_handle_packet(&test_ctx, b.buf, b.len);
@@ -329,7 +365,7 @@ static void test_reject_qdcount_not_one() {
 // 12. test_reject_too_short
 static void test_reject_too_short() {
     setup_test();
-    uint8_t short_pkt[4] = {0, 1, 2, 3}; // < 12 bytes
+    uint8_t short_pkt[4] = { 0, 1, 2, 3 }; // < 12 bytes
     call_handle_packet(&test_ctx, short_pkt, sizeof(short_pkt));
     TEST_ASSERT(test_next_idx == 0, "test_reject_too_short: next_idx unchanged");
 }
@@ -340,7 +376,7 @@ static void test_reject_ttl_zero() {
     struct dns_builder b;
     builder_init(&b, 0x1234, 0x8180, 1, 1, 0, 0);
     builder_add_question(&b, "www.example.com", DNS_TYPE_A, DNS_CLASS_IN);
-    uint8_t a_rdata[4] = {1, 2, 3, 4};
+    uint8_t a_rdata[4] = { 1, 2, 3, 4 };
     builder_add_answer(&b, "www.example.com", DNS_TYPE_A, DNS_CLASS_IN, 0, 4, a_rdata); // TTL = 0
 
     call_handle_packet(&test_ctx, b.buf, b.len);
@@ -353,7 +389,7 @@ static void test_reject_unsupported_rtype() {
     struct dns_builder b;
     builder_init(&b, 0x1234, 0x8180, 1, 1, 0, 0);
     builder_add_question(&b, "www.example.com", DNS_TYPE_A, DNS_CLASS_IN);
-    uint8_t mx_rdata[] = {0x00, 0x0a, 4, 'm', 'a', 'i', 'l', 3, 'c', 'o', 'm', 0};
+    uint8_t mx_rdata[] = { 0x00, 0x0a, 4, 'm', 'a', 'i', 'l', 3, 'c', 'o', 'm', 0 };
     builder_add_answer(
         &b,
         "www.example.com",
@@ -376,7 +412,8 @@ static void test_cname_with_a_record() {
     builder_init(&b, 0x1234, 0x8180, 1, 2, 0, 0);
     builder_add_question(&b, "www.example.com", DNS_TYPE_A, DNS_CLASS_IN);
 
-    uint8_t cname_rdata[] = {3, 'c', 'd', 'n', 7, 'e', 'x', 'a', 'm', 'p', 'l', 'e', 3, 'c', 'o', 'm', 0};
+    uint8_t cname_rdata[] = { 3,   'c', 'd', 'n', 7,   'e', 'x', 'a', 'm',
+                              'p', 'l', 'e', 3,   'c', 'o', 'm', 0 };
     builder_add_answer(
         &b,
         "www.example.com",
@@ -387,7 +424,7 @@ static void test_cname_with_a_record() {
         cname_rdata
     );
 
-    uint8_t a_rdata[4] = {1, 2, 3, 4};
+    uint8_t a_rdata[4] = { 1, 2, 3, 4 };
     builder_add_answer(&b, "cdn.example.com", DNS_TYPE_A, DNS_CLASS_IN, 120, 4, a_rdata);
 
     int ret = call_handle_packet(&test_ctx, b.buf, b.len);
@@ -405,13 +442,31 @@ static void test_cname_chain_with_terminal_a() {
     builder_init(&b, 0x4321, 0x8180, 1, 3, 0, 0);
     builder_add_question(&b, "www.example.com", DNS_TYPE_A, DNS_CLASS_IN);
 
-    uint8_t cname1[] = {3, 'c', 'd', 'n', 1, '1', 7, 'e', 'x', 'a', 'm', 'p', 'l', 'e', 3, 'c', 'o', 'm', 0};
-    builder_add_answer(&b, "www.example.com", DNS_TYPE_CNAME, DNS_CLASS_IN, 300, sizeof(cname1), cname1);
+    uint8_t cname1[] = { 3,   'c', 'd', 'n', 1, '1', 7,   'e', 'x', 'a',
+                         'm', 'p', 'l', 'e', 3, 'c', 'o', 'm', 0 };
+    builder_add_answer(
+        &b,
+        "www.example.com",
+        DNS_TYPE_CNAME,
+        DNS_CLASS_IN,
+        300,
+        sizeof(cname1),
+        cname1
+    );
 
-    uint8_t cname2[] = {6, 'o', 'r', 'i', 'g', 'i', 'n', 7, 'e', 'x', 'a', 'm', 'p', 'l', 'e', 3, 'c', 'o', 'm', 0};
-    builder_add_answer(&b, "cdn.1.example.com", DNS_TYPE_CNAME, DNS_CLASS_IN, 200, sizeof(cname2), cname2);
+    uint8_t cname2[] = { 6,   'o', 'r', 'i', 'g', 'i', 'n', 7,   'e', 'x',
+                         'a', 'm', 'p', 'l', 'e', 3,   'c', 'o', 'm', 0 };
+    builder_add_answer(
+        &b,
+        "cdn.1.example.com",
+        DNS_TYPE_CNAME,
+        DNS_CLASS_IN,
+        200,
+        sizeof(cname2),
+        cname2
+    );
 
-    uint8_t a_rdata[4] = {8, 8, 4, 4};
+    uint8_t a_rdata[4] = { 8, 8, 4, 4 };
     builder_add_answer(&b, "origin.example.com", DNS_TYPE_A, DNS_CLASS_IN, 60, 4, a_rdata);
 
     int ret = call_handle_packet(&test_ctx, b.buf, b.len);
@@ -429,7 +484,8 @@ static void test_reject_cname_only_without_terminal() {
     builder_init(&b, 0x7777, 0x8180, 1, 1, 0, 0);
     builder_add_question(&b, "www.example.com", DNS_TYPE_A, DNS_CLASS_IN);
 
-    uint8_t cname_rdata[] = {3, 'c', 'd', 'n', 7, 'e', 'x', 'a', 'm', 'p', 'l', 'e', 3, 'c', 'o', 'm', 0};
+    uint8_t cname_rdata[] = { 3,   'c', 'd', 'n', 7,   'e', 'x', 'a', 'm',
+                              'p', 'l', 'e', 3,   'c', 'o', 'm', 0 };
     builder_add_answer(
         &b,
         "www.example.com",
@@ -453,11 +509,11 @@ static void test_oversized_packet() {
     struct dns_builder b;
     builder_init(&b, 0x1234, 0x8180, 1, 1, 0, 0);
     builder_add_question(&b, "huge.example.com", DNS_TYPE_A, DNS_CLASS_IN);
-    
+
     // We add a giant RDATA to make it exceed 512 bytes flat_len
     uint8_t big_rdata[600];
     memset(big_rdata, 1, sizeof(big_rdata));
-    // RTYPE 1 (A), but 600 bytes is physically invalid for A. 
+    // RTYPE 1 (A), but 600 bytes is physically invalid for A.
     // The parser accepts it as long as type is A/AAAA and it fits in flat_len.
     // If it exceeds flat_len, it should fail.
     builder_add_answer(&b, "huge.example.com", DNS_TYPE_A, DNS_CLASS_IN, 300, 600, big_rdata);
@@ -477,7 +533,7 @@ static void test_arena_wraparound() {
     struct dns_builder b;
     builder_init(&b, 0x1234, 0x8180, 1, 1, 0, 0);
     builder_add_question(&b, "full.example.com", DNS_TYPE_A, DNS_CLASS_IN);
-    uint8_t a_rdata[4] = {1, 2, 3, 4};
+    uint8_t a_rdata[4] = { 1, 2, 3, 4 };
     builder_add_answer(&b, "full.example.com", DNS_TYPE_A, DNS_CLASS_IN, 300, 4, a_rdata);
 
     call_handle_packet(&test_ctx, b.buf, b.len);
@@ -492,7 +548,7 @@ static void test_null_ctx() {
     struct dns_builder b;
     builder_init(&b, 0x1234, 0x8180, 1, 1, 0, 0);
     builder_add_question(&b, "null.example.com", DNS_TYPE_A, DNS_CLASS_IN);
-    uint8_t a_rdata[4] = {1, 2, 3, 4};
+    uint8_t a_rdata[4] = { 1, 2, 3, 4 };
     builder_add_answer(&b, "null.example.com", DNS_TYPE_A, DNS_CLASS_IN, 300, 4, a_rdata);
 
     int ret = call_handle_packet(&test_ctx, b.buf, b.len);
@@ -500,10 +556,16 @@ static void test_null_ctx() {
     TEST_ASSERT(test_next_idx == 0, "test_null_ctx: next_idx unchanged");
 }
 
-
 int main(void) {
     LIBBPF_OPTS(bpf_map_create_opts, opts);
-    int map_fd = bpf_map_create(BPF_MAP_TYPE_HASH, "test_cache", sizeof(struct cache_key), sizeof(struct cache_value), 64, &opts);
+    int map_fd = bpf_map_create(
+        BPF_MAP_TYPE_HASH,
+        "test_cache",
+        sizeof(struct cache_key),
+        sizeof(struct cache_value),
+        64,
+        &opts
+    );
     if (map_fd >= 0) {
         has_bpf = 1;
         test_ctx.cache_map_fd = map_fd;
@@ -515,7 +577,7 @@ int main(void) {
     }
 
     printf("\n--- Running DNS Parser Tests ---\n");
-    
+
     test_simple_a_record();
     test_simple_aaaa_record();
     test_multiple_a_records();
@@ -543,6 +605,11 @@ int main(void) {
         close(map_fd);
     }
 
-    printf("\nTotal: %d, Passed: %d, Failed: %d\n", test_count, pass_count, test_count - pass_count);
+    printf(
+        "\nTotal: %d, Passed: %d, Failed: %d\n",
+        test_count,
+        pass_count,
+        test_count - pass_count
+    );
     return (pass_count == test_count) ? 0 : 1;
 }
