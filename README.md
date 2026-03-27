@@ -217,6 +217,26 @@ Configuration files:
 *   `.clang-format` — Code formatting rules
 *   `.clang-tidy` — Static analysis checks
 
+### API Documentation (Doxygen)
+
+Shinku supports generating C API documentation via Meson+Doxygen.
+
+```bash
+# Configure/reconfigure build (detects doxygen and prepares Doxyfile)
+meson setup build --reconfigure
+
+# Generate docs
+meson compile -C build docs
+```
+
+Generated files are written to:
+
+```text
+build/docs/html/
+```
+
+This output is build artifact content and should not be committed to Git.
+
 ## Project Structure
 
 ```text

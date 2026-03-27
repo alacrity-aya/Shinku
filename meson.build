@@ -124,3 +124,29 @@ if clang_tidy.found()
     ]
   )
 endif
+
+# ====================
+# Documentation (Doxygen)
+# ====================
+doxygen = find_program('doxygen', required: false)
+
+if doxygen.found()
+  doxyfile = configure_file(
+    input: 'Doxyfile.in',
+    output: 'Doxyfile',
+    configuration: {
+      'PROJECT_NAME': meson.project_name(),
+      'PROJECT_VERSION': meson.project_version(),
+      'INPUT_DIR': meson.current_source_dir() / 'src',
+      'OUTPUT_DIR': meson.current_build_dir() / 'docs',
+    }
+  )
+
+  run_target('docs',
+    command: [doxygen, doxyfile]
+  )
+
+  run_target('doc',
+    command: [doxygen, doxyfile]
+  )
+endif
