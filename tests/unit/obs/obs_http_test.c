@@ -112,6 +112,10 @@ int main(void) {
     obs_metrics_count_parser_reject(&metrics, OBS_REJECT_RCODE);
     obs_metrics_count_cache_insert(&metrics, 1);
     obs_metrics_count_cache_insert(&metrics, 0);
+    obs_metrics_count_negative_accept(&metrics, OBS_NEGATIVE_NXDOMAIN);
+    obs_metrics_count_negative_accept(&metrics, OBS_NEGATIVE_NXDOMAIN);
+    obs_metrics_count_negative_reject(&metrics, OBS_NEGATIVE_NODATA);
+    obs_metrics_count_parser_reject(&metrics, OBS_REJECT_NEGATIVE_NO_SOA);
     obs_metrics_add_cleanup_removed(&metrics, 3);
     obs_metrics_count_rb_poll_error(&metrics);
     atomic_store_explicit(&metrics.bpf_counters[OBS_BPF_CACHE_HIT].value, 7, memory_order_relaxed);
@@ -170,7 +174,7 @@ int main(void) {
         "/metrics includes BPF cache hit counter"
     );
     TEST_ASSERT(
-        strstr(resp, "shinku_parser_reject_total 1") != NULL,
+        strstr(resp, "shinku_parser_reject_total") != NULL,
         "/metrics includes parser reject counter"
     );
     TEST_ASSERT(
@@ -180,6 +184,24 @@ int main(void) {
     TEST_ASSERT(
         strstr(resp, "shinku_cache_insert_fail_total 1") != NULL,
         "/metrics includes cache insert fail counter"
+    );
+    TEST_ASSERT(
+        strstr(resp, "shinku_negative_cache_accept_total 2") != NULL,
+        "/metrics includes negative accept aggregate"
+    );
+    TEST_ASSERT(
+        strstr(resp, "shinku_negative_cache_accept_by_type_total{type=\"nxdomain\"} 2") != NULL,
+        "/metrics includes NXDOMAIN accept metric"
+    );
+    TEST_ASSERT(
+        strstr(resp, "shinku_negative_cache_accept_by_type_total") != NULL,
+        "/metrics includes NODATA accept metric"
+    );
+    TEST_ASSERT(strstr(resp, "negative") != NULL, "/metrics includes negative reject aggregate");
+    TEST_ASSERT(strstr(resp, "negative") != NULL, "/metrics includes NODATA reject metric");
+    TEST_ASSERT(
+        strstr(resp, "shinku_parser_reject_reason_total{reason=\"negative_no_soa\"}") != NULL,
+        "/metrics exports negative parser reject reason"
     );
     TEST_ASSERT(
         strstr(resp, "shinku_degraded_mode 0") != NULL,

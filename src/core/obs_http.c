@@ -171,6 +171,8 @@ render_metrics(char* out, size_t out_size, struct obs_metrics* m, struct degrade
     REJECT_REASON("cname_no_terminal", OBS_REJECT_CNAME_NO_TERMINAL);
     REJECT_REASON("bad_ecs", OBS_REJECT_BAD_ECS);
     REJECT_REASON("bad_ttl", OBS_REJECT_BAD_TTL);
+    REJECT_REASON("negative_no_soa", OBS_REJECT_NEGATIVE_NO_SOA);
+    REJECT_REASON("negative_bad_policy", OBS_REJECT_NEGATIVE_BAD_POLICY);
 #undef REJECT_REASON
 
     COUNTER(
@@ -185,6 +187,46 @@ render_metrics(char* out, size_t out_size, struct obs_metrics* m, struct degrade
         LOAD(m->cache_insert_fail_total.value),
         PRIu64
     );
+    COUNTER(
+        "shinku_negative_cache_accept_total",
+        "Accepted negative cache inserts (all types)",
+        LOAD(m->negative_cache_accept_total[OBS_NEGATIVE_NXDOMAIN].value)
+            + LOAD(m->negative_cache_accept_total[OBS_NEGATIVE_NODATA].value),
+        PRIu64
+    );
+    APPEND(
+        "# HELP shinku_negative_cache_accept_by_type_total Accepted negative cache inserts by type\n"
+    );
+    APPEND("# TYPE shinku_negative_cache_accept_by_type_total counter\n");
+    APPEND(
+        "shinku_negative_cache_accept_by_type_total{type=\"nxdomain\"} %" PRIu64 "\n",
+        LOAD(m->negative_cache_accept_total[OBS_NEGATIVE_NXDOMAIN].value)
+    );
+    APPEND(
+        "shinku_negative_cache_accept_by_type_total{type=\"nodata\"} %" PRIu64 "\n",
+        LOAD(m->negative_cache_accept_total[OBS_NEGATIVE_NODATA].value)
+    );
+
+    COUNTER(
+        "shinku_negative_cache_reject_total",
+        "Rejected negative cache inserts (all types)",
+        LOAD(m->negative_cache_reject_total[OBS_NEGATIVE_NXDOMAIN].value)
+            + LOAD(m->negative_cache_reject_total[OBS_NEGATIVE_NODATA].value),
+        PRIu64
+    );
+    APPEND(
+        "# HELP shinku_negative_cache_reject_by_type_total Rejected negative cache inserts by type\n"
+    );
+    APPEND("# TYPE shinku_negative_cache_reject_by_type_total counter\n");
+    APPEND(
+        "shinku_negative_cache_reject_by_type_total{type=\"nxdomain\"} %" PRIu64 "\n",
+        LOAD(m->negative_cache_reject_total[OBS_NEGATIVE_NXDOMAIN].value)
+    );
+    APPEND(
+        "shinku_negative_cache_reject_by_type_total{type=\"nodata\"} %" PRIu64 "\n",
+        LOAD(m->negative_cache_reject_total[OBS_NEGATIVE_NODATA].value)
+    );
+
     COUNTER(
         "shinku_cache_cleanup_removed_total",
         "Expired entries removed by cleanup",

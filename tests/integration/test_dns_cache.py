@@ -38,6 +38,40 @@ class MockDNSServer:
     RESPONSE_IP = "1.2.3.4"
     RESPONSE_TTL = 60
 
+    @staticmethod
+    def _decode_qname(qname_wire: bytes) -> str:
+        parts = []
+        pos = 0
+        while pos < len(qname_wire):
+            ln = qname_wire[pos]
+            if ln == 0:
+                break
+            pos += 1
+            parts.append(qname_wire[pos : pos + ln].decode("ascii", errors="ignore"))
+            pos += ln
+        return ".".join(parts)
+
+    @staticmethod
+    def _encode_qname(name: str) -> bytes:
+        out = b""
+        for label in name.split("."):
+            out += bytes([len(label)]) + label.encode("ascii")
+        return out + b"\x00"
+
+    @classmethod
+    def _build_soa_rdata(cls, zone: str, minimum_ttl: int) -> bytes:
+        mname = cls._encode_qname("ns1." + zone)
+        rname = cls._encode_qname("hostmaster." + zone)
+        serial = 1
+        refresh = 3600
+        retry = 600
+        expire = 86400
+        return (
+            mname
+            + rname
+            + struct.pack("!IIIII", serial, refresh, retry, expire, minimum_ttl)
+        )
+
     def __init__(self, bind_addr="10.99.0.1", port=53):
         self.bind_addr = bind_addr
         self.port = port
@@ -85,8 +119,9 @@ class MockDNSServer:
 
         txid = query[:2]
 
-        # Response header: QR=1, RD=1, RA=1, RCODE=0
-        header = txid + struct.pack("!HHHHH", 0x8180, 1, 1, 0, 0)
+        flags = 0x8180
+        ancount = 1
+        nscount = 0
 
         # Extract question section from query (QNAME + QTYPE + QCLASS)
         pos = 12
@@ -103,13 +138,36 @@ class MockDNSServer:
         pos += 4  # past QTYPE + QCLASS
         question = query[12:pos]
 
-        # Answer RR: compression pointer 0xC00C → QNAME at offset 12
-        # TYPE=A, CLASS=IN, TTL, RDLENGTH=4, RDATA=1.2.3.4
-        answer = struct.pack(
-            "!HHHIH", 0xC00C, 1, 1, self.RESPONSE_TTL, 4
-        ) + socket.inet_aton(self.RESPONSE_IP)
+        qtype, qclass = struct.unpack("!HH", query[pos - 4 : pos])
+        qname_wire = query[12 : pos - 4]
+        qname = self._decode_qname(qname_wire)
 
-        return header + question + answer
+        answer = b""
+        authority = b""
+
+        if qname.startswith("neg-nxdomain"):
+            flags = 0x8183
+            ancount = 0
+            nscount = 1
+            soa = self._build_soa_rdata("example.com", 30)
+            authority = struct.pack("!HHHIH", 0xC00C, 6, 1, 120, len(soa)) + soa
+        elif qname.startswith("neg-nodata"):
+            flags = 0x8180
+            ancount = 0
+            nscount = 1
+            soa = self._build_soa_rdata("example.com", 25)
+            authority = struct.pack("!HHHIH", 0xC00C, 6, 1, 90, len(soa)) + soa
+        elif qname.startswith("neg-no-soa"):
+            flags = 0x8183
+            ancount = 0
+            nscount = 0
+        else:
+            answer = struct.pack(
+                "!HHHIH", 0xC00C, 1, 1, self.RESPONSE_TTL, 4
+            ) + socket.inet_aton(self.RESPONSE_IP)
+
+        header = txid + struct.pack("!HHHHH", flags, 1, ancount, nscount, 0)
+        return header + question + answer + authority
 
 
 # ---------------------------------------------------------------------------
@@ -563,6 +621,85 @@ class TestDNSCache(unittest.TestCase):
             2,
             f"Expected 2 total queries, got {self.server.query_count}. "
             f"Repeated queries were not served from XDP cache.",
+        )
+
+    def test_dns_negative_cache_nxdomain(self):
+        domain = "neg-nxdomain.example.com"
+
+        result1 = send_dns_query(domain, txid=0x9001)
+        self.assertIsNotNone(result1, "NXDOMAIN first query: no response")
+        resp1 = parse_dns_response(result1[0])
+        self.assertEqual(resp1["rcode"], 3, "Expected NXDOMAIN on first query")
+
+        time.sleep(2)
+        self.assertEqual(
+            self.server.query_count, 1, "NXDOMAIN first query must reach upstream once"
+        )
+
+        result2 = send_dns_query(domain, txid=0x9002)
+        self.assertIsNotNone(result2, "NXDOMAIN second query: no response")
+        resp2 = parse_dns_response(result2[0])
+        self.assertEqual(resp2["rcode"], 3, "Expected NXDOMAIN on second query")
+        self.assertEqual(
+            resp2["txid"], 0x9002, "Transaction ID should be patched on cached response"
+        )
+
+        self.assertEqual(
+            self.server.query_count,
+            1,
+            "NXDOMAIN second query should be served from cache without upstream",
+        )
+
+    def test_dns_negative_cache_nodata(self):
+        domain = "neg-nodata.example.com"
+
+        result1 = send_dns_query(domain, txid=0x9011)
+        self.assertIsNotNone(result1, "NODATA first query: no response")
+        resp1 = parse_dns_response(result1[0])
+        self.assertEqual(resp1["rcode"], 0, "Expected NOERROR for NODATA")
+        self.assertEqual(resp1["ancount"], 0, "Expected ANCOUNT=0 for NODATA")
+        self.assertGreater(resp1["nscount"], 0, "Expected SOA in authority for NODATA")
+
+        time.sleep(2)
+        self.assertEqual(
+            self.server.query_count, 1, "NODATA first query must reach upstream once"
+        )
+
+        result2 = send_dns_query(domain, txid=0x9012)
+        self.assertIsNotNone(result2, "NODATA second query: no response")
+        resp2 = parse_dns_response(result2[0])
+        self.assertEqual(resp2["rcode"], 0, "Expected NOERROR for cached NODATA")
+        self.assertEqual(resp2["ancount"], 0, "Expected ANCOUNT=0 for cached NODATA")
+        self.assertEqual(
+            resp2["txid"], 0x9012, "Transaction ID should be patched on cached response"
+        )
+
+        self.assertEqual(
+            self.server.query_count,
+            1,
+            "NODATA second query should be served from cache without upstream",
+        )
+
+    def test_dns_negative_cache_requires_soa(self):
+        domain = "neg-no-soa.example.com"
+
+        result1 = send_dns_query(domain, txid=0x9021)
+        self.assertIsNotNone(result1, "No-SOA NXDOMAIN first query: no response")
+        resp1 = parse_dns_response(result1[0])
+        self.assertEqual(resp1["rcode"], 3, "Expected NXDOMAIN")
+
+        time.sleep(2)
+        self.assertEqual(self.server.query_count, 1)
+
+        result2 = send_dns_query(domain, txid=0x9022)
+        self.assertIsNotNone(result2, "No-SOA NXDOMAIN second query: no response")
+        resp2 = parse_dns_response(result2[0])
+        self.assertEqual(resp2["rcode"], 3, "Expected NXDOMAIN again")
+
+        self.assertEqual(
+            self.server.query_count,
+            2,
+            "Negative response without SOA must not be cached",
         )
 
 

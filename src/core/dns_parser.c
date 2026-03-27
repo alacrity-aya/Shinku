@@ -14,6 +14,31 @@ static inline uint32_t ring_buffer_alloc_idx(atomic_uint* next_idx, uint32_t max
     return idx % max_entries;
 }
 
+static int cache_store_response_with_flags(
+    struct cache_context* cache_ctx,
+    struct cache_key* key,
+    uint8_t* flat_buf,
+    int flat_len,
+    uint32_t min_ttl,
+    uint8_t ecs_scope,
+    uint8_t flags
+);
+
+struct negative_cache_info {
+    int valid;
+    enum obs_negative_type type;
+    uint8_t flags;
+    uint32_t ttl;
+};
+
+static uint32_t clamp_negative_ttl(uint32_t ttl) {
+    if (ttl < NEGATIVE_TTL_MIN)
+        return NEGATIVE_TTL_MIN;
+    if (ttl > NEGATIVE_TTL_MAX)
+        return NEGATIVE_TTL_MAX;
+    return ttl;
+}
+
 static inline void seqlock_write_begin(atomic_uint* seq) {
     atomic_fetch_add_explicit(seq, 1, memory_order_relaxed);
 }
@@ -177,6 +202,26 @@ static int cache_store_response(
     uint32_t min_ttl,
     uint8_t ecs_scope
 ) {
+    return cache_store_response_with_flags(
+        cache_ctx,
+        key,
+        flat_buf,
+        flat_len,
+        min_ttl,
+        ecs_scope,
+        0
+    );
+}
+
+static int cache_store_response_with_flags(
+    struct cache_context* cache_ctx,
+    struct cache_key* key,
+    uint8_t* flat_buf,
+    int flat_len,
+    uint32_t min_ttl,
+    uint8_t ecs_scope,
+    uint8_t flags
+) {
     if (!cache_ctx || !cache_ctx->entries || !cache_ctx->next_idx)
         return -1;
 
@@ -227,6 +272,7 @@ static int cache_store_response(
         .expire_ts = now_ns + ((uint64_t)min_ttl * 1000000000ULL),
         .pkt_len = (uint16_t)flat_len,
         .scope = ecs_scope,
+        .flags = flags,
         .gen = gen,
     };
 
@@ -253,6 +299,126 @@ static int cache_store_response(
     );
     OBS_COUNT_CACHE_INSERT_CTX(cache_ctx, 1);
     return 0;
+}
+
+static int
+read_soa_negative_ttl(const uint8_t* pkt_data, int rdata_off, int pkt_len, uint32_t* out_ttl) {
+    int mname = skip_name(pkt_data, rdata_off, pkt_len);
+    if (mname < 0)
+        return -1;
+    int rname_off = rdata_off + mname;
+    int rname = skip_name(pkt_data, rname_off, pkt_len);
+    if (rname < 0)
+        return -1;
+
+    int numeric_off = rname_off + rname;
+    if (numeric_off + 20 > pkt_len)
+        return -1;
+
+    *out_ttl = read_u32(pkt_data + numeric_off + 16);
+    return 0;
+}
+
+static struct negative_cache_info parse_negative_cache_info(
+    struct cache_context* cache_ctx,
+    const uint8_t* pkt_data,
+    uint32_t pkt_len,
+    uint16_t flags,
+    uint16_t qdcount,
+    uint16_t ancount,
+    uint16_t nscount
+) {
+    struct negative_cache_info info = { 0 };
+
+    uint16_t rcode = (uint16_t)(flags & DNS_RCODE_MASK);
+    int is_nxdomain = (rcode == DNS_RCODE_NXDOMAIN);
+    int is_nodata = (rcode == DNS_RCODE_NOERROR && ancount == 0);
+
+    if (!is_nxdomain && !is_nodata)
+        return info;
+
+    uint32_t read_offset = sizeof(struct dns_hdr);
+    for (uint16_t i = 0; i < qdcount; i++) {
+        int skip = skip_name(pkt_data, (int)read_offset, (int)pkt_len);
+        if (skip < 0)
+            return info;
+        read_offset += (uint32_t)skip;
+        if (read_offset + 4 > pkt_len)
+            return info;
+        read_offset += 4;
+    }
+
+    for (uint16_t i = 0; i < ancount; i++) {
+        int skip = skip_name(pkt_data, (int)read_offset, (int)pkt_len);
+        if (skip < 0)
+            return info;
+        read_offset += (uint32_t)skip;
+        if (read_offset + 10 > pkt_len)
+            return info;
+        uint16_t rdlen = read_u16(pkt_data + read_offset + 8);
+        read_offset += 10;
+        if (read_offset + rdlen > pkt_len)
+            return info;
+        read_offset += rdlen;
+    }
+
+    int found_soa = 0;
+    uint32_t best_soa_ttl = UINT32_MAX;
+    for (uint16_t i = 0; i < nscount; i++) {
+        int skip = skip_name(pkt_data, (int)read_offset, (int)pkt_len);
+        if (skip < 0)
+            return info;
+        read_offset += (uint32_t)skip;
+        if (read_offset + 10 > pkt_len)
+            return info;
+
+        uint16_t rtype = read_u16(pkt_data + read_offset);
+        uint32_t rr_ttl = read_u32(pkt_data + read_offset + 4);
+        uint16_t rdlen = read_u16(pkt_data + read_offset + 8);
+        int rdata_off = (int)read_offset + 10;
+        read_offset += 10;
+
+        if (read_offset + rdlen > pkt_len)
+            return info;
+
+        if (rtype == DNS_TYPE_SOA) {
+            uint32_t minimum = 0;
+            if (read_soa_negative_ttl(pkt_data, rdata_off, (int)pkt_len, &minimum) == 0) {
+                uint32_t candidate = rr_ttl < minimum ? rr_ttl : minimum;
+                if (candidate < best_soa_ttl)
+                    best_soa_ttl = candidate;
+                found_soa = 1;
+            }
+        }
+        read_offset += rdlen;
+    }
+
+    if (!found_soa) {
+        OBS_COUNT_PARSER_REJECT_CTX(cache_ctx, OBS_REJECT_NEGATIVE_NO_SOA);
+        obs_metrics_count_negative_reject(
+            OBS_METRICS_FROM_CACHE_CTX(cache_ctx),
+            is_nxdomain ? OBS_NEGATIVE_NXDOMAIN : OBS_NEGATIVE_NODATA
+        );
+        return info;
+    }
+
+    uint32_t ttl = clamp_negative_ttl(best_soa_ttl);
+    if (ttl == 0 || ttl == UINT32_MAX) {
+        OBS_COUNT_PARSER_REJECT_CTX(cache_ctx, OBS_REJECT_NEGATIVE_BAD_POLICY);
+        obs_metrics_count_negative_reject(
+            OBS_METRICS_FROM_CACHE_CTX(cache_ctx),
+            is_nxdomain ? OBS_NEGATIVE_NXDOMAIN : OBS_NEGATIVE_NODATA
+        );
+        return info;
+    }
+
+    info.valid = 1;
+    info.ttl = ttl;
+    info.type = is_nxdomain ? OBS_NEGATIVE_NXDOMAIN : OBS_NEGATIVE_NODATA;
+    info.flags = CACHE_VALUE_FLAG_NEGATIVE;
+    if (is_nxdomain)
+        info.flags |= CACHE_VALUE_FLAG_NXDOMAIN;
+    return info;
 }
 
 int cache_cleanup_expired_entries(struct cache_context* cache_ctx) {
@@ -319,6 +485,9 @@ int cache_handle_event(void* ctx, void* data, [[maybe_unused]] size_t len) {
     uint16_t nscount = ntohs(dns->nscount);
     uint16_t flags = ntohs(dns->flags);
 
+    struct negative_cache_info neg_info =
+        parse_negative_cache_info(cache_ctx, pkt_data, pkt_len, flags, qdcount, ancount, nscount);
+
     uint8_t is_response = (flags >> 15) & 0x1;
     if (!is_response) {
         OBS_COUNT_PARSER_REJECT_CTX(cache_ctx, OBS_REJECT_NOT_RESPONSE);
@@ -332,11 +501,11 @@ int cache_handle_event(void* ctx, void* data, [[maybe_unused]] size_t len) {
         OBS_COUNT_PARSER_REJECT_CTX(cache_ctx, OBS_REJECT_TC);
         return 0;
     }
-    if ((flags & DNS_RCODE_MASK) != 0) {
+    if ((flags & DNS_RCODE_MASK) != 0 && !neg_info.valid) {
         OBS_COUNT_PARSER_REJECT_CTX(cache_ctx, OBS_REJECT_RCODE);
         return 0;
     }
-    if (ancount == 0) {
+    if (ancount == 0 && !neg_info.valid) {
         OBS_COUNT_PARSER_REJECT_CTX(cache_ctx, OBS_REJECT_NO_ANSWER);
         return 0;
     }
@@ -379,7 +548,7 @@ int cache_handle_event(void* ctx, void* data, [[maybe_unused]] size_t len) {
 
     read_offset = q_end + 4;
 
-    uint32_t min_ttl = UINT32_MAX;
+    uint32_t min_ttl = neg_info.valid ? neg_info.ttl : UINT32_MAX;
     int has_terminal_rr = 0;
 
     for (int i = 0; i < ancount; i++) {
@@ -460,7 +629,7 @@ int cache_handle_event(void* ctx, void* data, [[maybe_unused]] size_t len) {
         read_offset += rdlen;
     }
 
-    if ((qtype == DNS_TYPE_A || qtype == DNS_TYPE_AAAA) && !has_terminal_rr) {
+    if (!neg_info.valid && (qtype == DNS_TYPE_A || qtype == DNS_TYPE_AAAA) && !has_terminal_rr) {
         OBS_COUNT_PARSER_REJECT_CTX(cache_ctx, OBS_REJECT_CNAME_NO_TERMINAL);
         return 0;
     }
@@ -520,7 +689,20 @@ int cache_handle_event(void* ctx, void* data, [[maybe_unused]] size_t len) {
 
     struct cache_key key = { .name_hash = name_hash, .qtype = qtype, .qclass = qclass, ._pad = 0 };
 
-    cache_store_response(cache_ctx, &key, flat_buf, flat_offset, min_ttl, ecs_scope);
+    if (neg_info.valid) {
+        obs_metrics_count_negative_accept(OBS_METRICS_FROM_CACHE_CTX(cache_ctx), neg_info.type);
+        cache_store_response_with_flags(
+            cache_ctx,
+            &key,
+            flat_buf,
+            flat_offset,
+            min_ttl,
+            ecs_scope,
+            neg_info.flags
+        );
+    } else {
+        cache_store_response(cache_ctx, &key, flat_buf, flat_offset, min_ttl, ecs_scope);
+    }
 
     return 0;
 }

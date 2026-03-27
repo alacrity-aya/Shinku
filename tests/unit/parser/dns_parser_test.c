@@ -141,6 +141,48 @@ static void builder_add_answer(
     b->len += rdlen;
 }
 
+static void builder_add_soa_answer(
+    struct dns_builder* b,
+    const char* owner,
+    uint32_t ttl,
+    uint32_t minimum_ttl
+) {
+    uint8_t rdata[256];
+    uint32_t pos = 0;
+
+    struct dns_builder tmp = { 0 };
+    builder_init(&tmp, 0, 0, 0, 0, 0, 0);
+
+    builder_add_name(&tmp, "ns1.example.com");
+    uint32_t mname_len = tmp.len - sizeof(struct dns_hdr);
+    memcpy(rdata + pos, tmp.buf + sizeof(struct dns_hdr), mname_len);
+    pos += mname_len;
+
+    tmp.len = sizeof(struct dns_hdr);
+    builder_add_name(&tmp, "hostmaster.example.com");
+    uint32_t rname_len = tmp.len - sizeof(struct dns_hdr);
+    memcpy(rdata + pos, tmp.buf + sizeof(struct dns_hdr), rname_len);
+    pos += rname_len;
+
+    uint32_t serial = htonl(1);
+    uint32_t refresh = htonl(3600);
+    uint32_t retry = htonl(600);
+    uint32_t expire = htonl(86400);
+    uint32_t minimum = htonl(minimum_ttl);
+    memcpy(rdata + pos, &serial, 4);
+    pos += 4;
+    memcpy(rdata + pos, &refresh, 4);
+    pos += 4;
+    memcpy(rdata + pos, &retry, 4);
+    pos += 4;
+    memcpy(rdata + pos, &expire, 4);
+    pos += 4;
+    memcpy(rdata + pos, &minimum, 4);
+    pos += 4;
+
+    builder_add_answer(b, owner, DNS_TYPE_SOA, DNS_CLASS_IN, ttl, (uint16_t)pos, rdata);
+}
+
 /* --- Positive Tests --- */
 
 // 1. test_simple_a_record
@@ -335,6 +377,137 @@ static void test_reject_rcode_nonzero() {
 
     call_handle_packet(&test_ctx, b.buf, b.len);
     TEST_ASSERT(test_next_idx == 0, "test_reject_rcode_nonzero: next_idx unchanged");
+}
+
+static void test_negative_cache_nxdomain_with_soa() {
+    setup_test();
+    struct dns_builder b;
+    builder_init(&b, 0x2222, 0x8183, 1, 0, 1, 0);
+    builder_add_question(&b, "nx.example.com", DNS_TYPE_A, DNS_CLASS_IN);
+    builder_add_soa_answer(&b, "example.com", 120, 30);
+
+    int ret = call_handle_packet(&test_ctx, b.buf, b.len);
+    TEST_ASSERT(ret == 0, "test_negative_cache_nxdomain_with_soa: handle_packet returns 0");
+    if (has_bpf) {
+        TEST_ASSERT(
+            test_next_idx == 1,
+            "test_negative_cache_nxdomain_with_soa: cache insert attempted"
+        );
+    } else {
+        printf("  [SKIP] nxdomain-with-soa cache insert check (no BPF map)\n");
+    }
+
+    if (has_bpf) {
+        uint32_t expected_hash = 0;
+        calculate_hash_strict_impl(b.buf, sizeof(struct dns_hdr), b.len, &expected_hash);
+        struct cache_key key = {
+            .name_hash = expected_hash,
+            .qtype = DNS_TYPE_A,
+            .qclass = DNS_CLASS_IN,
+            ._pad = 0,
+        };
+        struct cache_value val;
+        int err = bpf_map_lookup_elem(test_ctx.cache_map_fd, &key, &val);
+        TEST_ASSERT(err == 0, "test_negative_cache_nxdomain_with_soa: cache key exists");
+    }
+}
+
+static void test_negative_cache_nodata_with_soa() {
+    setup_test();
+    struct dns_builder b;
+    builder_init(&b, 0x3333, 0x8180, 1, 0, 1, 0);
+    builder_add_question(&b, "nodata.example.com", DNS_TYPE_A, DNS_CLASS_IN);
+    builder_add_soa_answer(&b, "example.com", 90, 40);
+
+    int ret = call_handle_packet(&test_ctx, b.buf, b.len);
+    TEST_ASSERT(ret == 0, "test_negative_cache_nodata_with_soa: handle_packet returns 0");
+    if (has_bpf) {
+        TEST_ASSERT(
+            test_next_idx == 1,
+            "test_negative_cache_nodata_with_soa: cache insert attempted"
+        );
+    } else {
+        printf("  [SKIP] nodata-with-soa cache insert check (no BPF map)\n");
+    }
+
+    if (has_bpf) {
+        uint32_t expected_hash = 0;
+        calculate_hash_strict_impl(b.buf, sizeof(struct dns_hdr), b.len, &expected_hash);
+        struct cache_key key = {
+            .name_hash = expected_hash,
+            .qtype = DNS_TYPE_A,
+            .qclass = DNS_CLASS_IN,
+            ._pad = 0,
+        };
+        struct cache_value val;
+        int err = bpf_map_lookup_elem(test_ctx.cache_map_fd, &key, &val);
+        TEST_ASSERT(err == 0, "test_negative_cache_nodata_with_soa: cache key exists");
+    }
+}
+
+static void test_negative_cache_nxdomain_requires_soa() {
+    setup_test();
+    struct dns_builder b;
+    builder_init(&b, 0x4444, 0x8183, 1, 0, 0, 0);
+    builder_add_question(&b, "nx-no-soa.example.com", DNS_TYPE_A, DNS_CLASS_IN);
+
+    int ret = call_handle_packet(&test_ctx, b.buf, b.len);
+    TEST_ASSERT(ret == 0, "test_negative_cache_nxdomain_requires_soa: handle_packet returns 0");
+    TEST_ASSERT(test_next_idx == 0, "test_negative_cache_nxdomain_requires_soa: not cached");
+}
+
+static void test_negative_cache_nodata_requires_soa() {
+    setup_test();
+    struct dns_builder b;
+    builder_init(&b, 0x5555, 0x8180, 1, 0, 0, 0);
+    builder_add_question(&b, "nodata-no-soa.example.com", DNS_TYPE_A, DNS_CLASS_IN);
+
+    int ret = call_handle_packet(&test_ctx, b.buf, b.len);
+    TEST_ASSERT(ret == 0, "test_negative_cache_nodata_requires_soa: handle_packet returns 0");
+    TEST_ASSERT(test_next_idx == 0, "test_negative_cache_nodata_requires_soa: not cached");
+}
+
+static void test_negative_cache_ttl_uses_min_soa_and_ttl() {
+    setup_test();
+    struct dns_builder b;
+    builder_init(&b, 0x6666, 0x8183, 1, 0, 1, 0);
+    builder_add_question(&b, "ttl-nx.example.com", DNS_TYPE_A, DNS_CLASS_IN);
+    builder_add_soa_answer(&b, "example.com", 120, 30);
+
+    int ret = call_handle_packet(&test_ctx, b.buf, b.len);
+    TEST_ASSERT(ret == 0, "test_negative_cache_ttl_uses_min_soa_and_ttl: handle_packet returns 0");
+    if (has_bpf) {
+        TEST_ASSERT(
+            test_next_idx == 1,
+            "test_negative_cache_ttl_uses_min_soa_and_ttl: cache insert attempted"
+        );
+    } else {
+        printf("  [SKIP] negative TTL cache insert check (no BPF map)\n");
+    }
+
+    if (has_bpf) {
+        uint32_t expected_hash = 0;
+        calculate_hash_strict_impl(b.buf, sizeof(struct dns_hdr), b.len, &expected_hash);
+        struct cache_key key = {
+            .name_hash = expected_hash,
+            .qtype = DNS_TYPE_A,
+            .qclass = DNS_CLASS_IN,
+            ._pad = 0,
+        };
+        struct cache_value val;
+        int err = bpf_map_lookup_elem(test_ctx.cache_map_fd, &key, &val);
+        TEST_ASSERT(err == 0, "test_negative_cache_ttl_uses_min_soa_and_ttl: cache key exists");
+        if (err == 0) {
+            struct timespec ts;
+            clock_gettime(CLOCK_MONOTONIC, &ts);
+            uint64_t now_ns = (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+            uint64_t ttl_ns = val.expire_ts - now_ns;
+            TEST_ASSERT(
+                ttl_ns <= 31ULL * 1000000000ULL && ttl_ns >= 29ULL * 1000000000ULL,
+                "test_negative_cache_ttl_uses_min_soa_and_ttl: TTL near 30s"
+            );
+        }
+    }
 }
 
 // 10. test_reject_ancount_zero
@@ -588,6 +761,11 @@ int main(void) {
     test_reject_query();
     test_reject_truncated();
     test_reject_rcode_nonzero();
+    test_negative_cache_nxdomain_with_soa();
+    test_negative_cache_nodata_with_soa();
+    test_negative_cache_nxdomain_requires_soa();
+    test_negative_cache_nodata_requires_soa();
+    test_negative_cache_ttl_uses_min_soa_and_ttl();
     test_reject_ancount_zero();
     test_reject_qdcount_not_one();
     test_reject_too_short();

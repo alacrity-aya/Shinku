@@ -35,6 +35,34 @@ void obs_metrics_count_cache_insert(struct obs_metrics* metrics, int success) {
         atomic_fetch_add_explicit(&metrics->cache_insert_fail_total.value, 1, memory_order_relaxed);
 }
 
+void obs_metrics_count_negative_accept(struct obs_metrics* metrics, enum obs_negative_type type) {
+    if (!metrics || !metrics->cfg.enabled)
+        return;
+
+    if ((unsigned int)type >= OBS_NEGATIVE_MAX)
+        return;
+
+    atomic_fetch_add_explicit(
+        &metrics->negative_cache_accept_total[type].value,
+        1,
+        memory_order_relaxed
+    );
+}
+
+void obs_metrics_count_negative_reject(struct obs_metrics* metrics, enum obs_negative_type type) {
+    if (!metrics || !metrics->cfg.enabled)
+        return;
+
+    if ((unsigned int)type >= OBS_NEGATIVE_MAX)
+        return;
+
+    atomic_fetch_add_explicit(
+        &metrics->negative_cache_reject_total[type].value,
+        1,
+        memory_order_relaxed
+    );
+}
+
 void obs_metrics_add_cleanup_removed(struct obs_metrics* metrics, uint64_t removed) {
     if (!metrics || !metrics->cfg.enabled || removed == 0)
         return;
