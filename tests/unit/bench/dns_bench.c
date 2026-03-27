@@ -52,10 +52,11 @@ call_handle_packet(struct cache_context* cache_ctx, uint8_t* dns_pkt, uint32_t d
     uint8_t buf[sizeof(struct dns_event) + 1500];
     memset(buf, 0, sizeof(buf));
     struct dns_event* event = (struct dns_event*)buf;
+    struct dns_parser_context parser_ctx = { .cache = cache_ctx, .runtime = NULL };
     event->timestamp = 0;
     event->len = dns_len;
     memcpy(event->payload, dns_pkt, dns_len);
-    return cache_handle_event(cache_ctx, event, sizeof(*event) + dns_len);
+    return dns_parser_handle_event(&parser_ctx, event, sizeof(*event) + dns_len);
 }
 
 static void bench_hash_throughput(void) {

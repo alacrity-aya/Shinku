@@ -39,13 +39,13 @@ static int pass_count = 0;
     } while (0)
 
 // Function declarations for the functions we'll test
-int calculate_dns_name_hash_test(void** cursor, void* data_end, __u32* hash_out);
+int hash_calculate_dns_name_hash_test(void** cursor, void* data_end, __u32* hash_out);
 int calculate_hash_strict_impl(const __u8* packet, int offset, int max_len, uint32_t* out_hash);
 int flatten_name_impl(const __u8* packet, int offset, int max_len, __u8* dest, int dest_max);
 
 // For compatibility, define the function used in tests
 static int calculate_dns_name_hash_xdp(void** cursor, void* data_end, __u32* hash_out) {
-    return calculate_dns_name_hash_test(cursor, data_end, hash_out);
+    return hash_calculate_dns_name_hash_test(cursor, data_end, hash_out);
 }
 
 // =============================================================================

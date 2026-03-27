@@ -17,9 +17,8 @@
  * compliance with bounded loops and explicit bounds checks.
  */
 
-/* VLAN header structure (not in vmlinux.h) */
-struct vlan_hdr {
-    __be16 h_vlan_TCI;              /**< VLAN TCI (tag control info) */
+struct shinku_vlan_hdr {
+    __be16 h_vlan_TCI; /**< VLAN TCI (tag control info) */
     __be16 h_vlan_encapsulated_proto; /**< Encapsulated protocol */
 };
 
@@ -38,7 +37,7 @@ static __always_inline void skip_vlan_tags(__u16* proto, void** next_hdr, void* 
 #pragma clang loop unroll(full)
     for (int i = 0; i < MAX_VLAN_DEPTH; i++) {
         if (*proto == bpf_htons(ETH_P_8021Q) || *proto == bpf_htons(ETH_P_8021AD)) {
-            struct vlan_hdr* vlan = *next_hdr;
+            struct shinku_vlan_hdr* vlan = *next_hdr;
             if ((void*)(vlan + 1) > data_end)
                 return;
 

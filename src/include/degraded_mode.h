@@ -7,6 +7,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+struct shinku_event_bus;
+
 /**
  * @file degraded_mode.h
  * @brief Degraded mode state machine for failure-mode policy.
@@ -82,9 +84,9 @@ struct degraded_aligned_uint_counter {
  * Multiple reasons can be active simultaneously (bitwise OR).
  */
 enum degraded_reason_flag {
-    DEGRADED_REASON_USERSPACE_LAG = 1u << 0,          /**< Userspace poll lag */
-    DEGRADED_REASON_CLEANUP_FAILURE = 1u << 1,        /**< Cleanup thread failures */
-    DEGRADED_REASON_STARTUP_ATTACH_RETRY = 1u << 2,   /**< XDP/TC attach retries */
+    DEGRADED_REASON_USERSPACE_LAG = 1u << 0, /**< Userspace poll lag */
+    DEGRADED_REASON_CLEANUP_FAILURE = 1u << 1, /**< Cleanup thread failures */
+    DEGRADED_REASON_STARTUP_ATTACH_RETRY = 1u << 2, /**< XDP/TC attach retries */
     DEGRADED_REASON_CACHE_MAP_UPDATE_FAILURE = 1u << 3, /**< Cache map update failures */
 };
 
@@ -100,13 +102,14 @@ enum degraded_reason_flag {
  * concurrent updates from multiple threads.
  */
 struct degraded_state {
-    struct degraded_aligned_uint_counter reason_flags;    /**< Active reason flags (bitmask) */
+    struct degraded_aligned_uint_counter reason_flags; /**< Active reason flags (bitmask) */
     struct degraded_aligned_u64_counter transitions_total; /**< Total state transitions */
     struct degraded_aligned_u64_counter reason_set_total[4]; /**< Per-reason activation counts */
 
-    struct degraded_aligned_uint_counter userspace_lag_streak;   /**< Consecutive high-load polls */
-    struct degraded_aligned_uint_counter cache_map_fail_streak;  /**< Consecutive update failures */
-    struct degraded_aligned_uint_counter cleanup_fail_streak;    /**< Consecutive cleanup failures */
+    struct degraded_aligned_uint_counter userspace_lag_streak; /**< Consecutive high-load polls */
+    struct degraded_aligned_uint_counter cache_map_fail_streak; /**< Consecutive update failures */
+    struct degraded_aligned_uint_counter cleanup_fail_streak; /**< Consecutive cleanup failures */
+    struct shinku_event_bus* events;
 };
 
 /* ============================================================================
@@ -119,6 +122,8 @@ struct degraded_state {
  * @note All counters and flags are set to zero.
  */
 void degraded_state_init(struct degraded_state* state);
+
+void degraded_bind_event_bus(struct degraded_state* state, struct shinku_event_bus* events);
 
 /**
  * @brief Set a degraded reason flag.

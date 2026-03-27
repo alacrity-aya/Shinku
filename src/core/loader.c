@@ -7,7 +7,7 @@
 #include "dns_parser.h"
 #include <bpf/bpf.h>
 #include <bpf/libbpf.h>
-#include <bpf/libbpf_legacy.h>
+#include <errno.h>
 #include <net/if.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -125,7 +125,7 @@ static int attach_tc_legacy(struct bpf_ctx* ctx, int ifindex) {
     return 0;
 }
 
-int setup_bpf(struct bpf_ctx* ctx, const struct env* env) {
+int loader_setup_bpf(struct bpf_ctx* ctx, const struct env* env) {
     int err;
 
 #if SHINKU_OBS_ENABLED
@@ -141,8 +141,22 @@ int setup_bpf(struct bpf_ctx* ctx, const struct env* env) {
         .bpf_sample_mask = 0,
     };
 #endif
+    shinku_events_init(&ctx->events);
     obs_metrics_init(&ctx->metrics, &obs_cfg);
+    shinku_events_subscribe(
+        &ctx->events,
+        SHINKU_EVENT_DEGRADED_REASON_SET,
+        obs_metrics_handle_degraded_event,
+        &ctx->metrics
+    );
+    shinku_events_subscribe(
+        &ctx->events,
+        SHINKU_EVENT_DEGRADED_REASON_CLEAR,
+        obs_metrics_handle_degraded_event,
+        &ctx->metrics
+    );
     degraded_state_init(&ctx->degraded);
+    degraded_bind_event_bus(&ctx->degraded, &ctx->events);
     ctx->obs_ctx.metrics = &ctx->metrics;
     atomic_store_explicit(&ctx->bpf_ready, false, memory_order_relaxed);
     ctx->obs_ncpu = 0;
@@ -205,8 +219,10 @@ int setup_bpf(struct bpf_ctx* ctx, const struct env* env) {
     ctx->cache_context.max_entries = CACHE_MAP_MAX_ENTRIES;
     ctx->cache_context.cache_map_fd = bpf_map__fd(ctx->skel->maps.cache_map);
     ctx->cache_context.next_gen = 0;
-    ctx->cache_context.obs = &ctx->obs_ctx;
-    ctx->cache_context.degraded = &ctx->degraded;
+    ctx->parser_runtime.obs = &ctx->obs_ctx;
+    ctx->parser_runtime.degraded = &ctx->degraded;
+    ctx->parser_context.cache = &ctx->cache_context;
+    ctx->parser_context.runtime = &ctx->parser_runtime;
     ctx->cache_context.slot_owners = calloc(CACHE_MAP_MAX_ENTRIES, sizeof(struct cache_key));
     if (!ctx->cache_context.slot_owners) {
         fprintf(stderr, "Failed to allocate slot_owners array, continuing in degraded mode\n");
@@ -236,7 +252,7 @@ int setup_bpf(struct bpf_ctx* ctx, const struct env* env) {
     (void)env->log_level; /* unused when logging disabled */
 #endif
 
-    uint32_t ifindex = if_nametoindex(env->interface);
+    int ifindex = (int)if_nametoindex(env->interface);
     if (ifindex == 0) {
         fprintf(stderr, "Invalid interface name: %s\n", env->interface);
         err = ERR_INVALID_IFACE;
@@ -246,11 +262,11 @@ int setup_bpf(struct bpf_ctx* ctx, const struct env* env) {
     int attached = 0;
     for (int attempt = 0; attempt < ATTACH_RETRY_MAX; attempt++) {
         ctx->skel->links.xdp_rx = bpf_program__attach_xdp(ctx->skel->progs.xdp_rx, ifindex);
-        err = libbpf_get_error(ctx->skel->links.xdp_rx);
-        if (!err) {
+        if (ctx->skel->links.xdp_rx) {
             attached = 1;
             break;
         }
+        err = -errno;
 
         ctx->skel->links.xdp_rx = NULL;
         degraded_set_reason(&ctx->degraded, DEGRADED_REASON_STARTUP_ATTACH_RETRY);
@@ -279,11 +295,11 @@ int setup_bpf(struct bpf_ctx* ctx, const struct env* env) {
     attached = 0;
     for (int attempt = 0; attempt < ATTACH_RETRY_MAX; attempt++) {
         ctx->skel->links.tc_tx = bpf_program__attach_tcx(ctx->skel->progs.tc_tx, ifindex, NULL);
-        err = libbpf_get_error(ctx->skel->links.tc_tx);
-        if (!err) {
+        if (ctx->skel->links.tc_tx) {
             attached = 1;
             break;
         }
+        err = -errno;
 
         if (err == -EOPNOTSUPP || err == -EINVAL) {
             fprintf(stderr, "TCX not supported on %s, falling back to TC\n", env->interface);
@@ -329,8 +345,8 @@ int setup_bpf(struct bpf_ctx* ctx, const struct env* env) {
 
     ctx->rb_pkt = ring_buffer__new(
         bpf_map__fd(ctx->skel->maps.rb_pkt),
-        cache_handle_event,
-        &ctx->cache_context,
+        dns_parser_handle_event,
+        &ctx->parser_context,
         NULL
     );
     if (!ctx->rb_pkt) {
@@ -364,11 +380,11 @@ int setup_bpf(struct bpf_ctx* ctx, const struct env* env) {
     return 0;
 
 cleanup:
-    cleanup_bpf(ctx);
+    loader_cleanup_bpf(ctx);
     return err;
 }
 
-int poll_pkt_ring(struct bpf_ctx* ctx, int timeout_ms) {
+int loader_poll_pkt_ring(struct bpf_ctx* ctx, int timeout_ms) {
     int ret = ring_buffer__poll(ctx->rb_pkt, timeout_ms);
     if (ret < 0) {
         ctx->pkt_poll_err_streak++;
@@ -393,7 +409,7 @@ int poll_pkt_ring(struct bpf_ctx* ctx, int timeout_ms) {
     return ret;
 }
 
-int dump_bpf_log([[maybe_unused]] struct bpf_ctx* ctx, [[maybe_unused]] int timeout_ms) {
+int loader_dump_bpf_log([[maybe_unused]] struct bpf_ctx* ctx, [[maybe_unused]] int timeout_ms) {
 #if SHINKU_BPF_LOG_ENABLED
     return ring_buffer__poll(ctx->rb_log, timeout_ms);
 #else
@@ -401,10 +417,10 @@ int dump_bpf_log([[maybe_unused]] struct bpf_ctx* ctx, [[maybe_unused]] int time
 #endif
 }
 
-void cleanup_bpf(struct bpf_ctx* ctx) {
+void loader_cleanup_bpf(struct bpf_ctx* ctx) {
     atomic_store_explicit(&ctx->bpf_ready, false, memory_order_release);
     obs_http_stop(&ctx->obs_http);
-    stop_cleanup_thread(ctx);
+    loader_stop_cleanup_thread(ctx);
 
     if (ctx->rb_log) {
         ring_buffer__free(ctx->rb_log);
@@ -452,7 +468,10 @@ static void* cleanup_thread_func(void* arg) {
             break;
         }
 
-        int removed = cache_cleanup_expired_entries(&ctx->cache_context);
+        int removed = dns_parser_cleanup_expired_entries(&ctx->cache_context);
+        if (removed > 0) {
+            obs_metrics_add_cleanup_removed(&ctx->metrics, (uint64_t)removed);
+        }
         degraded_note_cleanup_result(&ctx->degraded, removed);
         if (removed < 0) {
             obs_metrics_mark_degraded(&ctx->metrics, OBS_DEGRADED_CLEANUP_THREAD_DOWN);
@@ -462,7 +481,7 @@ static void* cleanup_thread_func(void* arg) {
     return NULL;
 }
 
-int start_cleanup_thread(struct bpf_ctx* ctx, uint32_t interval_secs) {
+int loader_start_cleanup_thread(struct bpf_ctx* ctx, uint32_t interval_secs) {
     if (interval_secs == 0) {
         interval_secs = 10; /* Default: 10 seconds */
     }
@@ -481,7 +500,7 @@ int start_cleanup_thread(struct bpf_ctx* ctx, uint32_t interval_secs) {
     return 0;
 }
 
-void stop_cleanup_thread(struct bpf_ctx* ctx) {
+void loader_stop_cleanup_thread(struct bpf_ctx* ctx) {
     if (!atomic_load_explicit(&ctx->cleanup_running, memory_order_acquire))
         return;
 
@@ -490,4 +509,28 @@ void stop_cleanup_thread(struct bpf_ctx* ctx) {
     /* Wake up the thread by sending a signal or waiting for it to finish */
     pthread_join(ctx->cleanup_thread, NULL);
     printf("Cleanup thread stopped\n");
+}
+
+int setup_bpf(struct bpf_ctx* ctx, const struct env* env) {
+    return loader_setup_bpf(ctx, env);
+}
+
+int poll_pkt_ring(struct bpf_ctx* ctx, int timeout_ms) {
+    return loader_poll_pkt_ring(ctx, timeout_ms);
+}
+
+int dump_bpf_log(struct bpf_ctx* ctx, int timeout_ms) {
+    return loader_dump_bpf_log(ctx, timeout_ms);
+}
+
+void cleanup_bpf(struct bpf_ctx* ctx) {
+    loader_cleanup_bpf(ctx);
+}
+
+int start_cleanup_thread(struct bpf_ctx* ctx, uint32_t interval_secs) {
+    return loader_start_cleanup_thread(ctx, interval_secs);
+}
+
+void stop_cleanup_thread(struct bpf_ctx* ctx) {
+    loader_stop_cleanup_thread(ctx);
 }

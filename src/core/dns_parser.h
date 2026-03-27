@@ -24,10 +24,10 @@
  * the arena memory region, BPF map file descriptor, and metadata tracking.
  */
 struct cache_context {
-    struct cache_entry* entries;  /**< Arena array of cache entries (mmap'd from BPF) */
-    uint32_t* next_idx;           /**< Next arena slot index (mmap'd from BPF) */
-    uint32_t max_entries;         /**< Maximum entries (CACHE_MAP_MAX_ENTRIES) */
-    int cache_map_fd;             /**< BPF hashmap file descriptor for cache lookups */
+    struct cache_entry* entries; /**< Arena array of cache entries (mmap'd from BPF) */
+    uint32_t* next_idx; /**< Next arena slot index (mmap'd from BPF) */
+    uint32_t max_entries; /**< Maximum entries (CACHE_MAP_MAX_ENTRIES) */
+    int cache_map_fd; /**< BPF hashmap file descriptor for cache lookups */
 
     /**
      * @brief Reverse mapping: slot_owners[arena_idx] = cache_key.
@@ -45,9 +45,27 @@ struct cache_context {
      * to detect slot reuse between cache_map lookup and arena read.
      */
     uint32_t next_gen;
+};
 
-    struct obs_context* obs;       /**< Observability context for metrics */
+/**
+ * @struct dns_parser_runtime
+ * @brief Runtime dependencies for parser side-effects.
+ *
+ * Separates parser/cache data-plane state (cache_context) from
+ * cross-cutting runtime services (metrics + degraded mode).
+ */
+struct dns_parser_runtime {
+    struct obs_context* obs; /**< Observability context for metrics */
     struct degraded_state* degraded; /**< Degraded mode state machine */
+};
+
+/**
+ * @struct dns_parser_context
+ * @brief Full parser callback context for ring-buffer event handling.
+ */
+struct dns_parser_context {
+    struct cache_context* cache; /**< Cache storage context */
+    struct dns_parser_runtime* runtime; /**< Runtime service dependencies */
 };
 
 /**
@@ -61,6 +79,12 @@ struct cache_context {
  * Parses the DNS response and stores valid responses in cache.
  *
  * @note Designed as a callback for ring_buffer__new().
+ */
+int dns_parser_handle_event(void* ctx, void* data, size_t len);
+
+/**
+ * @brief Compatibility alias for dns_parser_handle_event.
+ * @deprecated Use dns_parser_handle_event() instead.
  */
 int cache_handle_event(void* ctx, void* data, size_t len);
 
@@ -85,6 +109,12 @@ int handle_packet(void* ctx, void* data, size_t len);
  *
  * @note Should be called periodically from main loop (e.g., every 10 seconds).
  */
+int dns_parser_cleanup_expired_entries(struct cache_context* cache_ctx);
+
+/**
+ * @brief Compatibility alias for dns_parser_cleanup_expired_entries.
+ * @deprecated Use dns_parser_cleanup_expired_entries() instead.
+ */
 int cache_cleanup_expired_entries(struct cache_context* cache_ctx);
 
 /**
@@ -106,6 +136,17 @@ int cleanup_expired_entries(struct cache_context* cache_ctx);
  * Used in XDP path where compression pointers are rejected for safety.
  * Case-insensitive (lowercases all bytes before hashing).
  */
+int dns_parser_calculate_hash_strict_impl(
+    const uint8_t* packet,
+    int offset,
+    int max_len,
+    uint32_t* out_hash
+);
+
+/**
+ * @brief Compatibility alias for dns_parser_calculate_hash_strict_impl.
+ * @deprecated Use dns_parser_calculate_hash_strict_impl() instead.
+ */
 int calculate_hash_strict_impl(const uint8_t* packet, int offset, int max_len, uint32_t* out_hash);
 
 /**
@@ -120,5 +161,17 @@ int calculate_hash_strict_impl(const uint8_t* packet, int offset, int max_len, u
  * Resolves compression pointers (RFC 1035) and produces a flat,
  * uncompressed DNS name. Used in userspace path where compression
  * is allowed.
+ */
+int dns_parser_flatten_name_impl(
+    const uint8_t* packet,
+    int offset,
+    int max_len,
+    uint8_t* dest,
+    int dest_max
+);
+
+/**
+ * @brief Compatibility alias for dns_parser_flatten_name_impl.
+ * @deprecated Use dns_parser_flatten_name_impl() instead.
  */
 int flatten_name_impl(const uint8_t* packet, int offset, int max_len, uint8_t* dest, int dest_max);

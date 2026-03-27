@@ -142,10 +142,11 @@ static int call_handle_packet(struct cache_context* cache_ctx, uint8_t* dns_pkt,
     uint8_t buf[sizeof(struct dns_event) + 1500];
     memset(buf, 0, sizeof(buf));
     struct dns_event* event = (struct dns_event*)buf;
+    struct dns_parser_context parser_ctx = { .cache = cache_ctx, .runtime = NULL };
     event->timestamp = 0;
     event->len = dns_len;
     memcpy(event->payload, dns_pkt, dns_len);
-    return cache_handle_event(cache_ctx, event, sizeof(*event) + dns_len);
+    return dns_parser_handle_event(&parser_ctx, event, sizeof(*event) + dns_len);
 }
 
 // =====================================================================
@@ -507,7 +508,7 @@ static void test_ttl_cleanup(int cache_map_fd, int has_real_bpf_map) {
     printf("  Waiting 2 seconds for short-ttl.com to expire...\n");
     sleep(2);
 
-    int cleaned = cache_cleanup_expired_entries(&ctx);
+    int cleaned = dns_parser_cleanup_expired_entries(&ctx);
     TEST_ASSERT(cleaned >= 1, "Cleanup removed %d expired entries (expected >= 1)", cleaned);
 
     uint32_t hash1 = 0;

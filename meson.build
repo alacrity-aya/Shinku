@@ -31,6 +31,7 @@ vmlinux_h = custom_target(
 )
 
 inc_src = include_directories('src/include', 'src')
+inc_runtime = include_directories('src/runtime')
 
 # ====================
 # Main BPF Program
@@ -75,6 +76,7 @@ bpf_skel = custom_target(
 
 # Core Library
 core_src = files(
+  'src/runtime/events.c',
   'src/core/degraded_mode.c',
   'src/core/hash.c',
   'src/core/dns_parser.c',
@@ -96,7 +98,7 @@ executable(
   core_src,          
   bpf_skel,         
   dependencies: [libbpf_dep],
-  include_directories: inc_src, 
+  include_directories: [inc_src, inc_runtime],
   c_args: (bpf_log ? ['-DSHINKU_BPF_LOG_ENABLED=1'] : ['-DSHINKU_BPF_LOG_ENABLED=0']) + (obs ? ['-DSHINKU_OBS_ENABLED=1'] : ['-DSHINKU_OBS_ENABLED=0']),
   install: true
 )

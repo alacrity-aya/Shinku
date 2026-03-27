@@ -6,6 +6,7 @@
 #include "dns_parser.h"
 #include "obs_http.h"
 #include "obs_metrics.h"
+#include "runtime/events.h"
 
 #include "cli/config.h"
 #include <bpf/libbpf.h>
@@ -41,29 +42,32 @@ struct cleanup_config {
  * thread management.
  */
 struct bpf_ctx {
-    struct cache_bpf* skel;           /**< BPF skeleton for program management */
-    struct ring_buffer* rb_log;       /**< Ring buffer for BPF logs */
-    struct ring_buffer* rb_pkt;       /**< Ring buffer for DNS packets */
-    struct log_options log_opt;       /**< Log output configuration */
-    struct bpf_tc_hook tc_hook;       /**< TC hook for egress capture */
+    struct cache_bpf* skel; /**< BPF skeleton for program management */
+    struct ring_buffer* rb_log; /**< Ring buffer for BPF logs */
+    struct ring_buffer* rb_pkt; /**< Ring buffer for DNS packets */
+    struct log_options log_opt; /**< Log output configuration */
+    struct bpf_tc_hook tc_hook; /**< TC hook for egress capture */
 
     struct cache_context cache_context; /**< Cache management context */
+    struct dns_parser_runtime parser_runtime;
+    struct dns_parser_context parser_context;
 
-    struct obs_metrics metrics;       /**< Observability metrics */
-    struct obs_context obs_ctx;       /**< Observability context */
-    struct degraded_state degraded;   /**< Degraded mode state machine */
-    struct obs_http_server obs_http;  /**< HTTP server for metrics */
-    atomic_bool bpf_ready;            /**< BPF programs ready flag */
+    struct obs_metrics metrics; /**< Observability metrics */
+    struct obs_context obs_ctx; /**< Observability context */
+    struct degraded_state degraded; /**< Degraded mode state machine */
+    struct shinku_event_bus events; /**< Internal event bus for component decoupling */
+    struct obs_http_server obs_http; /**< HTTP server for metrics */
+    atomic_bool bpf_ready; /**< BPF programs ready flag */
 
-    int obs_ncpu;                     /**< Number of CPUs for per-CPU metrics */
-    uint64_t* obs_percpu_vals;        /**< Buffer for per-CPU metric reads */
-    uint32_t pkt_poll_err_streak;     /**< Consecutive poll errors */
-    uint32_t rb_backlog_streak;       /**< Consecutive high-load polls */
+    int obs_ncpu; /**< Number of CPUs for per-CPU metrics */
+    uint64_t* obs_percpu_vals; /**< Buffer for per-CPU metric reads */
+    uint32_t pkt_poll_err_streak; /**< Consecutive poll errors */
+    uint32_t rb_backlog_streak; /**< Consecutive high-load polls */
 
     /* Cleanup thread */
-    pthread_t cleanup_thread;         /**< Cleanup thread handle */
+    pthread_t cleanup_thread; /**< Cleanup thread handle */
     struct cleanup_config cleanup_cfg; /**< Cleanup configuration */
-    atomic_bool cleanup_running;      /**< Cleanup thread running flag */
+    atomic_bool cleanup_running; /**< Cleanup thread running flag */
 };
 
 /**
@@ -81,6 +85,7 @@ struct bpf_ctx {
  *
  * @note Uses bounded retry with exponential backoff for XDP/TC attach.
  */
+int loader_setup_bpf(struct bpf_ctx* ctx, const struct env* env);
 int setup_bpf(struct bpf_ctx* ctx, const struct env* env);
 
 /**
@@ -91,6 +96,7 @@ int setup_bpf(struct bpf_ctx* ctx, const struct env* env);
  *
  * Processes log events from the BPF ring buffer and prints them.
  */
+int loader_dump_bpf_log(struct bpf_ctx* ctx, int timeout_ms);
 int dump_bpf_log(struct bpf_ctx* ctx, int timeout_ms);
 
 /**
@@ -100,6 +106,7 @@ int dump_bpf_log(struct bpf_ctx* ctx, int timeout_ms);
  * Stops cleanup thread, destroys ring buffers, detaches programs,
  * and frees all resources.
  */
+void loader_cleanup_bpf(struct bpf_ctx* ctx);
 void cleanup_bpf(struct bpf_ctx* ctx);
 
 /**
@@ -111,6 +118,7 @@ void cleanup_bpf(struct bpf_ctx* ctx);
  * Polls the packet ring buffer and processes DNS responses through
  * cache_handle_event(). Tracks poll errors and backlog for degraded mode.
  */
+int loader_poll_pkt_ring(struct bpf_ctx* ctx, int timeout_ms);
 int poll_pkt_ring(struct bpf_ctx* ctx, int timeout_ms);
 
 /* ============================================================================
@@ -126,6 +134,7 @@ int poll_pkt_ring(struct bpf_ctx* ctx, int timeout_ms);
  * Spawns a background thread that periodically calls
  * cache_cleanup_expired_entries() to remove stale cache entries.
  */
+int loader_start_cleanup_thread(struct bpf_ctx* ctx, uint32_t interval_secs);
 int start_cleanup_thread(struct bpf_ctx* ctx, uint32_t interval_secs);
 
 /**
@@ -134,4 +143,5 @@ int start_cleanup_thread(struct bpf_ctx* ctx, uint32_t interval_secs);
  *
  * Signals the cleanup thread to stop and waits for it to exit.
  */
+void loader_stop_cleanup_thread(struct bpf_ctx* ctx);
 void stop_cleanup_thread(struct bpf_ctx* ctx);

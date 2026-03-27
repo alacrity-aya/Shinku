@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-only OR Apache-2.0
 #include "degraded_mode.h"
 
+#include "runtime/events.h"
+
 #include <string.h>
 
 static int reason_index(uint32_t reason_flag) {
@@ -22,6 +24,12 @@ void degraded_state_init(struct degraded_state* state) {
     memset(state, 0, sizeof(*state));
 }
 
+void degraded_bind_event_bus(struct degraded_state* state, struct shinku_event_bus* events) {
+    if (!state)
+        return;
+    state->events = events;
+}
+
 bool degraded_set_reason(struct degraded_state* state, uint32_t reason_flag) {
     if (!state)
         return false;
@@ -30,10 +38,19 @@ bool degraded_set_reason(struct degraded_state* state, uint32_t reason_flag) {
         atomic_fetch_or_explicit(&state->reason_flags.value, reason_flag, memory_order_relaxed);
     if ((prev & reason_flag) == 0) {
         int idx = reason_index(reason_flag);
+        uint32_t flags_after = prev | reason_flag;
         if (idx >= 0) {
             atomic_fetch_add_explicit(&state->reason_set_total[idx].value, 1, memory_order_relaxed);
         }
         atomic_fetch_add_explicit(&state->transitions_total.value, 1, memory_order_relaxed);
+
+        if (state->events) {
+            struct shinku_event_degraded_payload payload = {
+                .reason_flag = reason_flag,
+                .flags_after = flags_after,
+            };
+            shinku_events_publish(state->events, SHINKU_EVENT_DEGRADED_REASON_SET, &payload);
+        }
         return true;
     }
 
@@ -48,6 +65,14 @@ bool degraded_clear_reason(struct degraded_state* state, uint32_t reason_flag) {
         atomic_fetch_and_explicit(&state->reason_flags.value, ~reason_flag, memory_order_relaxed);
     if (prev & reason_flag) {
         atomic_fetch_add_explicit(&state->transitions_total.value, 1, memory_order_relaxed);
+
+        if (state->events) {
+            struct shinku_event_degraded_payload payload = {
+                .reason_flag = reason_flag,
+                .flags_after = prev & ~reason_flag,
+            };
+            shinku_events_publish(state->events, SHINKU_EVENT_DEGRADED_REASON_CLEAR, &payload);
+        }
         return true;
     }
 

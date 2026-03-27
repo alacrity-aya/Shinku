@@ -16,6 +16,7 @@ static inline uint32_t ring_buffer_alloc_idx(atomic_uint* next_idx, uint32_t max
 
 static int cache_store_response_with_flags(
     struct cache_context* cache_ctx,
+    struct dns_parser_runtime* runtime,
     struct cache_key* key,
     uint8_t* flat_buf,
     int flat_len,
@@ -64,7 +65,12 @@ static inline uint32_t read_u32(const uint8_t* ptr) {
     return ntohl(val);
 }
 
-int calculate_hash_strict_impl(const uint8_t* packet, int offset, int max_len, uint32_t* out_hash) {
+int dns_parser_calculate_hash_strict_impl(
+    const uint8_t* packet,
+    int offset,
+    int max_len,
+    uint32_t* out_hash
+) {
     uint32_t hash = FNV_OFFSET_BASIS_32;
     int current_offset = offset;
     int jumped = 0;
@@ -117,10 +123,16 @@ int calculate_hash_strict_impl(const uint8_t* packet, int offset, int max_len, u
 
 static int
 calculate_hash_strict(const uint8_t* packet, int offset, int max_len, uint32_t* out_hash) {
-    return calculate_hash_strict_impl(packet, offset, max_len, out_hash);
+    return dns_parser_calculate_hash_strict_impl(packet, offset, max_len, out_hash);
 }
 
-int flatten_name_impl(const uint8_t* packet, int offset, int max_len, uint8_t* dest, int dest_max) {
+int dns_parser_flatten_name_impl(
+    const uint8_t* packet,
+    int offset,
+    int max_len,
+    uint8_t* dest,
+    int dest_max
+) {
     int current_offset = offset;
     int written = 0;
     int count = 0;
@@ -159,7 +171,7 @@ int flatten_name_impl(const uint8_t* packet, int offset, int max_len, uint8_t* d
 
 static int
 flatten_name(const uint8_t* packet, int offset, int max_len, uint8_t* dest, int dest_max) {
-    return flatten_name_impl(packet, offset, max_len, dest, dest_max);
+    return dns_parser_flatten_name_impl(packet, offset, max_len, dest, dest_max);
 }
 
 /* Skip a DNS name in wire format, returning bytes consumed.
@@ -196,6 +208,7 @@ static int check_ecs_scope(const uint8_t* pkt, int offset, int max_len, int rdle
 
 static int cache_store_response(
     struct cache_context* cache_ctx,
+    struct dns_parser_runtime* runtime,
     struct cache_key* key,
     uint8_t* flat_buf,
     int flat_len,
@@ -204,6 +217,7 @@ static int cache_store_response(
 ) {
     return cache_store_response_with_flags(
         cache_ctx,
+        runtime,
         key,
         flat_buf,
         flat_len,
@@ -215,6 +229,7 @@ static int cache_store_response(
 
 static int cache_store_response_with_flags(
     struct cache_context* cache_ctx,
+    struct dns_parser_runtime* runtime,
     struct cache_key* key,
     uint8_t* flat_buf,
     int flat_len,
@@ -229,9 +244,12 @@ static int cache_store_response_with_flags(
         return -1;
 
     if (!cache_ctx->slot_owners) {
-        degraded_note_cache_map_update(cache_ctx->degraded, 0);
-        OBS_COUNT_CACHE_INSERT_CTX(cache_ctx, 0);
-        OBS_MARK_DEGRADED_CTX(cache_ctx, OBS_DEGRADED_CACHE_MAP_UPDATE_FAIL);
+        degraded_note_cache_map_update(runtime ? runtime->degraded : NULL, 0);
+        obs_metrics_count_cache_insert(runtime && runtime->obs ? runtime->obs->metrics : NULL, 0);
+        obs_metrics_mark_degraded(
+            runtime && runtime->obs ? runtime->obs->metrics : NULL,
+            OBS_DEGRADED_CACHE_MAP_UPDATE_FAIL
+        );
         return -1;
     }
 
@@ -282,12 +300,12 @@ static int cache_store_response_with_flags(
     int err = bpf_map_update_elem(cache_ctx->cache_map_fd, key, &val, BPF_ANY);
     if (err) {
         fprintf(stderr, "[Cache] bpf_map_update_elem failed: %d\n", err);
-        degraded_note_cache_map_update(cache_ctx->degraded, 0);
-        OBS_COUNT_CACHE_INSERT_CTX(cache_ctx, 0);
+        degraded_note_cache_map_update(runtime ? runtime->degraded : NULL, 0);
+        obs_metrics_count_cache_insert(runtime && runtime->obs ? runtime->obs->metrics : NULL, 0);
         return -1;
     }
 
-    degraded_note_cache_map_update(cache_ctx->degraded, 1);
+    degraded_note_cache_map_update(runtime ? runtime->degraded : NULL, 1);
 
     printf(
         "[Cache] Stored: Hash=0x%x Idx=%u Size=%d TTL=%us Gen=%u\n",
@@ -297,7 +315,7 @@ static int cache_store_response_with_flags(
         min_ttl,
         gen
     );
-    OBS_COUNT_CACHE_INSERT_CTX(cache_ctx, 1);
+    obs_metrics_count_cache_insert(runtime && runtime->obs ? runtime->obs->metrics : NULL, 1);
     return 0;
 }
 
@@ -320,7 +338,7 @@ read_soa_negative_ttl(const uint8_t* pkt_data, int rdata_off, int pkt_len, uint3
 }
 
 static struct negative_cache_info parse_negative_cache_info(
-    struct cache_context* cache_ctx,
+    struct dns_parser_runtime* runtime,
     const uint8_t* pkt_data,
     uint32_t pkt_len,
     uint16_t flags,
@@ -394,9 +412,12 @@ static struct negative_cache_info parse_negative_cache_info(
     }
 
     if (!found_soa) {
-        OBS_COUNT_PARSER_REJECT_CTX(cache_ctx, OBS_REJECT_NEGATIVE_NO_SOA);
+        obs_metrics_count_parser_reject(
+            runtime && runtime->obs ? runtime->obs->metrics : NULL,
+            OBS_REJECT_NEGATIVE_NO_SOA
+        );
         obs_metrics_count_negative_reject(
-            OBS_METRICS_FROM_CACHE_CTX(cache_ctx),
+            runtime && runtime->obs ? runtime->obs->metrics : NULL,
             is_nxdomain ? OBS_NEGATIVE_NXDOMAIN : OBS_NEGATIVE_NODATA
         );
         return info;
@@ -404,9 +425,12 @@ static struct negative_cache_info parse_negative_cache_info(
 
     uint32_t ttl = clamp_negative_ttl(best_soa_ttl);
     if (ttl == 0 || ttl == UINT32_MAX) {
-        OBS_COUNT_PARSER_REJECT_CTX(cache_ctx, OBS_REJECT_NEGATIVE_BAD_POLICY);
+        obs_metrics_count_parser_reject(
+            runtime && runtime->obs ? runtime->obs->metrics : NULL,
+            OBS_REJECT_NEGATIVE_BAD_POLICY
+        );
         obs_metrics_count_negative_reject(
-            OBS_METRICS_FROM_CACHE_CTX(cache_ctx),
+            runtime && runtime->obs ? runtime->obs->metrics : NULL,
             is_nxdomain ? OBS_NEGATIVE_NXDOMAIN : OBS_NEGATIVE_NODATA
         );
         return info;
@@ -421,7 +445,7 @@ static struct negative_cache_info parse_negative_cache_info(
     return info;
 }
 
-int cache_cleanup_expired_entries(struct cache_context* cache_ctx) {
+int dns_parser_cleanup_expired_entries(struct cache_context* cache_ctx) {
     if (!cache_ctx || cache_ctx->cache_map_fd < 0)
         return -1;
 
@@ -463,19 +487,22 @@ int cache_cleanup_expired_entries(struct cache_context* cache_ctx) {
     if (expired_count > 0)
         printf("[Cache] Cleanup: removed %d expired entries\n", expired_count);
 
-    OBS_ADD_CLEANUP_REMOVED_CTX(cache_ctx, (uint64_t)expired_count);
-
     return expired_count;
 }
 
-int cache_handle_event(void* ctx, void* data, [[maybe_unused]] size_t len) {
-    struct cache_context* cache_ctx = ctx;
+int dns_parser_handle_event(void* ctx, void* data, [[maybe_unused]] size_t len) {
+    struct dns_parser_context* parser_ctx = ctx;
+    struct cache_context* cache_ctx = parser_ctx ? parser_ctx->cache : NULL;
+    struct dns_parser_runtime* runtime = parser_ctx ? parser_ctx->runtime : NULL;
     struct dns_event* e = data;
     uint32_t pkt_len = e->len;
     uint8_t* pkt_data = e->payload;
 
     if (pkt_len < sizeof(struct dns_hdr)) {
-        OBS_COUNT_PARSER_REJECT_CTX(cache_ctx, OBS_REJECT_MALFORMED_RR);
+        obs_metrics_count_parser_reject(
+            runtime && runtime->obs ? runtime->obs->metrics : NULL,
+            OBS_REJECT_MALFORMED_RR
+        );
         return 0;
     }
 
@@ -486,27 +513,42 @@ int cache_handle_event(void* ctx, void* data, [[maybe_unused]] size_t len) {
     uint16_t flags = ntohs(dns->flags);
 
     struct negative_cache_info neg_info =
-        parse_negative_cache_info(cache_ctx, pkt_data, pkt_len, flags, qdcount, ancount, nscount);
+        parse_negative_cache_info(runtime, pkt_data, pkt_len, flags, qdcount, ancount, nscount);
 
     uint8_t is_response = (flags >> 15) & 0x1;
     if (!is_response) {
-        OBS_COUNT_PARSER_REJECT_CTX(cache_ctx, OBS_REJECT_NOT_RESPONSE);
+        obs_metrics_count_parser_reject(
+            runtime && runtime->obs ? runtime->obs->metrics : NULL,
+            OBS_REJECT_NOT_RESPONSE
+        );
         return 0;
     }
     if (qdcount != 1) {
-        OBS_COUNT_PARSER_REJECT_CTX(cache_ctx, OBS_REJECT_BAD_QDCOUNT);
+        obs_metrics_count_parser_reject(
+            runtime && runtime->obs ? runtime->obs->metrics : NULL,
+            OBS_REJECT_BAD_QDCOUNT
+        );
         return 0;
     }
     if (flags & DNS_FLAG_TC) {
-        OBS_COUNT_PARSER_REJECT_CTX(cache_ctx, OBS_REJECT_TC);
+        obs_metrics_count_parser_reject(
+            runtime && runtime->obs ? runtime->obs->metrics : NULL,
+            OBS_REJECT_TC
+        );
         return 0;
     }
     if ((flags & DNS_RCODE_MASK) != 0 && !neg_info.valid) {
-        OBS_COUNT_PARSER_REJECT_CTX(cache_ctx, OBS_REJECT_RCODE);
+        obs_metrics_count_parser_reject(
+            runtime && runtime->obs ? runtime->obs->metrics : NULL,
+            OBS_REJECT_RCODE
+        );
         return 0;
     }
     if (ancount == 0 && !neg_info.valid) {
-        OBS_COUNT_PARSER_REJECT_CTX(cache_ctx, OBS_REJECT_NO_ANSWER);
+        obs_metrics_count_parser_reject(
+            runtime && runtime->obs ? runtime->obs->metrics : NULL,
+            OBS_REJECT_NO_ANSWER
+        );
         return 0;
     }
 
@@ -515,13 +557,19 @@ int cache_handle_event(void* ctx, void* data, [[maybe_unused]] size_t len) {
     int qname_len_packet = calculate_hash_strict(pkt_data, read_offset, pkt_len, &name_hash);
 
     if (qname_len_packet < 0) {
-        OBS_COUNT_PARSER_REJECT_CTX(cache_ctx, OBS_REJECT_MALFORMED_NAME);
+        obs_metrics_count_parser_reject(
+            runtime && runtime->obs ? runtime->obs->metrics : NULL,
+            OBS_REJECT_MALFORMED_NAME
+        );
         return 0;
     }
 
     int q_end = read_offset + qname_len_packet;
     if ((uint32_t)q_end + 4 > pkt_len) {
-        OBS_COUNT_PARSER_REJECT_CTX(cache_ctx, OBS_REJECT_MALFORMED_QUESTION);
+        obs_metrics_count_parser_reject(
+            runtime && runtime->obs ? runtime->obs->metrics : NULL,
+            OBS_REJECT_MALFORMED_QUESTION
+        );
         return 0;
     }
     uint16_t qtype = read_u16(pkt_data + q_end);
@@ -560,20 +608,29 @@ int cache_handle_event(void* ctx, void* data, [[maybe_unused]] size_t len) {
             1500 - flat_offset
         );
         if (w_len < 0) {
-            OBS_COUNT_PARSER_REJECT_CTX(cache_ctx, OBS_REJECT_MALFORMED_NAME);
+            obs_metrics_count_parser_reject(
+                runtime && runtime->obs ? runtime->obs->metrics : NULL,
+                OBS_REJECT_MALFORMED_NAME
+            );
             return 0;
         }
 
         int name_skip = skip_name(pkt_data, read_offset, pkt_len);
         if (name_skip < 0) {
-            OBS_COUNT_PARSER_REJECT_CTX(cache_ctx, OBS_REJECT_MALFORMED_NAME);
+            obs_metrics_count_parser_reject(
+                runtime && runtime->obs ? runtime->obs->metrics : NULL,
+                OBS_REJECT_MALFORMED_NAME
+            );
             return 0;
         }
         read_offset += name_skip;
         flat_offset += w_len;
 
         if (read_offset + 10 > pkt_len) {
-            OBS_COUNT_PARSER_REJECT_CTX(cache_ctx, OBS_REJECT_MALFORMED_RR);
+            obs_metrics_count_parser_reject(
+                runtime && runtime->obs ? runtime->obs->metrics : NULL,
+                OBS_REJECT_MALFORMED_RR
+            );
             return 0;
         }
 
@@ -585,7 +642,10 @@ int cache_handle_event(void* ctx, void* data, [[maybe_unused]] size_t len) {
             min_ttl = ttl;
 
         if (flat_offset + 10 > 1500) {
-            OBS_COUNT_PARSER_REJECT_CTX(cache_ctx, OBS_REJECT_MALFORMED_RR);
+            obs_metrics_count_parser_reject(
+                runtime && runtime->obs ? runtime->obs->metrics : NULL,
+                OBS_REJECT_MALFORMED_RR
+            );
             return 0;
         }
         memcpy(flat_buf + flat_offset, pkt_data + read_offset, 10);
@@ -593,7 +653,10 @@ int cache_handle_event(void* ctx, void* data, [[maybe_unused]] size_t len) {
         read_offset += 10;
 
         if (read_offset + rdlen > pkt_len) {
-            OBS_COUNT_PARSER_REJECT_CTX(cache_ctx, OBS_REJECT_MALFORMED_RR);
+            obs_metrics_count_parser_reject(
+                runtime && runtime->obs ? runtime->obs->metrics : NULL,
+                OBS_REJECT_MALFORMED_RR
+            );
             return 0;
         }
 
@@ -601,7 +664,10 @@ int cache_handle_event(void* ctx, void* data, [[maybe_unused]] size_t len) {
             if (rtype == qtype)
                 has_terminal_rr = 1;
             if (flat_offset + rdlen > 1500) {
-                OBS_COUNT_PARSER_REJECT_CTX(cache_ctx, OBS_REJECT_MALFORMED_RR);
+                obs_metrics_count_parser_reject(
+                    runtime && runtime->obs ? runtime->obs->metrics : NULL,
+                    OBS_REJECT_MALFORMED_RR
+                );
                 return 0;
             }
             memcpy(flat_buf + flat_offset, pkt_data + read_offset, rdlen);
@@ -609,28 +675,43 @@ int cache_handle_event(void* ctx, void* data, [[maybe_unused]] size_t len) {
         } else if (rtype == DNS_TYPE_CNAME) {
             int cname_len = flatten_name(pkt_data, read_offset, pkt_len, NULL, 0);
             if (cname_len < 0) {
-                OBS_COUNT_PARSER_REJECT_CTX(cache_ctx, OBS_REJECT_MALFORMED_NAME);
+                obs_metrics_count_parser_reject(
+                    runtime && runtime->obs ? runtime->obs->metrics : NULL,
+                    OBS_REJECT_MALFORMED_NAME
+                );
                 return 0;
             }
             if ((uint16_t)cname_len != rdlen) {
-                OBS_COUNT_PARSER_REJECT_CTX(cache_ctx, OBS_REJECT_MALFORMED_NAME);
+                obs_metrics_count_parser_reject(
+                    runtime && runtime->obs ? runtime->obs->metrics : NULL,
+                    OBS_REJECT_MALFORMED_NAME
+                );
                 return 0;
             }
             if (flat_offset + rdlen > 1500) {
-                OBS_COUNT_PARSER_REJECT_CTX(cache_ctx, OBS_REJECT_MALFORMED_RR);
+                obs_metrics_count_parser_reject(
+                    runtime && runtime->obs ? runtime->obs->metrics : NULL,
+                    OBS_REJECT_MALFORMED_RR
+                );
                 return 0;
             }
             memcpy(flat_buf + flat_offset, pkt_data + read_offset, rdlen);
             flat_offset += rdlen;
         } else {
-            OBS_COUNT_PARSER_REJECT_CTX(cache_ctx, OBS_REJECT_UNSUPPORTED_RTYPE);
+            obs_metrics_count_parser_reject(
+                runtime && runtime->obs ? runtime->obs->metrics : NULL,
+                OBS_REJECT_UNSUPPORTED_RTYPE
+            );
             return 0;
         }
         read_offset += rdlen;
     }
 
     if (!neg_info.valid && (qtype == DNS_TYPE_A || qtype == DNS_TYPE_AAAA) && !has_terminal_rr) {
-        OBS_COUNT_PARSER_REJECT_CTX(cache_ctx, OBS_REJECT_CNAME_NO_TERMINAL);
+        obs_metrics_count_parser_reject(
+            runtime && runtime->obs ? runtime->obs->metrics : NULL,
+            OBS_REJECT_CNAME_NO_TERMINAL
+        );
         return 0;
     }
 
@@ -638,12 +719,18 @@ int cache_handle_event(void* ctx, void* data, [[maybe_unused]] size_t len) {
     for (int i = 0; i < nscount; i++) {
         int name_skip = skip_name(pkt_data, read_offset, pkt_len);
         if (name_skip < 0) {
-            OBS_COUNT_PARSER_REJECT_CTX(cache_ctx, OBS_REJECT_MALFORMED_NAME);
+            obs_metrics_count_parser_reject(
+                runtime && runtime->obs ? runtime->obs->metrics : NULL,
+                OBS_REJECT_MALFORMED_NAME
+            );
             return 0;
         }
         read_offset += name_skip;
         if (read_offset + 10 > pkt_len) {
-            OBS_COUNT_PARSER_REJECT_CTX(cache_ctx, OBS_REJECT_MALFORMED_RR);
+            obs_metrics_count_parser_reject(
+                runtime && runtime->obs ? runtime->obs->metrics : NULL,
+                OBS_REJECT_MALFORMED_RR
+            );
             return 0;
         }
         uint16_t rdlen = read_u16(pkt_data + read_offset + 8);
@@ -668,7 +755,10 @@ int cache_handle_event(void* ctx, void* data, [[maybe_unused]] size_t len) {
         if (rtype == DNS_TYPE_OPT) {
             int scope = check_ecs_scope(pkt_data, read_offset, pkt_len, rdlen);
             if (scope > 0) {
-                OBS_COUNT_PARSER_REJECT_CTX(cache_ctx, OBS_REJECT_BAD_ECS);
+                obs_metrics_count_parser_reject(
+                    runtime && runtime->obs ? runtime->obs->metrics : NULL,
+                    OBS_REJECT_BAD_ECS
+                );
                 return 0;
             }
             if (scope == 0)
@@ -676,23 +766,33 @@ int cache_handle_event(void* ctx, void* data, [[maybe_unused]] size_t len) {
         }
 
         if (read_offset + rdlen > pkt_len) {
-            OBS_COUNT_PARSER_REJECT_CTX(cache_ctx, OBS_REJECT_MALFORMED_RR);
+            obs_metrics_count_parser_reject(
+                runtime && runtime->obs ? runtime->obs->metrics : NULL,
+                OBS_REJECT_MALFORMED_RR
+            );
             return 0;
         }
         read_offset += rdlen;
     }
 
     if (min_ttl == 0 || min_ttl == UINT32_MAX) {
-        OBS_COUNT_PARSER_REJECT_CTX(cache_ctx, OBS_REJECT_BAD_TTL);
+        obs_metrics_count_parser_reject(
+            runtime && runtime->obs ? runtime->obs->metrics : NULL,
+            OBS_REJECT_BAD_TTL
+        );
         return 0;
     }
 
     struct cache_key key = { .name_hash = name_hash, .qtype = qtype, .qclass = qclass, ._pad = 0 };
 
     if (neg_info.valid) {
-        obs_metrics_count_negative_accept(OBS_METRICS_FROM_CACHE_CTX(cache_ctx), neg_info.type);
+        obs_metrics_count_negative_accept(
+            runtime && runtime->obs ? runtime->obs->metrics : NULL,
+            neg_info.type
+        );
         cache_store_response_with_flags(
             cache_ctx,
+            runtime,
             &key,
             flat_buf,
             flat_offset,
@@ -701,16 +801,32 @@ int cache_handle_event(void* ctx, void* data, [[maybe_unused]] size_t len) {
             neg_info.flags
         );
     } else {
-        cache_store_response(cache_ctx, &key, flat_buf, flat_offset, min_ttl, ecs_scope);
+        cache_store_response(cache_ctx, runtime, &key, flat_buf, flat_offset, min_ttl, ecs_scope);
     }
 
     return 0;
 }
 
 int handle_packet(void* ctx, void* data, size_t len) {
-    return cache_handle_event(ctx, data, len);
+    return dns_parser_handle_event(ctx, data, len);
 }
 
 int cleanup_expired_entries(struct cache_context* cache_ctx) {
-    return cache_cleanup_expired_entries(cache_ctx);
+    return dns_parser_cleanup_expired_entries(cache_ctx);
+}
+
+int cache_handle_event(void* ctx, void* data, size_t len) {
+    return dns_parser_handle_event(ctx, data, len);
+}
+
+int cache_cleanup_expired_entries(struct cache_context* cache_ctx) {
+    return dns_parser_cleanup_expired_entries(cache_ctx);
+}
+
+int calculate_hash_strict_impl(const uint8_t* packet, int offset, int max_len, uint32_t* out_hash) {
+    return dns_parser_calculate_hash_strict_impl(packet, offset, max_len, out_hash);
+}
+
+int flatten_name_impl(const uint8_t* packet, int offset, int max_len, uint8_t* dest, int dest_max) {
+    return dns_parser_flatten_name_impl(packet, offset, max_len, dest, dest_max);
 }

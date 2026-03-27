@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0-only OR Apache-2.0
 #pragma once
 
-#ifndef __VMLINUX_H__
-#include <linux/types.h>
-#include <bpf/bpf_helpers.h>
+#if defined(__BPF__) && __BPF__
+    #include <bpf/bpf_helpers.h>
+    #include <vmlinux.h>
 #else
-#include <vmlinux.h>
+    #include <linux/types.h>
 #endif
 
 #include "constants.h"
@@ -114,5 +114,6 @@ static __always_inline int calculate_dns_name_hash(void** cursor, void* data_end
  * @return 0 on success, -1 on error.
  * @note Implemented in hash.c.
  */
+int hash_calculate_dns_name_hash_test(void** cursor, void* data_end, __u32* hash_out);
 int calculate_dns_name_hash_test(void** cursor, void* data_end, __u32* hash_out);
 #endif

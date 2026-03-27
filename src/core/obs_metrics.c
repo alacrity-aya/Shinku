@@ -1,6 +1,24 @@
 // SPDX-License-Identifier: GPL-2.0-only OR Apache-2.0
 #include "obs_metrics.h"
+
+#include "degraded_mode.h"
+#include "runtime/events.h"
 #include <string.h>
+
+static enum obs_degraded_reason reason_to_obs_reason(uint32_t reason_flag) {
+    switch (reason_flag) {
+        case DEGRADED_REASON_USERSPACE_LAG:
+            return OBS_DEGRADED_RING_BACKLOG;
+        case DEGRADED_REASON_CLEANUP_FAILURE:
+            return OBS_DEGRADED_CLEANUP_THREAD_DOWN;
+        case DEGRADED_REASON_STARTUP_ATTACH_RETRY:
+            return OBS_DEGRADED_STARTUP_ATTACH_RETRY;
+        case DEGRADED_REASON_CACHE_MAP_UPDATE_FAILURE:
+            return OBS_DEGRADED_CACHE_MAP_UPDATE_FAIL;
+        default:
+            return OBS_DEGRADED_MAX;
+    }
+}
 
 void obs_metrics_init(struct obs_metrics* metrics, const struct obs_metrics_config* cfg) {
     memset(metrics, 0, sizeof(*metrics));
@@ -97,5 +115,35 @@ void obs_metrics_mark_degraded(struct obs_metrics* metrics, enum obs_degraded_re
             1,
             memory_order_relaxed
         );
+    }
+}
+
+void obs_metrics_handle_degraded_event(
+    enum shinku_event_type type,
+    const void* payload,
+    void* user_ctx
+) {
+    if (!payload || !user_ctx)
+        return;
+
+    struct obs_metrics* metrics = user_ctx;
+    const struct shinku_event_degraded_payload* degraded_payload = payload;
+    enum obs_degraded_reason mapped = reason_to_obs_reason(degraded_payload->reason_flag);
+
+    if ((unsigned int)mapped >= OBS_DEGRADED_MAX)
+        return;
+
+    if (type == SHINKU_EVENT_DEGRADED_REASON_SET) {
+        obs_metrics_mark_degraded(metrics, mapped);
+        return;
+    }
+
+    if (type == SHINKU_EVENT_DEGRADED_REASON_CLEAR) {
+        if (!metrics || !metrics->cfg.enabled)
+            return;
+
+        if (degraded_payload->flags_after == 0) {
+            atomic_store_explicit(&metrics->degraded_mode.value, 0, memory_order_relaxed);
+        }
     }
 }

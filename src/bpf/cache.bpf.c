@@ -18,12 +18,11 @@
     #define SHINKU_OBS_BPF_ENABLED 1
 #endif
 
+#include "bpf/arena/bpf_arena_common.h"
 #include "bpf_log.h"
 #include "core/hash.h"
 #include "types.h"
 #include "xdp_parser.h"
-
-#include "bpf/arena/bpf_arena_common.h"
 
 char LICENSE[] SEC("license") = "GPL";
 

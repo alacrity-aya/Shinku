@@ -2,6 +2,7 @@
 #pragma once
 
 #include "obs_bpf_metrics.h"
+#include "runtime/events.h"
 #include <assert.h>
 #include <stdalign.h>
 #include <stdatomic.h>
@@ -47,8 +48,8 @@ struct obs_aligned_counter {
  * @brief Configuration for metrics collection.
  */
 struct obs_metrics_config {
-    uint8_t enabled;        /**< Master enable switch */
-    uint8_t bpf_enabled;    /**< Enable BPF-side metric collection */
+    uint8_t enabled; /**< Master enable switch */
+    uint8_t bpf_enabled; /**< Enable BPF-side metric collection */
     uint32_t bpf_sample_mask; /**< Sampling mask for BPF metrics (1=sample every packet) */
 };
 
@@ -57,21 +58,21 @@ struct obs_metrics_config {
  * @brief Reasons for rejecting DNS responses during parsing.
  */
 enum obs_parser_reject_reason {
-    OBS_REJECT_NOT_RESPONSE = 0,      /**< Packet is not a DNS response (QR=0) */
-    OBS_REJECT_BAD_QDCOUNT = 1,       /**< Invalid question count (QDCOUNT != 1) */
-    OBS_REJECT_TC = 2,                /**< Truncated response (TC=1) */
-    OBS_REJECT_RCODE = 3,             /**< Non-zero RCODE (error response) */
-    OBS_REJECT_NO_ANSWER = 4,         /**< No answer records (ANCOUNT=0) */
-    OBS_REJECT_MALFORMED_NAME = 5,    /**< Malformed DNS name in packet */
+    OBS_REJECT_NOT_RESPONSE = 0, /**< Packet is not a DNS response (QR=0) */
+    OBS_REJECT_BAD_QDCOUNT = 1, /**< Invalid question count (QDCOUNT != 1) */
+    OBS_REJECT_TC = 2, /**< Truncated response (TC=1) */
+    OBS_REJECT_RCODE = 3, /**< Non-zero RCODE (error response) */
+    OBS_REJECT_NO_ANSWER = 4, /**< No answer records (ANCOUNT=0) */
+    OBS_REJECT_MALFORMED_NAME = 5, /**< Malformed DNS name in packet */
     OBS_REJECT_MALFORMED_QUESTION = 6, /**< Malformed question section */
-    OBS_REJECT_MALFORMED_RR = 7,      /**< Malformed resource record */
+    OBS_REJECT_MALFORMED_RR = 7, /**< Malformed resource record */
     OBS_REJECT_UNSUPPORTED_RTYPE = 8, /**< Unsupported record type */
     OBS_REJECT_CNAME_NO_TERMINAL = 9, /**< CNAME chain without terminal A/AAAA */
-    OBS_REJECT_BAD_ECS = 10,          /**< Invalid EDNS Client Subnet option */
-    OBS_REJECT_BAD_TTL = 11,          /**< Invalid TTL value */
-    OBS_REJECT_NEGATIVE_NO_SOA = 12,  /**< Negative response without SOA */
+    OBS_REJECT_BAD_ECS = 10, /**< Invalid EDNS Client Subnet option */
+    OBS_REJECT_BAD_TTL = 11, /**< Invalid TTL value */
+    OBS_REJECT_NEGATIVE_NO_SOA = 12, /**< Negative response without SOA */
     OBS_REJECT_NEGATIVE_BAD_POLICY = 13, /**< Negative response with invalid TTL */
-    OBS_REJECT_MAX = 14,              /**< Sentinel: number of reject reasons */
+    OBS_REJECT_MAX = 14, /**< Sentinel: number of reject reasons */
 };
 
 /**
@@ -80,8 +81,8 @@ enum obs_parser_reject_reason {
  */
 enum obs_negative_type {
     OBS_NEGATIVE_NXDOMAIN = 0, /**< Domain does not exist (RCODE=3) */
-    OBS_NEGATIVE_NODATA = 1,   /**< Domain exists but no requested type (ANCOUNT=0) */
-    OBS_NEGATIVE_MAX = 2,      /**< Sentinel: number of negative types */
+    OBS_NEGATIVE_NODATA = 1, /**< Domain exists but no requested type (ANCOUNT=0) */
+    OBS_NEGATIVE_MAX = 2, /**< Sentinel: number of negative types */
 };
 
 /**
@@ -89,16 +90,16 @@ enum obs_negative_type {
  * @brief Reasons for degraded mode activation.
  */
 enum obs_degraded_reason {
-    OBS_DEGRADED_STARTUP_ATTACH_RETRY = 0,   /**< XDP/TC attach required retries */
-    OBS_DEGRADED_STARTUP_ATTACH_FAILED = 1,  /**< XDP/TC attach failed after retries */
-    OBS_DEGRADED_TCX_ATTACH_FAILED = 2,      /**< TCX attach failed, fell back to TC */
-    OBS_DEGRADED_CLEANUP_THREAD_DOWN = 3,    /**< Cleanup thread stopped */
-    OBS_DEGRADED_PKT_POLL_ERRORS = 4,        /**< Ring buffer poll errors */
-    OBS_DEGRADED_RING_BACKLOG = 5,           /**< Ring buffer backlog (userspace lag) */
-    OBS_DEGRADED_OBS_HTTP_DOWN = 6,          /**< Observability HTTP server down */
-    OBS_DEGRADED_BPF_METRICS_SYNC_FAIL = 7,  /**< BPF metrics sync failed */
-    OBS_DEGRADED_CACHE_MAP_UPDATE_FAIL = 8,  /**< Cache map update failures */
-    OBS_DEGRADED_MAX = 9,                    /**< Sentinel: number of degraded reasons */
+    OBS_DEGRADED_STARTUP_ATTACH_RETRY = 0, /**< XDP/TC attach required retries */
+    OBS_DEGRADED_STARTUP_ATTACH_FAILED = 1, /**< XDP/TC attach failed after retries */
+    OBS_DEGRADED_TCX_ATTACH_FAILED = 2, /**< TCX attach failed, fell back to TC */
+    OBS_DEGRADED_CLEANUP_THREAD_DOWN = 3, /**< Cleanup thread stopped */
+    OBS_DEGRADED_PKT_POLL_ERRORS = 4, /**< Ring buffer poll errors */
+    OBS_DEGRADED_RING_BACKLOG = 5, /**< Ring buffer backlog (userspace lag) */
+    OBS_DEGRADED_OBS_HTTP_DOWN = 6, /**< Observability HTTP server down */
+    OBS_DEGRADED_BPF_METRICS_SYNC_FAIL = 7, /**< BPF metrics sync failed */
+    OBS_DEGRADED_CACHE_MAP_UPDATE_FAIL = 8, /**< Cache map update failures */
+    OBS_DEGRADED_MAX = 9, /**< Sentinel: number of degraded reasons */
 };
 
 /**
@@ -108,18 +109,21 @@ enum obs_degraded_reason {
  * All counters are cache-line aligned for optimal concurrent access.
  */
 struct obs_metrics {
-    struct obs_metrics_config cfg;                           /**< Configuration */
-    struct obs_aligned_counter parser_reject_total;          /**< Total parser rejections */
+    struct obs_metrics_config cfg; /**< Configuration */
+    struct obs_aligned_counter parser_reject_total; /**< Total parser rejections */
     struct obs_aligned_counter parser_reject_by_reason[OBS_REJECT_MAX]; /**< Rejections by reason */
-    struct obs_aligned_counter cache_insert_total;           /**< Total cache insert attempts */
-    struct obs_aligned_counter cache_insert_fail_total;      /**< Failed cache inserts */
-    struct obs_aligned_counter negative_cache_accept_total[OBS_NEGATIVE_MAX]; /**< Negative cache accepts */
-    struct obs_aligned_counter negative_cache_reject_total[OBS_NEGATIVE_MAX]; /**< Negative cache rejects */
-    struct obs_aligned_counter cleanup_removed_total;        /**< Expired entries removed */
-    struct obs_aligned_counter rb_pkt_poll_error_total;      /**< Ring buffer poll errors */
-    struct obs_aligned_counter degraded_mode;                /**< Current degraded mode state (0/1) */
-    struct obs_aligned_counter degraded_transition_total;    /**< Total degraded mode transitions */
-    struct obs_aligned_counter degraded_reason_total[OBS_DEGRADED_MAX]; /**< Reason activation counts */
+    struct obs_aligned_counter cache_insert_total; /**< Total cache insert attempts */
+    struct obs_aligned_counter cache_insert_fail_total; /**< Failed cache inserts */
+    struct obs_aligned_counter
+        negative_cache_accept_total[OBS_NEGATIVE_MAX]; /**< Negative cache accepts */
+    struct obs_aligned_counter
+        negative_cache_reject_total[OBS_NEGATIVE_MAX]; /**< Negative cache rejects */
+    struct obs_aligned_counter cleanup_removed_total; /**< Expired entries removed */
+    struct obs_aligned_counter rb_pkt_poll_error_total; /**< Ring buffer poll errors */
+    struct obs_aligned_counter degraded_mode; /**< Current degraded mode state (0/1) */
+    struct obs_aligned_counter degraded_transition_total; /**< Total degraded mode transitions */
+    struct obs_aligned_counter
+        degraded_reason_total[OBS_DEGRADED_MAX]; /**< Reason activation counts */
     struct obs_aligned_counter bpf_counters[OBS_BPF_METRIC_MAX]; /**< BPF-side counters */
 };
 
@@ -128,39 +132,8 @@ struct obs_metrics {
  * @brief Observability context for cache operations.
  */
 struct obs_context {
-    struct obs_metrics* metrics; /**< Pointer to metrics structure */
+    struct obs_metrics* metrics;
 };
-
-/**
- * @brief Extract metrics pointer from cache context.
- * @param _cctx Cache context pointer.
- * @return Pointer to obs_metrics, or NULL if unavailable.
- */
-#define OBS_METRICS_FROM_CACHE_CTX(_cctx) (((_cctx) && (_cctx)->obs) ? (_cctx)->obs->metrics : NULL)
-
-/* ============================================================================
- * Conditional Metrics Macros
- * ============================================================================ */
-
-#if SHINKU_OBS_ENABLED
-/** @brief Count a parser rejection from cache context. */
-#define OBS_COUNT_PARSER_REJECT_CTX(_cctx, _reason) \
-    obs_metrics_count_parser_reject(OBS_METRICS_FROM_CACHE_CTX(_cctx), (_reason))
-/** @brief Count a cache insert attempt from cache context. */
-#define OBS_COUNT_CACHE_INSERT_CTX(_cctx, _success) \
-    obs_metrics_count_cache_insert(OBS_METRICS_FROM_CACHE_CTX(_cctx), (_success))
-/** @brief Add cleanup removal count from cache context. */
-#define OBS_ADD_CLEANUP_REMOVED_CTX(_cctx, _removed) \
-    obs_metrics_add_cleanup_removed(OBS_METRICS_FROM_CACHE_CTX(_cctx), (_removed))
-/** @brief Mark degraded mode from cache context. */
-#define OBS_MARK_DEGRADED_CTX(_cctx, _reason) \
-    obs_metrics_mark_degraded(OBS_METRICS_FROM_CACHE_CTX(_cctx), (_reason))
-#else
-#define OBS_COUNT_PARSER_REJECT_CTX(_cctx, _reason) ((void)0)
-#define OBS_COUNT_CACHE_INSERT_CTX(_cctx, _success) ((void)0)
-#define OBS_ADD_CLEANUP_REMOVED_CTX(_cctx, _removed) ((void)0)
-#define OBS_MARK_DEGRADED_CTX(_cctx, _reason) ((void)0)
-#endif
 
 /* ============================================================================
  * Metrics Functions
@@ -226,3 +199,9 @@ void obs_metrics_count_rb_poll_error(struct obs_metrics* metrics);
  * @note Increments degraded_reason_total[reason]. Does NOT set degraded_mode gauge.
  */
 void obs_metrics_mark_degraded(struct obs_metrics* metrics, enum obs_degraded_reason reason);
+
+void obs_metrics_handle_degraded_event(
+    enum shinku_event_type type,
+    const void* payload,
+    void* user_ctx
+);
