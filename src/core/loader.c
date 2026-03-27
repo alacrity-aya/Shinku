@@ -301,6 +301,8 @@ int loader_setup_bpf(struct bpf_ctx* ctx, const struct env* env) {
         }
         err = -errno;
 
+        // TODO: error handling here need to be improved;
+        // It only handels 'Eopnotsupp' and 'EINVAL' for now, but there might be other error codes that indicate TCX is not supported or failed to attach.
         if (err == -EOPNOTSUPP || err == -EINVAL) {
             fprintf(stderr, "TCX not supported on %s, falling back to TC\n", env->interface);
             obs_metrics_mark_degraded(&ctx->metrics, OBS_DEGRADED_TCX_ATTACH_FAILED);
@@ -509,28 +511,4 @@ void loader_stop_cleanup_thread(struct bpf_ctx* ctx) {
     /* Wake up the thread by sending a signal or waiting for it to finish */
     pthread_join(ctx->cleanup_thread, NULL);
     printf("Cleanup thread stopped\n");
-}
-
-int setup_bpf(struct bpf_ctx* ctx, const struct env* env) {
-    return loader_setup_bpf(ctx, env);
-}
-
-int poll_pkt_ring(struct bpf_ctx* ctx, int timeout_ms) {
-    return loader_poll_pkt_ring(ctx, timeout_ms);
-}
-
-int dump_bpf_log(struct bpf_ctx* ctx, int timeout_ms) {
-    return loader_dump_bpf_log(ctx, timeout_ms);
-}
-
-void cleanup_bpf(struct bpf_ctx* ctx) {
-    loader_cleanup_bpf(ctx);
-}
-
-int start_cleanup_thread(struct bpf_ctx* ctx, uint32_t interval_secs) {
-    return loader_start_cleanup_thread(ctx, interval_secs);
-}
-
-void stop_cleanup_thread(struct bpf_ctx* ctx) {
-    loader_stop_cleanup_thread(ctx);
 }

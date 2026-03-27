@@ -20,6 +20,7 @@ Checks: >
   -readability-magic-numbers,
   -readability-uppercase-literal-suffix,
   -readability-identifier-naming,
+  -modernize-macro-to-enum,
   misc-*,
   -misc-non-private-member-variables-in-classes
 

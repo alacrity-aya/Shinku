@@ -115,5 +115,14 @@ static __always_inline int calculate_dns_name_hash(void** cursor, void* data_end
  * @note Implemented in hash.c.
  */
 int hash_calculate_dns_name_hash_test(void** cursor, void* data_end, __u32* hash_out);
+
+/**
+ * @brief Legacy alias for hash_calculate_dns_name_hash_test.
+ * @param cursor Input/output: pointer to start of QNAME.
+ * @param data_end Pointer to end of data.
+ * @param hash_out Output: calculated hash.
+ * @return 0 on success, -1 on error.
+ * @deprecated Use hash_calculate_dns_name_hash_test() instead.
+ */
 int calculate_dns_name_hash_test(void** cursor, void* data_end, __u32* hash_out);
 #endif

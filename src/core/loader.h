@@ -86,7 +86,6 @@ struct bpf_ctx {
  * @note Uses bounded retry with exponential backoff for XDP/TC attach.
  */
 int loader_setup_bpf(struct bpf_ctx* ctx, const struct env* env);
-int setup_bpf(struct bpf_ctx* ctx, const struct env* env);
 
 /**
  * @brief Poll for BPF log events.
@@ -97,7 +96,6 @@ int setup_bpf(struct bpf_ctx* ctx, const struct env* env);
  * Processes log events from the BPF ring buffer and prints them.
  */
 int loader_dump_bpf_log(struct bpf_ctx* ctx, int timeout_ms);
-int dump_bpf_log(struct bpf_ctx* ctx, int timeout_ms);
 
 /**
  * @brief Cleanup and tear down BPF programs.
@@ -107,7 +105,6 @@ int dump_bpf_log(struct bpf_ctx* ctx, int timeout_ms);
  * and frees all resources.
  */
 void loader_cleanup_bpf(struct bpf_ctx* ctx);
-void cleanup_bpf(struct bpf_ctx* ctx);
 
 /**
  * @brief Poll for DNS packet events from BPF.
@@ -119,7 +116,6 @@ void cleanup_bpf(struct bpf_ctx* ctx);
  * cache_handle_event(). Tracks poll errors and backlog for degraded mode.
  */
 int loader_poll_pkt_ring(struct bpf_ctx* ctx, int timeout_ms);
-int poll_pkt_ring(struct bpf_ctx* ctx, int timeout_ms);
 
 /* ============================================================================
  * Cleanup Thread Management
@@ -135,7 +131,6 @@ int poll_pkt_ring(struct bpf_ctx* ctx, int timeout_ms);
  * cache_cleanup_expired_entries() to remove stale cache entries.
  */
 int loader_start_cleanup_thread(struct bpf_ctx* ctx, uint32_t interval_secs);
-int start_cleanup_thread(struct bpf_ctx* ctx, uint32_t interval_secs);
 
 /**
  * @brief Stop the cache cleanup thread.
@@ -144,4 +139,3 @@ int start_cleanup_thread(struct bpf_ctx* ctx, uint32_t interval_secs);
  * Signals the cleanup thread to stop and waits for it to exit.
  */
 void loader_stop_cleanup_thread(struct bpf_ctx* ctx);
-void stop_cleanup_thread(struct bpf_ctx* ctx);

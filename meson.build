@@ -141,6 +141,7 @@ if doxygen.found()
       'PROJECT_VERSION': meson.project_version(),
       'INPUT_DIR': meson.current_source_dir() / 'src',
       'OUTPUT_DIR': meson.current_build_dir() / 'docs',
+      'DOXYGEN_AWESOME_CSS_DIR': meson.current_source_dir() / 'docs' / 'doxygen-awesome-css',
     }
   )
 

@@ -11,17 +11,6 @@
 
 #include "hash.h"
 
-/**
- * @brief Testable wrapper for calculate_dns_name_hash.
- * @param cursor Input/output: pointer to start of QNAME.
- * @param data_end Pointer to end of data.
- * @param hash_out Output: calculated hash.
- * @return 0 on success, -1 on error.
- *
- * @note This function exists solely to export the inline function
- *       from hash.h for unit testing. In production BPF code, the
- *       inline version is used directly.
- */
 int hash_calculate_dns_name_hash_test(void** cursor, void* data_end, __u32* hash_out) {
     return calculate_dns_name_hash(cursor, data_end, hash_out);
 }

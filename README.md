@@ -219,23 +219,40 @@ Configuration files:
 
 ### API Documentation (Doxygen)
 
-Shinku supports generating C API documentation via Meson+Doxygen.
+Shinku supports generating C API documentation via Meson+Doxygen with the [doxygen-awesome-css](https://github.com/jothepro/doxygen-awesome-css) theme for a modern, clean look.
+
+**Prerequisites:**
+- Doxygen 1.9+
+- Graphviz (for call graphs and dependency diagrams)
+
+**Setup:**
 
 ```bash
-# Configure/reconfigure build (detects doxygen and prepares Doxyfile)
-meson setup build --reconfigure
+# Clone with submodules (includes doxygen-awesome-css theme)
+git clone --recursive https://github.com/alacrity-aya/Shinku.git
 
-# Generate docs
-meson compile -C build docs
+# Or initialize submodules in existing clone
+git submodule update --init --recursive
+
+# Generate documentation
+meson setup build
+ninja -C build docs
 ```
 
-Generated files are written to:
+**View documentation:**
 
-```text
-build/docs/html/
+```bash
+# Open in browser
+xdg-open build/docs/html/index.html
 ```
 
-This output is build artifact content and should not be committed to Git.
+**Features:**
+- Sidebar-only navigation layout
+- Interactive SVG call graphs and dependency diagrams
+- Syntax-highlighted code blocks
+- Dark mode support (toggle in top-right corner)
+
+Generated files are written to `build/docs/html/` and should not be committed to Git.
 
 ## Project Structure
 
