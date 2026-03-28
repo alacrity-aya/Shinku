@@ -87,3 +87,24 @@ obs-up:
 # Stop Prometheus + Grafana stack
 obs-down:
     ./observability/down.sh
+
+# ============================================================================
+# Sanitizer Test Commands
+# ============================================================================
+
+# Run AddressSanitizer tests
+asan-test:
+    meson setup build-asan --reconfigure -Db_sanitize=address
+    meson compile -C build-asan
+    meson test -C build-asan
+
+# Run ThreadSanitizer tests
+tsan-test:
+    meson setup build-tsan --reconfigure -Db_sanitize=thread
+    meson compile -C build-tsan
+    meson test -C build-tsan
+
+# Build optimized benchmark binary (no sanitizers)
+bench-build:
+    meson setup build-bench --reconfigure -Dbuildtype=release -Db_sanitize=none -Dbuild_benchmark_bin=true
+    meson compile -C build-bench shinku_bench

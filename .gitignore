@@ -1,5 +1,8 @@
 # Build output
 build/
+build-asan/
+build-tsan/
+build-bench/
 .cache/
 
 # Editor/tool artifacts

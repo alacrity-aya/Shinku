@@ -1,5 +1,3 @@
-# Meson build configuration for the eBPF-based DNS cache project.
-# This build script defines the project, its dependencies, and the build targets for both the eBPF program and the user-space application.
 project('shinku', 'c',
   version: '0.1',
   default_options: [
@@ -15,6 +13,7 @@ project('shinku', 'c',
 bpf_log = get_option('bpf_log')
 obs = get_option('obs')
 obs_bpf = get_option('obs_bpf')
+build_benchmark_bin = get_option('build_benchmark_bin')
 
 cares_dep = dependency('libcares', fallback : ['c-ares', 'cares_dep'])
 libbpf_dep = dependency('libbpf')
@@ -102,6 +101,28 @@ executable(
   c_args: (bpf_log ? ['-DSHINKU_BPF_LOG_ENABLED=1'] : ['-DSHINKU_BPF_LOG_ENABLED=0']) + (obs ? ['-DSHINKU_OBS_ENABLED=1'] : ['-DSHINKU_OBS_ENABLED=0']),
   install: true
 )
+
+if build_benchmark_bin
+  executable(
+    'shinku_bench',
+    cli_src,
+    core_src,
+    bpf_skel,
+    dependencies: [libbpf_dep],
+    include_directories: [inc_src, inc_runtime],
+    c_args: [
+      '-O3',
+      '-DNDEBUG',
+    ] + (bpf_log ? ['-DSHINKU_BPF_LOG_ENABLED=1'] : ['-DSHINKU_BPF_LOG_ENABLED=0']) + (obs ? ['-DSHINKU_OBS_ENABLED=1'] : ['-DSHINKU_OBS_ENABLED=0']),
+    override_options: [
+      'b_sanitize=none',
+      'buildtype=release',
+      'optimization=3',
+      'debug=false',
+    ],
+    install: false
+  )
+endif
 
 # ====================
 # Tests

@@ -135,6 +135,17 @@ int loader_setup_bpf(struct bpf_ctx* ctx, const struct env* env) {
     }
     ctx->cache_context.slot_owners_lock = &ctx->cache_lock;
 
+    if (!env || env->arena_pages < ARENA_DEFAULT_PAGES) {
+        fprintf(
+            stderr,
+            "Invalid arena-pages: %u (minimum required: %u)\n",
+            env ? env->arena_pages : 0,
+            ARENA_DEFAULT_PAGES
+        );
+        err = ERR_SKEL_LOAD;
+        goto cleanup;
+    }
+
 #if SHINKU_OBS_ENABLED
     struct obs_metrics_config obs_cfg = {
         .enabled = env->obs_enabled ? 1 : 0,
@@ -177,7 +188,8 @@ int loader_setup_bpf(struct bpf_ctx* ctx, const struct env* env) {
     ctx->skel = cache_bpf__open();
     if (!ctx->skel) {
         fprintf(stderr, "Failed to open BPF skeleton\n");
-        return ERR_SKEL_LOAD;
+        err = ERR_SKEL_LOAD;
+        goto cleanup;
     }
 
     /* Configure arena size from CLI --arena-pages before load */

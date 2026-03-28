@@ -372,13 +372,17 @@ struct seqlock_test_ctx {
 static void* seqlock_writer_thread(void* arg) {
     struct seqlock_test_ctx* ctx = arg;
     int iteration = 0;
+    atomic_uint* seq = (atomic_uint*)&ctx->entry->seq;
+    volatile uint8_t* dst = ctx->entry->pkt;
 
     while (!atomic_load_explicit(&ctx->stop, memory_order_relaxed)) {
         uint8_t pattern = (iteration & 1) ? 0x55 : 0xAA;
 
-        atomic_fetch_add_explicit((atomic_uint*)&ctx->entry->seq, 1, memory_order_relaxed);
-        memset(ctx->entry->pkt, pattern, ARENA_ENTRY_SIZE);
-        atomic_fetch_add_explicit((atomic_uint*)&ctx->entry->seq, 1, memory_order_relaxed);
+        atomic_fetch_add_explicit(seq, 1, memory_order_relaxed);
+        for (int i = 0; i < ARENA_ENTRY_SIZE; i++) {
+            dst[i] = pattern;
+        }
+        atomic_fetch_add_explicit(seq, 1, memory_order_release);
 
         iteration++;
     }
@@ -388,9 +392,10 @@ static void* seqlock_writer_thread(void* arg) {
 static void* seqlock_reader_thread(void* arg) {
     struct seqlock_test_ctx* ctx = arg;
     uint8_t local_buf[ARENA_ENTRY_SIZE];
+    atomic_uint* seq = (atomic_uint*)&ctx->entry->seq;
 
     while (!atomic_load_explicit(&ctx->stop, memory_order_relaxed)) {
-        uint32_t seq1 = *(volatile uint32_t*)&ctx->entry->seq;
+        uint32_t seq1 = atomic_load_explicit(seq, memory_order_acquire);
         if (seq1 & 1) {
             atomic_fetch_add_explicit(&ctx->total_count, 1, memory_order_relaxed);
             atomic_fetch_add_explicit(&ctx->detected_count, 1, memory_order_relaxed);
@@ -401,7 +406,7 @@ static void* seqlock_reader_thread(void* arg) {
         for (int i = 0; i < ARENA_ENTRY_SIZE; i += 8)
             *(uint64_t*)(local_buf + i) = *(volatile uint64_t*)(src + i);
 
-        uint32_t seq2 = *(volatile uint32_t*)&ctx->entry->seq;
+        uint32_t seq2 = atomic_load_explicit(seq, memory_order_acquire);
         atomic_fetch_add_explicit(&ctx->total_count, 1, memory_order_relaxed);
 
         if (seq1 != seq2) {
@@ -426,6 +431,15 @@ static void* seqlock_reader_thread(void* arg) {
 
 static void test_seqlock_torn_read_detection(void) {
     printf("\n--- Test: Seqlock Torn Read Detection ---\n");
+
+#if defined(__has_feature)
+    #if __has_feature(thread_sanitizer)
+    printf(
+        "  [SKIP] TSAN build: torn-read simulation intentionally performs unsynchronized pkt access\n"
+    );
+    return;
+    #endif
+#endif
 
     struct cache_entry entry;
     memset(&entry, 0, sizeof(entry));
