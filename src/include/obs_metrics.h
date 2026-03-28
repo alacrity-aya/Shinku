@@ -128,6 +128,7 @@ struct obs_metrics {
     struct obs_aligned_counter
         degraded_reason_total[OBS_DEGRADED_MAX]; /**< Reason activation counts */
     struct obs_aligned_counter bpf_counters[OBS_BPF_METRIC_MAX]; /**< BPF-side counters */
+    struct obs_aligned_counter metrics_truncated_total;
 };
 
 /**
@@ -208,3 +209,5 @@ void obs_metrics_handle_degraded_event(
     const void* payload,
     void* user_ctx
 );
+
+void obs_metrics_count_metrics_truncated(struct obs_metrics* metrics);

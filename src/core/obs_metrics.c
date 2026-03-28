@@ -147,3 +147,10 @@ void obs_metrics_handle_degraded_event(
         }
     }
 }
+
+void obs_metrics_count_metrics_truncated(struct obs_metrics* metrics) {
+    if (!metrics || !metrics->cfg.enabled)
+        return;
+
+    atomic_fetch_add_explicit(&metrics->metrics_truncated_total.value, 1, memory_order_relaxed);
+}

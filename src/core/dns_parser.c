@@ -536,10 +536,6 @@ int dns_parser_cleanup_expired_entries(struct cache_context* cache_ctx) {
     }
 
     for (int i = 0; i < expired_count; i++) {
-        if (cache_ctx->slot_owners_lock) {
-            pthread_mutex_lock(cache_ctx->slot_owners_lock);
-        }
-
         struct cache_value cur_val;
         if (bpf_map_lookup_elem(cache_ctx->cache_map_fd, &expired_keys[i], &cur_val) == 0
             && now_ns >= cur_val.expire_ts)
@@ -548,6 +544,10 @@ int dns_parser_cleanup_expired_entries(struct cache_context* cache_ctx) {
             if (del_err == 0) {
                 uint32_t idx = cur_val.arena_idx;
                 if (cache_ctx->slot_owners && idx < cache_ctx->max_entries) {
+                    if (cache_ctx->slot_owners_lock) {
+                        pthread_mutex_lock(cache_ctx->slot_owners_lock);
+                    }
+
                     if (memcmp(
                             &cache_ctx->slot_owners[idx],
                             &expired_keys[i],
@@ -557,12 +557,12 @@ int dns_parser_cleanup_expired_entries(struct cache_context* cache_ctx) {
                     {
                         memset(&cache_ctx->slot_owners[idx], 0, sizeof(struct cache_key));
                     }
+
+                    if (cache_ctx->slot_owners_lock) {
+                        pthread_mutex_unlock(cache_ctx->slot_owners_lock);
+                    }
                 }
             }
-        }
-
-        if (cache_ctx->slot_owners_lock) {
-            pthread_mutex_unlock(cache_ctx->slot_owners_lock);
         }
     }
 

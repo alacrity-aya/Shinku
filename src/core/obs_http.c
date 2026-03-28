@@ -36,13 +36,22 @@ static void write_response(int fd, const char* status, const char* content_type,
 
 static void
 render_metrics(char* out, size_t out_size, struct obs_metrics* m, struct degraded_state* degraded) {
+    size_t remaining = out_size;
+    int truncated = 0;
+
 #define APPEND(...) \
     do { \
-        int _n = snprintf(out, out_size, __VA_ARGS__); \
+        if (remaining == 0) { \
+            truncated = 1; \
+            break; \
+        } \
+        int _n = snprintf(out, remaining, __VA_ARGS__); \
         if (_n > 0) { \
-            size_t _w = ((size_t)_n < out_size) ? (size_t)_n : out_size; \
+            size_t _w = ((size_t)_n < remaining) ? (size_t)_n : remaining; \
             out += _w; \
-            out_size -= _w; \
+            remaining -= _w; \
+            if ((size_t)_n >= _w) \
+                truncated = 1; \
         } \
     } while (0)
 
@@ -241,6 +250,16 @@ render_metrics(char* out, size_t out_size, struct obs_metrics* m, struct degrade
         LOAD(m->rb_pkt_poll_error_total.value),
         PRIu64
     );
+    COUNTER(
+        "shinku_metrics_truncated_total",
+        "Number of times metrics output exceeded response buffer",
+        LOAD(m->metrics_truncated_total.value),
+        PRIu64
+    );
+
+    if (truncated) {
+        obs_metrics_count_metrics_truncated(m);
+    }
 
 #undef APPEND
 #undef LOAD
