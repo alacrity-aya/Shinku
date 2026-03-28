@@ -14,6 +14,10 @@ static inline uint32_t ring_buffer_alloc_idx(atomic_uint* next_idx, uint32_t max
     return idx % max_entries;
 }
 
+#define DNS_PARSER_FLAT_BUF_SIZE 1500
+
+static _Thread_local uint8_t dns_parser_flat_buf_tls[DNS_PARSER_FLAT_BUF_SIZE];
+
 static int cache_store_response_with_flags(
     struct cache_context* cache_ctx,
     struct dns_parser_runtime* runtime,
@@ -661,7 +665,8 @@ int dns_parser_handle_event(void* ctx, void* data, [[maybe_unused]] size_t len) 
         return 0;
     }
 
-    uint8_t flat_buf[1500];
+    uint8_t* flat_buf = dns_parser_flat_buf_tls;
+    const int flat_capacity = DNS_PARSER_FLAT_BUF_SIZE;
     int flat_offset = 0;
 
     memcpy(flat_buf, dns, sizeof(*dns));
@@ -670,8 +675,13 @@ int dns_parser_handle_event(void* ctx, void* data, [[maybe_unused]] size_t len) 
     flat_hdr->nscount = 0;
     flat_offset += sizeof(struct dns_hdr);
 
-    int w_len =
-        flatten_name(pkt_data, read_offset, pkt_len, flat_buf + flat_offset, 1500 - flat_offset);
+    int w_len = flatten_name(
+        pkt_data,
+        read_offset,
+        pkt_len,
+        flat_buf + flat_offset,
+        flat_capacity - flat_offset
+    );
     if (w_len < 0)
         return 0;
     flat_offset += w_len;
@@ -693,7 +703,7 @@ int dns_parser_handle_event(void* ctx, void* data, [[maybe_unused]] size_t len) 
             read_offset,
             pkt_len,
             flat_buf + flat_offset,
-            1500 - flat_offset
+            flat_capacity - flat_offset
         );
         if (w_len < 0) {
             obs_metrics_count_parser_reject(
@@ -729,7 +739,7 @@ int dns_parser_handle_event(void* ctx, void* data, [[maybe_unused]] size_t len) 
         if (ttl < min_ttl)
             min_ttl = ttl;
 
-        if (flat_offset + 10 > 1500) {
+        if (flat_offset + 10 > flat_capacity) {
             obs_metrics_count_parser_reject(
                 runtime && runtime->obs ? runtime->obs->metrics : NULL,
                 OBS_REJECT_MALFORMED_RR
@@ -753,7 +763,7 @@ int dns_parser_handle_event(void* ctx, void* data, [[maybe_unused]] size_t len) 
                 has_terminal_rr = 1;
             if (rtype == DNS_TYPE_AAAA)
                 has_ipv6_rr = 1;
-            if (flat_offset + rdlen > 1500) {
+            if (flat_offset + rdlen > flat_capacity) {
                 obs_metrics_count_parser_reject(
                     runtime && runtime->obs ? runtime->obs->metrics : NULL,
                     OBS_REJECT_MALFORMED_RR
@@ -779,7 +789,7 @@ int dns_parser_handle_event(void* ctx, void* data, [[maybe_unused]] size_t len) 
                 );
                 return 0;
             }
-            if (flat_offset + rdlen > 1500) {
+            if (flat_offset + rdlen > flat_capacity) {
                 obs_metrics_count_parser_reject(
                     runtime && runtime->obs ? runtime->obs->metrics : NULL,
                     OBS_REJECT_MALFORMED_RR

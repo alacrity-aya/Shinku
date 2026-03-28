@@ -313,16 +313,16 @@ compute_derived_metrics() {
     ring_after=$(metric_val "$after" "shinku_tc_ringbuf_drop_total")
 
     local neg_acc_nx_before neg_acc_nx_after neg_acc_no_before neg_acc_no_after
-    neg_acc_nx_before=$(metric_labeled_val "$before" "shinku_negative_cache_accept_by_type_total\{type=\"nxdomain\"\}")
-    neg_acc_nx_after=$(metric_labeled_val "$after" "shinku_negative_cache_accept_by_type_total\{type=\"nxdomain\"\}")
-    neg_acc_no_before=$(metric_labeled_val "$before" "shinku_negative_cache_accept_by_type_total\{type=\"nodata\"\}")
-    neg_acc_no_after=$(metric_labeled_val "$after" "shinku_negative_cache_accept_by_type_total\{type=\"nodata\"\}")
+    neg_acc_nx_before=$(metric_labeled_val "$before" "shinku_negative_cache_accept_by_type_total[{]type=\"nxdomain\"[}]")
+    neg_acc_nx_after=$(metric_labeled_val "$after" "shinku_negative_cache_accept_by_type_total[{]type=\"nxdomain\"[}]")
+    neg_acc_no_before=$(metric_labeled_val "$before" "shinku_negative_cache_accept_by_type_total[{]type=\"nodata\"[}]")
+    neg_acc_no_after=$(metric_labeled_val "$after" "shinku_negative_cache_accept_by_type_total[{]type=\"nodata\"[}]")
 
     local neg_rej_nx_before neg_rej_nx_after neg_rej_no_before neg_rej_no_after
-    neg_rej_nx_before=$(metric_labeled_val "$before" "shinku_negative_cache_reject_by_type_total\{type=\"nxdomain\"\}")
-    neg_rej_nx_after=$(metric_labeled_val "$after" "shinku_negative_cache_reject_by_type_total\{type=\"nxdomain\"\}")
-    neg_rej_no_before=$(metric_labeled_val "$before" "shinku_negative_cache_reject_by_type_total\{type=\"nodata\"\}")
-    neg_rej_no_after=$(metric_labeled_val "$after" "shinku_negative_cache_reject_by_type_total\{type=\"nodata\"\}")
+    neg_rej_nx_before=$(metric_labeled_val "$before" "shinku_negative_cache_reject_by_type_total[{]type=\"nxdomain\"[}]")
+    neg_rej_nx_after=$(metric_labeled_val "$after" "shinku_negative_cache_reject_by_type_total[{]type=\"nxdomain\"[}]")
+    neg_rej_no_before=$(metric_labeled_val "$before" "shinku_negative_cache_reject_by_type_total[{]type=\"nodata\"[}]")
+    neg_rej_no_after=$(metric_labeled_val "$after" "shinku_negative_cache_reject_by_type_total[{]type=\"nodata\"[}]")
 
     local cleanup_before cleanup_after
     cleanup_before=$(metric_val "$before" "shinku_cache_cleanup_removed_total")
