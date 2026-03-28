@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only OR Apache-2.0
 #pragma once
 
+#include <pthread.h>
 #include <stdint.h>
 
 /**
@@ -87,6 +88,8 @@ struct shinku_event_topic_slot {
  */
 struct shinku_event_bus {
     struct shinku_event_topic_slot topics[SHINKU_EVENT_MAX]; /**< Topic slots */
+    pthread_mutex_t lock;
+    uint8_t lock_ready;
 };
 
 /**
@@ -98,6 +101,8 @@ struct shinku_event_bus {
  * @note Safe to call with NULL pointer (no-op).
  */
 void shinku_events_init(struct shinku_event_bus* bus);
+
+void shinku_events_destroy(struct shinku_event_bus* bus);
 
 /**
  * @brief Subscribe to an event type.

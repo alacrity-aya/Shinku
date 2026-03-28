@@ -499,6 +499,8 @@ void loader_cleanup_bpf(struct bpf_ctx* ctx) {
         pthread_mutex_destroy(&ctx->cleanup_wait_lock);
         ctx->cleanup_wait_sync_initialized = false;
     }
+
+    shinku_events_destroy(&ctx->events);
 }
 
 /* ============================================================================

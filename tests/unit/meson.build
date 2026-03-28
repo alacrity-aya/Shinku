@@ -208,6 +208,22 @@ degraded_mode_test_exe = executable(
 test('Degraded Mode Test', degraded_mode_test_exe)
 
 # ====================
+# Event Bus Test
+# ====================
+events_test_exe = executable(
+    'events_test',
+    'runtime/events_test.c',
+    files(
+      '../../src/runtime/events.c',
+    ),
+    native: true,
+    dependencies: dependency('threads'),
+    include_directories: [inc_src, include_directories('../../src/runtime')],
+)
+
+test('Event Bus Test', events_test_exe)
+
+# ====================
 # DNS Benchmark (manual, not a test)
 # ====================
 dns_bench_exe = executable(
