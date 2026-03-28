@@ -52,7 +52,7 @@ static error_t parse_opt(int key, char* arg, struct argp_state* state) {
         case 'l': {
             int lvl = parse_log_level_str(arg);
             if (lvl == -1) {
-                argp_error(
+                argp_error( // NOLINT(concurrency-mt-unsafe)
                     state,
                     "Invalid log level: '%s'. Supported: debug, info, warn, error",
                     arg
@@ -64,7 +64,11 @@ static error_t parse_opt(int key, char* arg, struct argp_state* state) {
         case 'a': {
             unsigned long pages = strtoul(arg, NULL, 0);
             if (pages == 0 || pages > 1048576) {
-                argp_error(state, "Invalid arena-pages: '%s' (range: 1-1048576)", arg);
+                argp_error( // NOLINT(concurrency-mt-unsafe)
+                    state,
+                    "Invalid arena-pages: '%s' (range: 1-1048576)",
+                    arg
+                );
             }
             env->arena_pages = (uint32_t)pages;
             break;
@@ -72,7 +76,11 @@ static error_t parse_opt(int key, char* arg, struct argp_state* state) {
         case 'c': {
             unsigned long secs = strtoul(arg, NULL, 0);
             if (secs == 0 || secs > 86400) {
-                argp_error(state, "Invalid cleanup-interval: '%s' (range: 1-86400 seconds)", arg);
+                argp_error(// NOLINT(concurrency-mt-unsafe)
+                    state,
+                    "Invalid cleanup-interval: '%s' (range: 1-86400 seconds)",
+                    arg
+                );
             }
             env->cleanup_interval = (uint32_t)secs;
             break;
@@ -80,7 +88,11 @@ static error_t parse_opt(int key, char* arg, struct argp_state* state) {
         case 'm': {
             unsigned long port = strtoul(arg, NULL, 0);
             if (port == 0 || port > 65535) {
-                argp_error(state, "Invalid metrics-port: '%s' (range: 1-65535)", arg);
+                argp_error(// NOLINT(concurrency-mt-unsafe)
+                    state,
+                    "Invalid metrics-port: '%s' (range: 1-65535)",
+                    arg
+                );
             }
             env->metrics_port = (uint32_t)port;
             break;
@@ -88,7 +100,11 @@ static error_t parse_opt(int key, char* arg, struct argp_state* state) {
         case 'o': {
             unsigned long enabled = strtoul(arg, NULL, 0);
             if (enabled > 1) {
-                argp_error(state, "Invalid obs: '%s' (must be 0 or 1)", arg);
+                argp_error( // NOLINT(concurrency-mt-unsafe)
+                    state,
+                    "Invalid obs: '%s' (must be 0 or 1)",
+                    arg
+                ); // NOLINT(concurrency-mt-unsafe)
             }
             env->obs_enabled = (uint32_t)enabled;
             break;
@@ -96,7 +112,11 @@ static error_t parse_opt(int key, char* arg, struct argp_state* state) {
         case 'p': {
             unsigned long enabled = strtoul(arg, NULL, 0);
             if (enabled > 1) {
-                argp_error(state, "Invalid obs-bpf: '%s' (must be 0 or 1)", arg);
+                argp_error( // NOLINT(concurrency-mt-unsafe)
+                    state,
+                    "Invalid obs-bpf: '%s' (must be 0 or 1)",
+                    arg
+                );
             }
             env->obs_bpf_enabled = (uint32_t)enabled;
             break;
@@ -104,13 +124,17 @@ static error_t parse_opt(int key, char* arg, struct argp_state* state) {
         case 'k': {
             unsigned long mask = strtoul(arg, NULL, 0);
             if (mask > 0xffffffffUL) {
-                argp_error(state, "Invalid obs-bpf-mask: '%s' (must fit uint32)", arg);
+                argp_error( // NOLINT(concurrency-mt-unsafe)
+                    state,
+                    "Invalid obs-bpf-mask: '%s' (must fit uint32)",
+                    arg
+                );
             }
             env->obs_bpf_sample_mask = (uint32_t)mask;
             break;
         }
         case ARGP_KEY_ARG:
-            argp_usage(state);
+            argp_usage(state); // NOLINT(concurrency-mt-unsafe)
             break;
         default:
             return ARGP_ERR_UNKNOWN;
@@ -134,7 +158,7 @@ int config_parse_args(int argc, char** argv, struct env* env) {
     env->obs_enabled = 1;
     env->obs_bpf_enabled = 0;
     env->obs_bpf_sample_mask = 0xff;
-    return argp_parse(&argp, argc, argv, 0, NULL, env);
+    return argp_parse(&argp, argc, argv, 0, NULL, env); // NOLINT(concurrency-mt-unsafe)
 }
 
 int parse_args(int argc, char** argv, struct env* env) {

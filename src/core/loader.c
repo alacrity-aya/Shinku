@@ -14,7 +14,7 @@
 #include <time.h>
 #include <unistd.h>
 
-// Error codes for setup_bpf
+// Error codes for loader_setup_bpf
 #define ERR_SKEL_LOAD -1
 #define ERR_RB_CREATE -2
 #define ERR_INVALID_IFACE -3
@@ -127,6 +127,13 @@ static int attach_tc_legacy(struct bpf_ctx* ctx, int ifindex) {
 
 int loader_setup_bpf(struct bpf_ctx* ctx, const struct env* env) {
     int err;
+
+    err = pthread_mutex_init(&ctx->cache_lock, NULL);
+    if (err != 0) {
+        fprintf(stderr, "Failed to initialize cache lock: %d\n", err);
+        return -err;
+    }
+    ctx->cache_context.slot_owners_lock = &ctx->cache_lock;
 
 #if SHINKU_OBS_ENABLED
     struct obs_metrics_config obs_cfg = {
@@ -450,6 +457,11 @@ void loader_cleanup_bpf(struct bpf_ctx* ctx) {
     if (ctx->skel) {
         cache_bpf__destroy(ctx->skel);
         ctx->skel = NULL;
+    }
+
+    if (ctx->cache_context.slot_owners_lock) {
+        ctx->cache_context.slot_owners_lock = NULL;
+        pthread_mutex_destroy(&ctx->cache_lock);
     }
 }
 

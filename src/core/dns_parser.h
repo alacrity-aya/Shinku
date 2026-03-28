@@ -4,6 +4,7 @@
 #include "degraded_mode.h"
 #include "obs_metrics.h"
 #include "types.h"
+#include <pthread.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -36,6 +37,7 @@ struct cache_context {
      * is recycled. Maintains O(1) reverse lookup for cleanup.
      */
     struct cache_key* slot_owners;
+    pthread_mutex_t* slot_owners_lock;
 
     /**
      * @brief Monotonically increasing generation counter.

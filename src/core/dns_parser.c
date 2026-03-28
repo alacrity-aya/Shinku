@@ -42,10 +42,12 @@ static uint32_t clamp_negative_ttl(uint32_t ttl) {
 
 static inline void seqlock_write_begin(atomic_uint* seq) {
     atomic_fetch_add_explicit(seq, 1, memory_order_relaxed);
+    atomic_thread_fence(memory_order_seq_cst);
 }
 
 static inline void seqlock_write_end(atomic_uint* seq) {
-    atomic_fetch_add_explicit(seq, 1, memory_order_relaxed);
+    atomic_thread_fence(memory_order_seq_cst);
+    atomic_fetch_add_explicit(seq, 1, memory_order_release);
 }
 
 static inline void write_u16(uint8_t* ptr, uint16_t val) {
@@ -261,24 +263,11 @@ static int cache_store_response_with_flags(
 
     uint32_t gen = ++cache_ctx->next_gen;
 
-    /* Evict previous occupant of this arena slot if its cache_map entry still
-     * points here. Prevents stale cache_map entries from serving wrong data. */
-    struct cache_key* old_key = &cache_ctx->slot_owners[idx];
-    if (old_key->name_hash != 0 || old_key->qtype != 0) {
-        struct cache_value old_val;
-        int err = bpf_map_lookup_elem(cache_ctx->cache_map_fd, old_key, &old_val);
-        if (err == 0 && old_val.arena_idx == idx) {
-            bpf_map_delete_elem(cache_ctx->cache_map_fd, old_key);
-        }
-    }
-
-    /* Seqlock write: odd seq signals write-in-progress to XDP readers */
     seqlock_write_begin((atomic_uint*)&cache_ctx->entries[idx].seq);
 
     cache_ctx->entries[idx].gen = gen;
     memcpy(cache_ctx->entries[idx].pkt, flat_buf, flat_len);
 
-    /* Seqlock write complete: even seq signals stable data */
     seqlock_write_end((atomic_uint*)&cache_ctx->entries[idx].seq);
 
     struct timespec ts;
@@ -294,15 +283,34 @@ static int cache_store_response_with_flags(
         .gen = gen,
     };
 
-    /* slot_owners must precede bpf_map_update_elem: arena slot is already written */
+    if (cache_ctx->slot_owners_lock) {
+        pthread_mutex_lock(cache_ctx->slot_owners_lock);
+    }
+
+    struct cache_key* old_key = &cache_ctx->slot_owners[idx];
+    if (old_key->name_hash != 0 || old_key->qtype != 0) {
+        struct cache_value old_val;
+        int old_lookup_err = bpf_map_lookup_elem(cache_ctx->cache_map_fd, old_key, &old_val);
+        if (old_lookup_err == 0 && old_val.arena_idx == idx) {
+            bpf_map_delete_elem(cache_ctx->cache_map_fd, old_key);
+        }
+    }
+
     cache_ctx->slot_owners[idx] = *key;
 
     int err = bpf_map_update_elem(cache_ctx->cache_map_fd, key, &val, BPF_ANY);
     if (err) {
+        if (cache_ctx->slot_owners_lock) {
+            pthread_mutex_unlock(cache_ctx->slot_owners_lock);
+        }
         fprintf(stderr, "[Cache] bpf_map_update_elem failed: %d\n", err);
         degraded_note_cache_map_update(runtime ? runtime->degraded : NULL, 0);
         obs_metrics_count_cache_insert(runtime && runtime->obs ? runtime->obs->metrics : NULL, 0);
         return -1;
+    }
+
+    if (cache_ctx->slot_owners_lock) {
+        pthread_mutex_unlock(cache_ctx->slot_owners_lock);
     }
 
     degraded_note_cache_map_update(runtime ? runtime->degraded : NULL, 1);
@@ -451,21 +459,19 @@ int dns_parser_cleanup_expired_entries(struct cache_context* cache_ctx) {
 
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
-    uint64_t now_ns = (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+    uint64_t now_ns = ((uint64_t)ts.tv_sec * 1000000000ULL) + (uint64_t)ts.tv_nsec;
 
     struct cache_key key = { 0 };
     struct cache_key next_key = { 0 };
-    struct cache_value val;
-
     struct cache_key expired_keys[256];
     int expired_count = 0;
 
-    /* Collect expired keys (can't delete during iteration) */
     int err = bpf_map_get_next_key(cache_ctx->cache_map_fd, NULL, &next_key);
     while (err == 0 && expired_count < 256) {
         key = next_key;
         err = bpf_map_get_next_key(cache_ctx->cache_map_fd, &key, &next_key);
 
+        struct cache_value val;
         if (bpf_map_lookup_elem(cache_ctx->cache_map_fd, &key, &val) == 0) {
             if (now_ns >= val.expire_ts) {
                 expired_keys[expired_count++] = key;
@@ -474,13 +480,33 @@ int dns_parser_cleanup_expired_entries(struct cache_context* cache_ctx) {
     }
 
     for (int i = 0; i < expired_count; i++) {
-        if (bpf_map_lookup_elem(cache_ctx->cache_map_fd, &expired_keys[i], &val) == 0) {
-            uint32_t idx = val.arena_idx;
-            bpf_map_delete_elem(cache_ctx->cache_map_fd, &expired_keys[i]);
+        if (cache_ctx->slot_owners_lock) {
+            pthread_mutex_lock(cache_ctx->slot_owners_lock);
+        }
 
-            if (cache_ctx->slot_owners && idx < cache_ctx->max_entries) {
-                memset(&cache_ctx->slot_owners[idx], 0, sizeof(struct cache_key));
+        struct cache_value cur_val;
+        if (bpf_map_lookup_elem(cache_ctx->cache_map_fd, &expired_keys[i], &cur_val) == 0
+            && now_ns >= cur_val.expire_ts)
+        {
+            int del_err = bpf_map_delete_elem(cache_ctx->cache_map_fd, &expired_keys[i]);
+            if (del_err == 0) {
+                uint32_t idx = cur_val.arena_idx;
+                if (cache_ctx->slot_owners && idx < cache_ctx->max_entries) {
+                    if (memcmp(
+                            &cache_ctx->slot_owners[idx],
+                            &expired_keys[i],
+                            sizeof(struct cache_key)
+                        )
+                        == 0)
+                    {
+                        memset(&cache_ctx->slot_owners[idx], 0, sizeof(struct cache_key));
+                    }
+                }
             }
+        }
+
+        if (cache_ctx->slot_owners_lock) {
+            pthread_mutex_unlock(cache_ctx->slot_owners_lock);
         }
     }
 

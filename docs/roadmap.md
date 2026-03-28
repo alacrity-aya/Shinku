@@ -14,6 +14,11 @@ This roadmap is based on the current repository state, not historical assumption
   - stale slot owner eviction (`slot_owners`).
 - TTL expiry cleanup loop in userspace via background cleanup thread (`start_cleanup_thread`, `cleanup_expired_entries`).
 - CNAME ingest support in parser answer loop (with terminal A/AAAA requirement for A/AAAA queries).
+- **Negative caching (P1.1 complete)**:
+  - NXDOMAIN/NODATA caching with SOA-derived TTL policy (`parse_negative_cache_info`).
+  - TTL bounds: `NEGATIVE_TTL_MIN` (5s) and `NEGATIVE_TTL_MAX` (600s) per RFC 2308.
+  - Separate flags: `CACHE_VALUE_FLAG_NEGATIVE` and `CACHE_VALUE_FLAG_NXDOMAIN`.
+  - Metrics: `shinku_negative_accept_total{type=nxdomain|nodata}`, `shinku_negative_reject_total`.
 - Unit tests for parser, cache correctness, arena list/hash table, hash consistency, integration smoke tests.
 - **Observability baseline (P0.1 complete)**:
   - Prometheus `/metrics` endpoint with sampled BPF counters and userspace counters.
@@ -46,8 +51,7 @@ This roadmap is based on the current repository state, not historical assumption
 - TCX attach fallback exists (legacy TC), but no staged rollout/health-gated deployment flow.
 
 ### Not yet implemented
-- IPv6 fast path (XDP ingress/egress mutation for IPv6).
-- Negative caching (NXDOMAIN/NODATA with SOA-derived TTL policy).
+- IPv6 fast path (XDP ingress/egress mutation for IPv6) — **deferred, low priority**.
 - DNS-over-TCP capture/cache strategy.
 - CI/CD pipeline and release automation (no `.github/workflows`).
 
@@ -116,10 +120,12 @@ This plan prioritizes reliability and operability before feature breadth.
 
 ---
 
-### P0.3 IPv6 support (end-to-end)
+### P0.3 IPv6 support (end-to-end) ⏸️ DEFERRED
 **Goal:** Remove major protocol coverage gap for dual-stack deployments.
 
-**Implement**
+**Status:** Deferred to lower priority. IPv6 fast path is not currently a target for this project. Revisit if dual-stack deployments become a requirement.
+
+**Implement** (when resumed):
 - XDP ingress parse for `ETH_P_IPV6`, extension-header policy, UDP DNS query extraction.
 - Cache hit response rewrite for IPv6 headers and mandatory UDP checksum handling.
 - TC egress capture path for IPv6 UDP/53 responses.
@@ -150,8 +156,10 @@ This plan prioritizes reliability and operability before feature breadth.
 
 ## P1 (High-value improvements immediately after P0)
 
-### P1.1 Negative caching
+### P1.1 Negative caching ✅
 **Goal:** Cut upstream load and latency for repeated negative lookups.
+
+**Status:** Implemented. NXDOMAIN/NODATA caching with SOA-derived TTL policy, bounded by `NEGATIVE_TTL_MIN`/`NEGATIVE_TTL_MAX`.
 
 **Implement**
 - Cache NXDOMAIN/NODATA with SOA-based TTL bounds.
@@ -205,6 +213,27 @@ This plan prioritizes reliability and operability before feature breadth.
 
 ---
 
+### P1.5 Upstream cache warm-refresh
+**Goal:** Maintain upstream DNS server cache efficiency by proactively refreshing before/at expiry.
+
+**Rationale:** When local cache entries expire, upstream DNS servers may also have evicted their cached responses. Proactively querying upstream before or at local expiry helps maintain warm caches upstream, reducing overall DNS latency for dependent queries.
+
+**Implement**
+- Track entries approaching TTL expiry (e.g., at 80-90% of TTL).
+- Optionally issue proactive DNS queries to upstream for soon-to-expire entries.
+- Refresh local cache with new response, resetting TTL.
+- Policy knobs:
+  - `--refresh-before-expiry` (enable/disable proactive refresh)
+  - `--refresh-threshold` (percentage of TTL before refresh, default 90%)
+  - `--refresh-jitter` (randomize refresh timing to avoid thundering herd)
+
+**Acceptance criteria**
+- Configurable refresh policy.
+- Upstream cache hit rate improves under repeated query patterns.
+- No significant additional upstream load under normal operation.
+
+---
+
 ## P2 (Strategic scope expansion)
 
 ### P2.1 ECS beyond scope-zero
@@ -235,13 +264,14 @@ This plan prioritizes reliability and operability before feature breadth.
 - Add degraded mode logic and retries/backoff.
 - Add startup/attach failure scenarios in tests.
 
-### Weeks 5-7: IPv6 end-to-end
-- XDP/TC/userspace IPv6 path implementation.
-- Add unit/integration coverage and packet-level checksum validation.
+### Weeks 5-7: CNAME integration + Cache lifecycle
+- Expand integration mock server scenarios for CNAME chains.
+- Implement upstream cache warm-refresh (proactive TTL refresh).
+- Add refresh policy configuration knobs.
 
-### Weeks 8-9: Negative caching + CNAME integration suite
-- Implement NXDOMAIN/NODATA caching policy.
-- Expand integration mock server scenarios for CNAME and negatives.
+### Weeks 8-9: Soak testing and validation
+- Execute 24h/72h soak and churn scenarios.
+- Validate cache refresh behavior under load.
 
 ### Weeks 10-11: Native XDP + soak campaign
 - Run native NIC benchmarks.
@@ -257,10 +287,10 @@ This plan prioritizes reliability and operability before feature breadth.
 
 Shinku reaches industrial-ready v1 when all are true:
 
-- P0 items complete and verified.
+- P0 items complete and verified (IPv6 deferred).
 - SLO instrumentation exists with alertable metrics.
-- IPv4 and IPv6 fast paths validated.
-- Negative caching operational with TTL policy.
+- IPv4 fast path validated.
+- Negative caching operational with TTL policy ✅.
 - CNAME integration tests passing in CI + root integration environment.
 - Soak tests pass with no critical leaks/crashes.
 - Documented rollout and rollback procedures available.
@@ -272,4 +302,5 @@ Shinku reaches industrial-ready v1 when all are true:
 - Arena allocation is **not** a pure bump allocator anymore; it is ring-style index progression with slot reuse handling.
 - TTL cleanup is **implemented** via background thread and periodic `cleanup_expired_entries`.
 - CNAME ingest support is **implemented** with terminal RR gating for A/AAAA query correctness.
+- Negative caching is **implemented** with SOA-derived TTL policy and bounded TTL limits.
 - Remaining work focuses on production operations maturity, broader protocol coverage, and release engineering.
