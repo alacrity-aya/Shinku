@@ -68,6 +68,9 @@ struct bpf_ctx {
     pthread_t cleanup_thread; /**< Cleanup thread handle */
     struct cleanup_config cleanup_cfg; /**< Cleanup configuration */
     atomic_bool cleanup_running; /**< Cleanup thread running flag */
+    pthread_mutex_t cleanup_wait_lock;
+    pthread_cond_t cleanup_wait_cond;
+    bool cleanup_wait_sync_initialized;
     pthread_mutex_t cache_lock;
 };
 

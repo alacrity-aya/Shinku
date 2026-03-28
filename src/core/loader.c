@@ -135,6 +135,24 @@ int loader_setup_bpf(struct bpf_ctx* ctx, const struct env* env) {
     }
     ctx->cache_context.slot_owners_lock = &ctx->cache_lock;
 
+    err = pthread_mutex_init(&ctx->cleanup_wait_lock, NULL);
+    if (err != 0) {
+        fprintf(stderr, "Failed to initialize cleanup wait lock: %d\n", err);
+        pthread_mutex_destroy(&ctx->cache_lock);
+        ctx->cache_context.slot_owners_lock = NULL;
+        return -err;
+    }
+
+    err = pthread_cond_init(&ctx->cleanup_wait_cond, NULL);
+    if (err != 0) {
+        fprintf(stderr, "Failed to initialize cleanup wait condition: %d\n", err);
+        pthread_mutex_destroy(&ctx->cleanup_wait_lock);
+        pthread_mutex_destroy(&ctx->cache_lock);
+        ctx->cache_context.slot_owners_lock = NULL;
+        return -err;
+    }
+    ctx->cleanup_wait_sync_initialized = true;
+
     if (!env || env->arena_pages < ARENA_DEFAULT_PAGES) {
         fprintf(
             stderr,
@@ -475,6 +493,12 @@ void loader_cleanup_bpf(struct bpf_ctx* ctx) {
         ctx->cache_context.slot_owners_lock = NULL;
         pthread_mutex_destroy(&ctx->cache_lock);
     }
+
+    if (ctx->cleanup_wait_sync_initialized) {
+        pthread_cond_destroy(&ctx->cleanup_wait_cond);
+        pthread_mutex_destroy(&ctx->cleanup_wait_lock);
+        ctx->cleanup_wait_sync_initialized = false;
+    }
 }
 
 /* ============================================================================
@@ -483,15 +507,34 @@ void loader_cleanup_bpf(struct bpf_ctx* ctx) {
 
 static void* cleanup_thread_func(void* arg) {
     struct bpf_ctx* ctx = arg;
-    struct timespec sleep_time = {
-        .tv_sec = ctx->cleanup_cfg.interval_secs,
-        .tv_nsec = 0,
-    };
 
     while (atomic_load_explicit(&ctx->cleanup_running, memory_order_acquire)) {
-        nanosleep(&sleep_time, NULL);
-        if (!atomic_load_explicit(&ctx->cleanup_running, memory_order_acquire)) {
-            break;
+        if (ctx->cleanup_wait_sync_initialized) {
+            struct timespec wake_at;
+            if (clock_gettime(CLOCK_REALTIME, &wake_at) == 0) {
+                wake_at.tv_sec += (time_t)ctx->cleanup_cfg.interval_secs;
+
+                pthread_mutex_lock(&ctx->cleanup_wait_lock);
+                if (!atomic_load_explicit(&ctx->cleanup_running, memory_order_acquire)) {
+                    pthread_mutex_unlock(&ctx->cleanup_wait_lock);
+                    break;
+                }
+
+                pthread_cond_timedwait(&ctx->cleanup_wait_cond, &ctx->cleanup_wait_lock, &wake_at);
+                bool should_run = atomic_load_explicit(&ctx->cleanup_running, memory_order_acquire);
+                pthread_mutex_unlock(&ctx->cleanup_wait_lock);
+                if (!should_run)
+                    break;
+            }
+        } else {
+            struct timespec sleep_time = {
+                .tv_sec = ctx->cleanup_cfg.interval_secs,
+                .tv_nsec = 0,
+            };
+            nanosleep(&sleep_time, NULL);
+            if (!atomic_load_explicit(&ctx->cleanup_running, memory_order_acquire)) {
+                break;
+            }
         }
 
         int removed = dns_parser_cleanup_expired_entries(&ctx->cache_context);
@@ -532,7 +575,12 @@ void loader_stop_cleanup_thread(struct bpf_ctx* ctx) {
 
     atomic_store_explicit(&ctx->cleanup_running, false, memory_order_release);
 
-    /* Wake up the thread by sending a signal or waiting for it to finish */
+    if (ctx->cleanup_wait_sync_initialized) {
+        pthread_mutex_lock(&ctx->cleanup_wait_lock);
+        pthread_cond_signal(&ctx->cleanup_wait_cond);
+        pthread_mutex_unlock(&ctx->cleanup_wait_lock);
+    }
+
     pthread_join(ctx->cleanup_thread, NULL);
     printf("Cleanup thread stopped\n");
 }
