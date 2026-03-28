@@ -854,11 +854,21 @@ int dns_parser_handle_event(void* ctx, void* data, [[maybe_unused]] size_t len) 
     uint16_t arcount = ntohs(dns->arcount);
     for (int i = 0; i < arcount; i++) {
         int name_skip = skip_name(pkt_data, read_offset, pkt_len);
-        if (name_skip < 0)
+        if (name_skip < 0) {
+            obs_metrics_count_parser_reject(
+                runtime && runtime->obs ? runtime->obs->metrics : NULL,
+                OBS_REJECT_MALFORMED_NAME
+            );
             return 0;
+        }
         read_offset += name_skip;
-        if (read_offset + 10 > pkt_len)
+        if (read_offset + 10 > pkt_len) {
+            obs_metrics_count_parser_reject(
+                runtime && runtime->obs ? runtime->obs->metrics : NULL,
+                OBS_REJECT_MALFORMED_RR
+            );
             return 0;
+        }
 
         uint16_t rtype = read_u16(pkt_data + read_offset);
         uint16_t rdlen = read_u16(pkt_data + read_offset + 8);
