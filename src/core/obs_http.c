@@ -12,7 +12,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-#define OBS_HTTP_BUF_SIZE 4096
+#define OBS_HTTP_BUF_SIZE 8192
 
 static void write_response(int fd, const char* status, const char* content_type, const char* body) {
     char header[512];
@@ -168,7 +168,9 @@ render_metrics(char* out, size_t out_size, struct obs_metrics* m, struct degrade
     REJECT_REASON("malformed_question", OBS_REJECT_MALFORMED_QUESTION);
     REJECT_REASON("malformed_rr", OBS_REJECT_MALFORMED_RR);
     REJECT_REASON("unsupported_rtype", OBS_REJECT_UNSUPPORTED_RTYPE);
-    REJECT_REASON("cname_no_terminal", OBS_REJECT_CNAME_NO_TERMINAL);
+    REJECT_REASON("ipv6_ignored", OBS_REJECT_IPV6_IGNORED);
+    REJECT_REASON("cname_no_terminal_a", OBS_REJECT_CNAME_NO_TERMINAL_A);
+    REJECT_REASON("cname_ipv6_only_terminal", OBS_REJECT_CNAME_IPV6_ONLY_TERMINAL);
     REJECT_REASON("bad_ecs", OBS_REJECT_BAD_ECS);
     REJECT_REASON("bad_ttl", OBS_REJECT_BAD_TTL);
     REJECT_REASON("negative_no_soa", OBS_REJECT_NEGATIVE_NO_SOA);

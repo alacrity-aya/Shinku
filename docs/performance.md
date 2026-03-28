@@ -95,3 +95,19 @@ Several factors explain why the throughput improvement is currently limited to 1
 ## 8. Conclusions
 
 The shinku system successfully serves responses from the XDP layer, providing a 4.8x reduction in latency. While throughput gains are currently limited by the virtualized networking environment, the architecture is fundamentally sound. BPF logging proved to be a major performance hurdle and should remain disabled for production workloads. Transitioning to native XDP on dedicated hardware will likely allow these performance benefits to scale significantly further.
+
+## 9. ECS and correctness benchmark additions
+
+The benchmark suite now includes correctness-oriented scenarios that exercise policy-sensitive paths in addition to pure throughput:
+
+- `negative-cache` scenario: verifies NXDOMAIN/NODATA behavior under load.
+- `wraparound-pressure` scenario: stresses key cardinality and slot reuse behavior.
+- `ttl-expiry-probe`: probes short-TTL behavior through repeated queries.
+
+ECS safety is validated primarily through integration tests (`tests/integration/test_dns_cache.py`) that ensure:
+
+- same ECS subnet queries hit the same partition,
+- different ECS subnets do not reuse cached responses,
+- ECS `/0` remains globally reusable.
+
+This split keeps throughput measurement stable while enforcing anti-cache-pollution semantics in deterministic test cases.

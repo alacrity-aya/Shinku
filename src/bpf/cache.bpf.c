@@ -31,6 +31,14 @@ static __always_inline __u16 read_u16_unaligned(void* ptr) {
     return (b[0] << 8) | b[1];
 }
 
+static __always_inline __u32 prefix_mask_v4(__u8 prefix) {
+    if (prefix == 0)
+        return 0;
+    if (prefix >= 32)
+        return 0xffffffffu;
+    return 0xffffffffu << (32 - prefix);
+}
+
 /* Incremental checksum update (RFC 1624).
  * Updates a 16-bit one's complement checksum when a single 16-bit word changes.
  * All values in network byte order. */
@@ -161,6 +169,7 @@ int xdp_rx(struct xdp_md* ctx) {
     __be16 query_id = dns->id;
     __u16 flags = bpf_ntohs(dns->flags);
     __u16 qdcount = bpf_ntohs(dns->qdcount);
+    __u16 arcount = bpf_ntohs(dns->arcount);
 
     /* Only process queries (QR=0) with exactly 1 question */
     if ((flags & DNS_FLAG_QR) || qdcount != 1)
@@ -182,8 +191,61 @@ int xdp_rx(struct xdp_md* ctx) {
     __u16 qtype = read_u16_unaligned(cursor);
     __u16 qclass = read_u16_unaligned(cursor + 2);
 
+    __u32 ecs_addr_v4 = 0;
+    __u8 ecs_prefix = 0;
+    __u8 ecs_family = 0;
+    void* addl = cursor + 4;
+    if (arcount == 1) {
+        __u8* p = (__u8*)addl;
+
+        if (p + 11 <= (__u8*)data_end && p[0] == 0) {
+            __u16 opt_rr_type = ((__u16)p[1] << 8) | p[2];
+            if (opt_rr_type == DNS_TYPE_OPT) {
+                __u16 rdlen = ((__u16)p[9] << 8) | p[10];
+
+                if (rdlen >= 8 && p + 23 <= (__u8*)data_end) {
+                    __u16 opt_code = ((__u16)p[11] << 8) | p[12];
+                    __u16 opt_len = ((__u16)p[13] << 8) | p[14];
+                    __u16 family = ((__u16)p[15] << 8) | p[16];
+                    __u8 src_prefix = p[17];
+
+                    if (opt_code == EDNS0_OPT_CODE_ECS && family == 1 && src_prefix <= 32) {
+                        __u8 addr_bytes = (src_prefix + 7) / 8;
+                        if (opt_len == (__u16)(4 + addr_bytes) && opt_len <= 8
+                            && rdlen >= (__u16)(opt_len + 4))
+                        {
+                            __u32 addr = 0;
+
+                            if (addr_bytes > 0)
+                                addr |= ((__u32)p[19]) << 24;
+                            if (addr_bytes > 1)
+                                addr |= ((__u32)p[20]) << 16;
+                            if (addr_bytes > 2)
+                                addr |= ((__u32)p[21]) << 8;
+                            if (addr_bytes > 3)
+                                addr |= (__u32)p[22];
+
+                            addr &= prefix_mask_v4(src_prefix);
+                            ecs_addr_v4 = bpf_htonl(addr);
+                            ecs_prefix = src_prefix;
+                            ecs_family = src_prefix > 0 ? 1 : 0;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     /* ── Phase 2: Cache lookup ── */
-    struct cache_key key = { .name_hash = name_hash, .qtype = qtype, .qclass = qclass, ._pad = 0 };
+    struct cache_key key = {
+        .name_hash = name_hash,
+        .qtype = qtype,
+        .qclass = qclass,
+        .ecs_addr_v4 = ecs_addr_v4,
+        .ecs_prefix = ecs_prefix,
+        .ecs_family = ecs_family,
+        ._pad = 0,
+    };
 
     bpf_debug("[XDP] Key: Hash=0x%x Type=%d Class=%d", key.name_hash, key.qtype, key.qclass);
 

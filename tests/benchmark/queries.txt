@@ -28,8 +28,10 @@ bing.com A
 zoom.us A
 slack.com A
 discord.com A
-google.com AAAA
-facebook.com AAAA
-amazon.com AAAA
-cloudflare.com AAAA
-github.com AAAA
+cache-test.example.com A
+cname-a.example.com A
+cname-chain.example.com A
+neg-nxdomain.example.com A
+neg-nodata.example.com A
+neg-shortttl.example.com A
+ttl-short.example.com A

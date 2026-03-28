@@ -77,12 +77,15 @@ The userspace daemon runs an event loop polling two ring buffers: `rb_pkt` (capt
 
 The system uses specific structures to maintain state and communicate between layers.
 
-### struct cache_key (12 bytes)
+### struct cache_key (16 bytes)
 Used as the key for the `cache_map` hash map.
 - `name_hash`: 32-bit FNV-1a hash of the normalized QNAME.
 - `qtype`: 16-bit query type (e.g., A, AAAA).
 - `qclass`: 16-bit query class (typically IN).
-- `_pad`: 32-bit padding for alignment.
+- `ecs_addr_v4`: IPv4 ECS subnet address masked to source prefix.
+- `ecs_prefix`: ECS source prefix length.
+- `ecs_family`: ECS family (IPv4=1, absent=0).
+- `_pad`: alignment padding.
 
 ### struct cache_value (16 bytes)
 The value stored in `cache_map`.
@@ -116,7 +119,7 @@ The system utilizes the BPF Arena, a relatively new feature that provides a shar
 - **Compiler Support**: The `__arena` annotation allows the compiler to generate specialized code for address space casting.
 
 ### Allocation
-A simple bump allocator is used. Userspace maintains `next_entry_idx` and increments it for every new cache entry. The default size is 2112 pages (approx. 8.25MB), accommodating 16,384 entries of 512 bytes each.
+Arena slots are consumed in ring order. Userspace maintains `next_entry_idx` using atomic increment + modulo. Slot reuse is protected by generation checks and stale-key cleanup.
 
 ### Address Space Cast
 To support various kernel versions and toolchains, the arena uses the `#if defined(__BPF_FEATURE_ADDR_SPACE_CAST)` macro. If the feature is missing, it falls back to the `.addr_space.1` section to ensure the verifier correctly identifies arena pointers.
@@ -161,14 +164,14 @@ To conserve space and simplify XDP logic, the Authority and Additional sections 
 
 EDNS Client Subnet (ECS) allows recursive resolvers to pass client network information to authoritative servers. This presents a caching challenge, as different subnets might receive different answers for the same query.
 
-### Strategy: Scope-Zero Only
-The system adopts a conservative "scope-zero only" caching policy:
-- If a response contains an ECS option:
-    - If `scope_prefix == 0`, the answer is globally valid and is cached.
-    - If `scope_prefix > 0`, the answer is subnet-specific. To avoid serving incorrect data to other clients, the system does not cache these responses.
-- If no ECS option is present, the response is treated as global and is cached.
+### Strategy: Subnet-Partitioned ECS Cache Keys
+The system uses ECS-aware key partitioning to prevent cache pollution:
+- Query parsing extracts ECS IPv4 source subnet from OPT/ECS when present.
+- Response ingest extracts ECS subnet metadata and stores entries with ECS key fields.
+- Cache lookups only hit when ECS partition matches (`ecs_addr_v4 + ecs_prefix + ecs_family`).
+- ECS `/0` behaves as global cache scope.
 
-This approach ensures correctness while still providing significant performance gains for the majority of global DNS traffic.
+This preserves correctness for subnet-sensitive answers while still allowing global reuse where explicitly safe.
 
 ---
 
@@ -208,7 +211,7 @@ While highly performant, the current implementation has several areas for improv
 
 - **Arena Management**: The current bump allocator is "leaky"—it never frees entries. Over a long period, the arena will fill up. A future improvement would be a ring buffer allocator or a free-list mechanism.
 - **Protocol Support**: Currently, only IPv4 is supported in the XDP path. Extending this to IPv6 would require additional parsing logic and checksum handling.
-- **Record Types**: The cache is limited to A and AAAA records. Responses containing CNAME, MX, or TXT records are currently passed through without caching.
-- **Negative Caching**: The system does not cache NXDOMAIN or SERVFAIL responses. Implementing this would reduce load on upstream resolvers for non-existent domains.
-- **Cache Eviction**: Expired entries are not proactively removed from `cache_map`. They remain until they are overwritten by a hash collision or the map is cleared.
+- **Record Types**: Policy focuses on IPv4-serving paths; AAAA query caching is intentionally ignored.
+- **Negative Caching**: NXDOMAIN and NODATA are cached with SOA-derived TTL policy.
+- **Cache Eviction**: Expired entries are proactively removed by userspace cleanup thread.
 - **Hardware Acceleration**: The system is currently tested using Generic XDP on veth interfaces (SKB mode). Running on a native XDP-supported NIC would provide even greater performance.

@@ -159,8 +159,10 @@ The `shinku_parser_reject_reason_total` counter provides detailed breakdown by r
 | `malformed_question` | Question section parsing failed |
 | `malformed_rr` | Resource record parsing failed |
 | `unsupported_rtype` | Record type not supported (not A/AAAA/CNAME) |
-| `cname_no_terminal` | CNAME chain without terminal A/AAAA for A/AAAA query |
-| `bad_ecs` | EDNS Client Subnet with non-zero scope |
+| `ipv6_ignored` | IPv6 query/response ignored by current policy |
+| `cname_no_terminal_a` | CNAME chain for A query without terminal A |
+| `cname_ipv6_only_terminal` | CNAME chain ends only with AAAA under IPv6-ignore policy |
+| `bad_ecs` | Invalid or unsupported EDNS Client Subnet option |
 | `bad_ttl` | TTL is 0 or invalid |
 
 ### CLI Options
@@ -271,6 +273,8 @@ Generated files are written to `build/docs/html/` and should not be committed to
 ## Design Documentation
 
 For technical details on the implementation, see `docs/design.md`.
+
+For module relationships and runtime data-flow, see `docs/architecture.md`.
 
 ## References
 

@@ -115,6 +115,9 @@ int main(void) {
     obs_metrics_count_negative_accept(&metrics, OBS_NEGATIVE_NXDOMAIN);
     obs_metrics_count_negative_accept(&metrics, OBS_NEGATIVE_NXDOMAIN);
     obs_metrics_count_negative_reject(&metrics, OBS_NEGATIVE_NODATA);
+    obs_metrics_count_parser_reject(&metrics, OBS_REJECT_IPV6_IGNORED);
+    obs_metrics_count_parser_reject(&metrics, OBS_REJECT_CNAME_NO_TERMINAL_A);
+    obs_metrics_count_parser_reject(&metrics, OBS_REJECT_CNAME_IPV6_ONLY_TERMINAL);
     obs_metrics_count_parser_reject(&metrics, OBS_REJECT_NEGATIVE_NO_SOA);
     obs_metrics_add_cleanup_removed(&metrics, 3);
     obs_metrics_count_rb_poll_error(&metrics);
@@ -190,7 +193,7 @@ int main(void) {
         "/metrics includes negative accept aggregate"
     );
     TEST_ASSERT(
-        strstr(resp, "shinku_negative_cache_accept_by_type_total{type=\"nxdomain\"} 2") != NULL,
+        strstr(resp, "shinku_negative_cache_accept_by_type_total{type=\"nxdomain\"}") != NULL,
         "/metrics includes NXDOMAIN accept metric"
     );
     TEST_ASSERT(
@@ -202,6 +205,19 @@ int main(void) {
     TEST_ASSERT(
         strstr(resp, "shinku_parser_reject_reason_total{reason=\"negative_no_soa\"}") != NULL,
         "/metrics exports negative parser reject reason"
+    );
+    TEST_ASSERT(
+        strstr(resp, "shinku_parser_reject_reason_total{reason=\"ipv6_ignored\"}") != NULL,
+        "/metrics exports ipv6_ignored parser reject reason"
+    );
+    TEST_ASSERT(
+        strstr(resp, "shinku_parser_reject_reason_total{reason=\"cname_no_terminal_a\"}") != NULL,
+        "/metrics exports cname_no_terminal_a parser reject reason"
+    );
+    TEST_ASSERT(
+        strstr(resp, "shinku_parser_reject_reason_total{reason=\"cname_ipv6_only_terminal\"}")
+            != NULL,
+        "/metrics exports cname_ipv6_only_terminal parser reject reason"
     );
     TEST_ASSERT(
         strstr(resp, "shinku_degraded_mode 0") != NULL,

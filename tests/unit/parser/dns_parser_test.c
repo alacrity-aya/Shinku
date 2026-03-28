@@ -184,6 +184,49 @@ static void builder_add_soa_answer(
     builder_add_answer(b, owner, DNS_TYPE_SOA, DNS_CLASS_IN, ttl, (uint16_t)pos, rdata);
 }
 
+static void builder_add_opt_ecs(
+    struct dns_builder* b,
+    uint16_t udp_payload_size,
+    uint16_t family,
+    uint8_t source_prefix,
+    uint8_t scope_prefix,
+    uint32_t ipv4_addr_be
+) {
+    b->buf[b->len++] = 0;
+    uint16_t* ptr16 = (uint16_t*)(b->buf + b->len);
+    ptr16[0] = htons(DNS_TYPE_OPT);
+    ptr16[1] = htons(udp_payload_size);
+    b->len += 4;
+
+    uint32_t* ttl = (uint32_t*)(b->buf + b->len);
+    *ttl = htonl(0);
+    b->len += 4;
+
+    int addr_bytes = (source_prefix + 7) / 8;
+    uint16_t ecs_data_len = (uint16_t)(4 + addr_bytes);
+    uint16_t rdlen = (uint16_t)(4 + ecs_data_len);
+    ptr16 = (uint16_t*)(b->buf + b->len);
+    ptr16[0] = htons(rdlen);
+    b->len += 2;
+
+    ptr16 = (uint16_t*)(b->buf + b->len);
+    ptr16[0] = htons(EDNS0_OPT_CODE_ECS);
+    ptr16[1] = htons(ecs_data_len);
+    b->len += 4;
+
+    ptr16 = (uint16_t*)(b->buf + b->len);
+    ptr16[0] = htons(family);
+    b->len += 2;
+    b->buf[b->len++] = source_prefix;
+    b->buf[b->len++] = scope_prefix;
+
+    uint8_t addr[4];
+    memcpy(addr, &ipv4_addr_be, 4);
+    for (int i = 0; i < addr_bytes; i++) {
+        b->buf[b->len++] = addr[i];
+    }
+}
+
 /* --- Positive Tests --- */
 
 // 1. test_simple_a_record
@@ -205,8 +248,7 @@ static void test_simple_a_record() {
     }
 }
 
-// 2. test_simple_aaaa_record
-static void test_simple_aaaa_record() {
+static void test_ignore_aaaa_query() {
     setup_test();
     struct dns_builder b;
     builder_init(&b, 0x1234, 0x8180, 1, 1, 0, 0);
@@ -215,10 +257,8 @@ static void test_simple_aaaa_record() {
     builder_add_answer(&b, "www.example.com", DNS_TYPE_AAAA, DNS_CLASS_IN, 600, 16, aaaa_rdata);
 
     int ret = call_handle_packet(&test_ctx, b.buf, b.len);
-    TEST_ASSERT(ret == 0, "test_simple_aaaa_record: handle_packet returns 0");
-    if (has_bpf) {
-        TEST_ASSERT(test_next_idx == 1, "test_simple_aaaa_record: next_idx incremented");
-    }
+    TEST_ASSERT(ret == 0, "test_ignore_aaaa_query: handle_packet returns 0");
+    TEST_ASSERT(test_next_idx == 0, "test_ignore_aaaa_query: next_idx unchanged");
 }
 
 // 3. test_multiple_a_records
@@ -605,6 +645,17 @@ static void test_cname_with_a_record() {
     TEST_ASSERT(ret == 0, "test_cname_with_a_record: handle_packet returns 0");
     if (has_bpf) {
         TEST_ASSERT(test_next_idx == 1, "test_cname_with_a_record: next_idx incremented");
+        uint32_t expected_hash = 0;
+        calculate_hash_strict_impl(b.buf, sizeof(struct dns_hdr), b.len, &expected_hash);
+        struct cache_key key = {
+            .name_hash = expected_hash,
+            .qtype = DNS_TYPE_A,
+            .qclass = DNS_CLASS_IN,
+            ._pad = 0,
+        };
+        struct cache_value val;
+        int err = bpf_map_lookup_elem(test_ctx.cache_map_fd, &key, &val);
+        TEST_ASSERT(err == 0, "test_cname_with_a_record: cache key exists");
     }
 }
 
@@ -647,6 +698,17 @@ static void test_cname_chain_with_terminal_a() {
     TEST_ASSERT(ret == 0, "test_cname_chain_with_terminal_a: handle_packet returns 0");
     if (has_bpf) {
         TEST_ASSERT(test_next_idx == 1, "test_cname_chain_with_terminal_a: next_idx incremented");
+        uint32_t expected_hash = 0;
+        calculate_hash_strict_impl(b.buf, sizeof(struct dns_hdr), b.len, &expected_hash);
+        struct cache_key key = {
+            .name_hash = expected_hash,
+            .qtype = DNS_TYPE_A,
+            .qclass = DNS_CLASS_IN,
+            ._pad = 0,
+        };
+        struct cache_value val;
+        int err = bpf_map_lookup_elem(test_ctx.cache_map_fd, &key, &val);
+        TEST_ASSERT(err == 0, "test_cname_chain_with_terminal_a: cache key exists");
     }
 }
 
@@ -673,6 +735,134 @@ static void test_reject_cname_only_without_terminal() {
     int ret = call_handle_packet(&test_ctx, b.buf, b.len);
     TEST_ASSERT(ret == 0, "test_reject_cname_only_without_terminal: handle_packet returns 0");
     TEST_ASSERT(test_next_idx == 0, "test_reject_cname_only_without_terminal: next_idx unchanged");
+}
+
+static void test_reject_cname_with_only_aaaa_terminal_for_a_query() {
+    setup_test();
+
+    struct dns_builder b;
+    builder_init(&b, 0x8888, 0x8180, 1, 2, 0, 0);
+    builder_add_question(&b, "www.example.com", DNS_TYPE_A, DNS_CLASS_IN);
+
+    uint8_t cname_rdata[] = { 3,   'c', 'd', 'n', 7,   'e', 'x', 'a', 'm',
+                              'p', 'l', 'e', 3,   'c', 'o', 'm', 0 };
+    builder_add_answer(
+        &b,
+        "www.example.com",
+        DNS_TYPE_CNAME,
+        DNS_CLASS_IN,
+        300,
+        sizeof(cname_rdata),
+        cname_rdata
+    );
+
+    uint8_t aaaa_rdata[16] = { 0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1 };
+    builder_add_answer(
+        &b,
+        "cdn.example.com",
+        DNS_TYPE_AAAA,
+        DNS_CLASS_IN,
+        300,
+        sizeof(aaaa_rdata),
+        aaaa_rdata
+    );
+
+    int ret = call_handle_packet(&test_ctx, b.buf, b.len);
+    TEST_ASSERT(
+        ret == 0,
+        "test_reject_cname_with_only_aaaa_terminal_for_a_query: handle_packet returns 0"
+    );
+    TEST_ASSERT(
+        test_next_idx == 0,
+        "test_reject_cname_with_only_aaaa_terminal_for_a_query: next_idx unchanged"
+    );
+}
+
+static void test_ecs_scope_zero_cached_with_partition_key() {
+    setup_test();
+
+    struct dns_builder b;
+    builder_init(&b, 0x9911, 0x8180, 1, 1, 0, 1);
+    builder_add_question(&b, "ecs.example.com", DNS_TYPE_A, DNS_CLASS_IN);
+    uint8_t a_rdata[4] = { 10, 20, 30, 40 };
+    builder_add_answer(&b, "ecs.example.com", DNS_TYPE_A, DNS_CLASS_IN, 120, 4, a_rdata);
+    builder_add_opt_ecs(&b, 1232, 1, 24, 0, htonl(0xcb007100u));
+
+    int ret = call_handle_packet(&test_ctx, b.buf, b.len);
+    TEST_ASSERT(ret == 0, "test_ecs_scope_zero_cached_with_partition_key: handle_packet returns 0");
+
+    TEST_ASSERT(
+        test_next_idx == 1,
+        "test_ecs_scope_zero_cached_with_partition_key: next_idx incremented"
+    );
+}
+
+static void test_ecs_scope_nonzero_cached_with_partition_key() {
+    setup_test();
+
+    struct dns_builder b;
+    builder_init(&b, 0x9944, 0x8180, 1, 1, 0, 1);
+    builder_add_question(&b, "ecs-scope.example.com", DNS_TYPE_A, DNS_CLASS_IN);
+    uint8_t a_rdata[4] = { 10, 20, 30, 41 };
+    builder_add_answer(&b, "ecs-scope.example.com", DNS_TYPE_A, DNS_CLASS_IN, 120, 4, a_rdata);
+    builder_add_opt_ecs(&b, 1232, 1, 24, 24, htonl(0xcb007100u));
+
+    int ret = call_handle_packet(&test_ctx, b.buf, b.len);
+    TEST_ASSERT(
+        ret == 0,
+        "test_ecs_scope_nonzero_cached_with_partition_key: handle_packet returns 0"
+    );
+
+    if (has_bpf) {
+        TEST_ASSERT(
+            test_next_idx == 1,
+            "test_ecs_scope_nonzero_cached_with_partition_key: next_idx incremented"
+        );
+        uint32_t expected_hash = 0;
+        calculate_hash_strict_impl(b.buf, sizeof(struct dns_hdr), b.len, &expected_hash);
+        struct cache_key key = {
+            .name_hash = expected_hash,
+            .qtype = DNS_TYPE_A,
+            .qclass = DNS_CLASS_IN,
+            .ecs_addr_v4 = htonl(0xcb007100u),
+            .ecs_prefix = 24,
+            .ecs_family = 1,
+            ._pad = 0,
+        };
+        struct cache_value val;
+        int err = bpf_map_lookup_elem(test_ctx.cache_map_fd, &key, &val);
+        TEST_ASSERT(err == 0, "test_ecs_scope_nonzero_cached_with_partition_key: cache key exists");
+    }
+}
+
+static void test_reject_bad_ecs_family() {
+    setup_test();
+
+    struct dns_builder b;
+    builder_init(&b, 0x9922, 0x8180, 1, 1, 0, 1);
+    builder_add_question(&b, "ecs-bad-family.example.com", DNS_TYPE_A, DNS_CLASS_IN);
+    uint8_t a_rdata[4] = { 1, 1, 1, 1 };
+    builder_add_answer(&b, "ecs-bad-family.example.com", DNS_TYPE_A, DNS_CLASS_IN, 120, 4, a_rdata);
+    builder_add_opt_ecs(&b, 1232, 2, 24, 0, htonl(0xcb007100u));
+
+    int ret = call_handle_packet(&test_ctx, b.buf, b.len);
+    TEST_ASSERT(ret == 0, "test_reject_bad_ecs_family: handle_packet returns 0");
+    TEST_ASSERT(test_next_idx == 0, "test_reject_bad_ecs_family: next_idx unchanged");
+}
+
+static void test_reject_bad_ecs_prefix() {
+    setup_test();
+
+    struct dns_builder b;
+    builder_init(&b, 0x9933, 0x8180, 1, 1, 0, 1);
+    builder_add_question(&b, "ecs-bad-prefix.example.com", DNS_TYPE_A, DNS_CLASS_IN);
+    uint8_t a_rdata[4] = { 2, 2, 2, 2 };
+    builder_add_answer(&b, "ecs-bad-prefix.example.com", DNS_TYPE_A, DNS_CLASS_IN, 120, 4, a_rdata);
+    builder_add_opt_ecs(&b, 1232, 1, 33, 0, htonl(0xcb007100u));
+
+    int ret = call_handle_packet(&test_ctx, b.buf, b.len);
+    TEST_ASSERT(ret == 0, "test_reject_bad_ecs_prefix: handle_packet returns 0");
+    TEST_ASSERT(test_next_idx == 0, "test_reject_bad_ecs_prefix: next_idx unchanged");
 }
 
 /* --- Edge Cases --- */
@@ -753,7 +943,7 @@ int main(void) {
     printf("\n--- Running DNS Parser Tests ---\n");
 
     test_simple_a_record();
-    test_simple_aaaa_record();
+    test_ignore_aaaa_query();
     test_multiple_a_records();
     test_min_ttl_selection();
     test_cache_key_construction();
@@ -775,6 +965,11 @@ int main(void) {
     test_cname_with_a_record();
     test_cname_chain_with_terminal_a();
     test_reject_cname_only_without_terminal();
+    test_reject_cname_with_only_aaaa_terminal_for_a_query();
+    test_ecs_scope_zero_cached_with_partition_key();
+    test_ecs_scope_nonzero_cached_with_partition_key();
+    test_reject_bad_ecs_family();
+    test_reject_bad_ecs_prefix();
 
     test_oversized_packet();
     test_arena_wraparound();

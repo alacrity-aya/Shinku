@@ -67,12 +67,15 @@ enum obs_parser_reject_reason {
     OBS_REJECT_MALFORMED_QUESTION = 6, /**< Malformed question section */
     OBS_REJECT_MALFORMED_RR = 7, /**< Malformed resource record */
     OBS_REJECT_UNSUPPORTED_RTYPE = 8, /**< Unsupported record type */
-    OBS_REJECT_CNAME_NO_TERMINAL = 9, /**< CNAME chain without terminal A/AAAA */
-    OBS_REJECT_BAD_ECS = 10, /**< Invalid EDNS Client Subnet option */
-    OBS_REJECT_BAD_TTL = 11, /**< Invalid TTL value */
-    OBS_REJECT_NEGATIVE_NO_SOA = 12, /**< Negative response without SOA */
-    OBS_REJECT_NEGATIVE_BAD_POLICY = 13, /**< Negative response with invalid TTL */
-    OBS_REJECT_MAX = 14, /**< Sentinel: number of reject reasons */
+    OBS_REJECT_IPV6_IGNORED = 9, /**< IPv6 query/record ignored by policy */
+    OBS_REJECT_CNAME_NO_TERMINAL_A = 10, /**< CNAME chain for A query without terminal A */
+    OBS_REJECT_CNAME_IPV6_ONLY_TERMINAL =
+        11, /**< CNAME chain ends only in AAAA under IPv6-ignore policy */
+    OBS_REJECT_BAD_ECS = 12, /**< Invalid EDNS Client Subnet option */
+    OBS_REJECT_BAD_TTL = 13, /**< Invalid TTL value */
+    OBS_REJECT_NEGATIVE_NO_SOA = 14, /**< Negative response without SOA */
+    OBS_REJECT_NEGATIVE_BAD_POLICY = 15, /**< Negative response with invalid TTL */
+    OBS_REJECT_MAX = 16, /**< Sentinel: number of reject reasons */
 };
 
 /**

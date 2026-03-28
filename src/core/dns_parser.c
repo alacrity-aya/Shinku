@@ -208,6 +208,58 @@ static int check_ecs_scope(const uint8_t* pkt, int offset, int max_len, int rdle
     return 0;
 }
 
+static int parse_ecs_subnet_ipv4(
+    const uint8_t* pkt,
+    int offset,
+    int max_len,
+    int rdlen,
+    uint32_t* out_addr_v4,
+    uint8_t* out_prefix,
+    uint8_t* out_family
+) {
+    int end = offset + rdlen;
+
+    while (offset + 4 <= end && offset + 4 <= max_len) {
+        uint16_t opt_code = read_u16(pkt + offset);
+        uint16_t opt_len = read_u16(pkt + offset + 2);
+        offset += 4;
+
+        if (offset + opt_len > end || offset + opt_len > max_len)
+            return -1;
+
+        if (opt_code == EDNS0_OPT_CODE_ECS && opt_len >= 4) {
+            uint16_t family = read_u16(pkt + offset);
+            uint8_t src_prefix = pkt[offset + 2];
+
+            if (family != 1)
+                return -1;
+            if (src_prefix > 32)
+                return -1;
+
+            int addr_bytes = (src_prefix + 7) / 8;
+            if (opt_len < 4 + addr_bytes)
+                return -1;
+
+            uint32_t addr = 0;
+            for (int i = 0; i < addr_bytes && i < 4; i++) {
+                addr |= ((uint32_t)pkt[offset + 4 + i]) << (24 - (8 * i));
+            }
+
+            uint32_t mask = src_prefix == 0 ? 0 : (0xffffffffu << (32 - src_prefix));
+            addr &= mask;
+
+            *out_addr_v4 = htonl(addr);
+            *out_prefix = src_prefix;
+            *out_family = 1;
+            return 1;
+        }
+
+        offset += opt_len;
+    }
+
+    return 0;
+}
+
 static int cache_store_response(
     struct cache_context* cache_ctx,
     struct dns_parser_runtime* runtime,
@@ -601,6 +653,14 @@ int dns_parser_handle_event(void* ctx, void* data, [[maybe_unused]] size_t len) 
     uint16_t qtype = read_u16(pkt_data + q_end);
     uint16_t qclass = read_u16(pkt_data + q_end + 2);
 
+    if (qtype == DNS_TYPE_AAAA) {
+        obs_metrics_count_parser_reject(
+            runtime && runtime->obs ? runtime->obs->metrics : NULL,
+            OBS_REJECT_IPV6_IGNORED
+        );
+        return 0;
+    }
+
     uint8_t flat_buf[1500];
     int flat_offset = 0;
 
@@ -624,6 +684,8 @@ int dns_parser_handle_event(void* ctx, void* data, [[maybe_unused]] size_t len) 
 
     uint32_t min_ttl = neg_info.valid ? neg_info.ttl : UINT32_MAX;
     int has_terminal_rr = 0;
+    int has_cname_rr = 0;
+    int has_ipv6_rr = 0;
 
     for (int i = 0; i < ancount; i++) {
         w_len = flatten_name(
@@ -687,8 +749,10 @@ int dns_parser_handle_event(void* ctx, void* data, [[maybe_unused]] size_t len) 
         }
 
         if (rtype == DNS_TYPE_A || rtype == DNS_TYPE_AAAA) {
-            if (rtype == qtype)
+            if (rtype == DNS_TYPE_A)
                 has_terminal_rr = 1;
+            if (rtype == DNS_TYPE_AAAA)
+                has_ipv6_rr = 1;
             if (flat_offset + rdlen > 1500) {
                 obs_metrics_count_parser_reject(
                     runtime && runtime->obs ? runtime->obs->metrics : NULL,
@@ -699,6 +763,7 @@ int dns_parser_handle_event(void* ctx, void* data, [[maybe_unused]] size_t len) 
             memcpy(flat_buf + flat_offset, pkt_data + read_offset, rdlen);
             flat_offset += rdlen;
         } else if (rtype == DNS_TYPE_CNAME) {
+            has_cname_rr = 1;
             int cname_len = flatten_name(pkt_data, read_offset, pkt_len, NULL, 0);
             if (cname_len < 0) {
                 obs_metrics_count_parser_reject(
@@ -733,10 +798,18 @@ int dns_parser_handle_event(void* ctx, void* data, [[maybe_unused]] size_t len) 
         read_offset += rdlen;
     }
 
-    if (!neg_info.valid && (qtype == DNS_TYPE_A || qtype == DNS_TYPE_AAAA) && !has_terminal_rr) {
+    if (!neg_info.valid && qtype == DNS_TYPE_A && !has_terminal_rr) {
+        enum obs_parser_reject_reason reason = OBS_REJECT_UNSUPPORTED_RTYPE;
+        if (has_cname_rr && has_ipv6_rr)
+            reason = OBS_REJECT_CNAME_IPV6_ONLY_TERMINAL;
+        else if (has_cname_rr)
+            reason = OBS_REJECT_CNAME_NO_TERMINAL_A;
+        else if (has_ipv6_rr)
+            reason = OBS_REJECT_IPV6_IGNORED;
+
         obs_metrics_count_parser_reject(
             runtime && runtime->obs ? runtime->obs->metrics : NULL,
-            OBS_REJECT_CNAME_NO_TERMINAL
+            reason
         );
         return 0;
     }
@@ -765,6 +838,9 @@ int dns_parser_handle_event(void* ctx, void* data, [[maybe_unused]] size_t len) 
 
     /* Scan Additional Section for OPT RR / ECS */
     uint8_t ecs_scope = 0;
+    uint32_t ecs_addr_v4 = 0;
+    uint8_t ecs_prefix = 0;
+    uint8_t ecs_family = 0;
     uint16_t arcount = ntohs(dns->arcount);
     for (int i = 0; i < arcount; i++) {
         int name_skip = skip_name(pkt_data, read_offset, pkt_len);
@@ -781,14 +857,27 @@ int dns_parser_handle_event(void* ctx, void* data, [[maybe_unused]] size_t len) 
         if (rtype == DNS_TYPE_OPT) {
             int scope = check_ecs_scope(pkt_data, read_offset, pkt_len, rdlen);
             if (scope > 0) {
+                ecs_scope = (uint8_t)scope;
+            }
+            if (scope == 0)
+                ecs_scope = 0;
+
+            int ecs_parse = parse_ecs_subnet_ipv4(
+                pkt_data,
+                read_offset,
+                pkt_len,
+                rdlen,
+                &ecs_addr_v4,
+                &ecs_prefix,
+                &ecs_family
+            );
+            if (ecs_parse < 0) {
                 obs_metrics_count_parser_reject(
                     runtime && runtime->obs ? runtime->obs->metrics : NULL,
                     OBS_REJECT_BAD_ECS
                 );
                 return 0;
             }
-            if (scope == 0)
-                ecs_scope = 0;
         }
 
         if (read_offset + rdlen > pkt_len) {
@@ -809,7 +898,15 @@ int dns_parser_handle_event(void* ctx, void* data, [[maybe_unused]] size_t len) 
         return 0;
     }
 
-    struct cache_key key = { .name_hash = name_hash, .qtype = qtype, .qclass = qclass, ._pad = 0 };
+    struct cache_key key = {
+        .name_hash = name_hash,
+        .qtype = qtype,
+        .qclass = qclass,
+        .ecs_addr_v4 = ecs_addr_v4,
+        .ecs_prefix = ecs_scope > 0 ? ecs_prefix : 0,
+        .ecs_family = ecs_scope > 0 ? ecs_family : 0,
+        ._pad = 0,
+    };
 
     if (neg_info.valid) {
         obs_metrics_count_negative_accept(
@@ -827,7 +924,13 @@ int dns_parser_handle_event(void* ctx, void* data, [[maybe_unused]] size_t len) 
             neg_info.flags
         );
     } else {
-        cache_store_response(cache_ctx, runtime, &key, flat_buf, flat_offset, min_ttl, ecs_scope);
+        uint8_t* store_buf = flat_buf;
+        int store_len = flat_offset;
+        if (has_cname_rr && pkt_len <= ARENA_ENTRY_SIZE) {
+            store_buf = pkt_data;
+            store_len = (int)pkt_len;
+        }
+        cache_store_response(cache_ctx, runtime, &key, store_buf, store_len, min_ttl, ecs_scope);
     }
 
     return 0;

@@ -19,7 +19,7 @@ This document lists all features covered by the test suite.
 
 **Positive Tests:**
 - Simple A record parsing and caching
-- Simple AAAA record parsing and caching
+- AAAA query path ignored by policy (not cached)
 - Multiple A records in single response
 - Minimum TTL selection (picks lowest TTL among multiple answers)
 - Cache key construction correctness
@@ -44,6 +44,12 @@ This document lists all features covered by the test suite.
 - CNAME with terminal A record (valid chain)
 - CNAME chain with terminal A record (multi-level)
 - Reject CNAME-only response without terminal record
+- Reject CNAME+AAAA-only terminal for A query under IPv6-ignore policy
+
+**ECS Handling:**
+- Accept ECS scope=0 responses and cache as global (`/0`) when key partition is zeroed
+- Cache ECS scope>0 responses with ECS subnet-partitioned key
+- Reject invalid ECS family/prefix in response OPT records
 
 **Edge Cases:**
 - Oversized packet handling (>512 bytes flat length)
@@ -137,10 +143,15 @@ This document lists all features covered by the test suite.
 - Full system test with network namespaces
 - DNS query/response flow through XDP
 - Cache hit/miss behavior
-- TTL expiration and refresh
+- CNAME cache hit behavior (CNAME+A and CNAME chain + terminal A)
+- CNAME-only A query non-cache behavior
+- AAAA query non-cache behavior under IPv6-ignore policy
 - Negative caching for NXDOMAIN (with SOA)
 - Negative caching for NODATA (with SOA)
 - No negative caching when SOA is absent
+- ECS same-subnet cache hit
+- ECS different-subnet non-reuse
+- ECS /0 global reuse behavior
 
 ---
 
@@ -149,7 +160,7 @@ This document lists all features covered by the test suite.
 | Category | Test File | Tests | Root Required |
 |----------|-----------|-------|---------------|
 | DNS Hash | `hash/dns_hash_test.c` | 8 suites | No |
-| DNS Parser | `parser/dns_parser_test.c` | 17 tests | No* |
+| DNS Parser | `parser/dns_parser_test.c` | 20+ tests | No* |
 | Cache Store | `cache/cache_store_test.c` | 6 tests | No* |
 | Degraded Mode | `degraded/degraded_mode_test.c` | 8 tests | No |
 | Observability HTTP | `obs/obs_http_test.c` | 10+ tests | No |

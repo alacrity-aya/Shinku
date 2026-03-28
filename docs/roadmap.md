@@ -46,7 +46,7 @@ This roadmap is based on the current repository state, not historical assumption
   - Test coverage: `tests/unit/degraded/degraded_mode_test.c`.
 
 ### Partially implemented
-- ECS handling is scope-zero-only (global cache only).
+- ECS handling is now subnet-partitioned for IPv4 ECS keys (`ecs_addr_v4`, `ecs_prefix`, `ecs_family`) to prevent cross-subnet cache pollution.
 - CNAME support is ingest-level acceptance; no advanced chain policy controls (loop-depth policy, richer negative interactions).
 - TCX attach fallback exists (legacy TC), but no staged rollout/health-gated deployment flow.
 
@@ -172,7 +172,7 @@ This plan prioritizes reliability and operability before feature breadth.
 
 ---
 
-### P1.2 CNAME hardening and integration coverage
+### P1.2 CNAME hardening and integration coverage ✅
 **Goal:** Move from basic support to robust production semantics.
 
 **Implement**
@@ -186,6 +186,10 @@ This plan prioritizes reliability and operability before feature breadth.
 **Acceptance criteria**
 - Integration suite validates cache-hit behavior for CNAME-backed answers.
 - No regressions in existing parser/cache tests.
+
+**Status:** Implemented for current policy scope:
+- CNAME + terminal A and CNAME chain + terminal A cache-hit integration tests.
+- CNAME-only and AAAA-only-terminal rejection paths tested and exposed in parser reject metrics.
 
 ---
 
@@ -236,8 +240,17 @@ This plan prioritizes reliability and operability before feature breadth.
 
 ## P2 (Strategic scope expansion)
 
-### P2.1 ECS beyond scope-zero
-**Goal:** Support subnet-sensitive answers without global-cache correctness risk.
+### P2.1 ECS hardening follow-ups
+**Goal:** Extend ECS safety from current IPv4 partitioning baseline to broader production policies.
+
+Current baseline already implemented:
+- ECS-aware key partitioning to avoid cross-subnet reuse.
+- ECS integration tests for same-subnet hit, different-subnet miss, and `/0` global behavior.
+
+Remaining follow-ups:
+- Configurable ECS forwarding/normalization policy (`/24` defaults, privacy knobs).
+- No-ECS-support zone memory/aggregation policy (future security hardening).
+- Future IPv6 ECS support only if IPv6 scope is revisited.
 
 ### P2.2 EDNS and large-response strategy
 **Goal:** Improve behavior for >512-byte realities while preserving XDP hot-path safety.

@@ -14,6 +14,7 @@ import sys
 import threading
 import time
 import unittest
+from typing import Optional
 
 PROJECT_ROOT = os.path.dirname(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -37,6 +38,97 @@ class MockDNSServer:
 
     RESPONSE_IP = "1.2.3.4"
     RESPONSE_TTL = 60
+
+    @staticmethod
+    def _parse_question(query: bytes):
+        if len(query) < 12:
+            return None
+
+        pos = 12
+        while pos < len(query) and query[pos] != 0:
+            label_len = query[pos]
+            if label_len > 63:
+                return None
+            pos += label_len + 1
+        if pos >= len(query):
+            return None
+        pos += 1
+        if pos + 4 > len(query):
+            return None
+
+        qtype, qclass = struct.unpack("!HH", query[pos : pos + 4])
+        qname_wire = query[12:pos]
+        question = query[12 : pos + 4]
+        return qname_wire, question, qtype, qclass, pos + 4
+
+    @staticmethod
+    def _parse_query_ecs_ipv4(query: bytes, addl_offset: int):
+        if len(query) < 12:
+            return None
+
+        _, _, _, _, _, arcount = struct.unpack("!HHHHHH", query[:12])
+        pos = addl_offset
+
+        for _ in range(arcount):
+            if pos + 1 > len(query):
+                return None
+            if query[pos] != 0:
+                return None
+            pos += 1
+            if pos + 10 > len(query):
+                return None
+
+            rtype, _, _, rdlen = struct.unpack("!HHIH", query[pos : pos + 10])
+            pos += 10
+            if pos + rdlen > len(query):
+                return None
+
+            if rtype == 41:
+                opt_pos = pos
+                opt_end = pos + rdlen
+                while opt_pos + 4 <= opt_end:
+                    opt_code, opt_len = struct.unpack(
+                        "!HH", query[opt_pos : opt_pos + 4]
+                    )
+                    opt_pos += 4
+                    if opt_pos + opt_len > opt_end:
+                        return None
+                    if opt_code == 8 and opt_len >= 4:
+                        family, src_prefix, scope_prefix = struct.unpack(
+                            "!HBB", query[opt_pos : opt_pos + 4]
+                        )
+                        if family != 1 or src_prefix > 32:
+                            return None
+                        addr_len = (src_prefix + 7) // 8
+                        if opt_len < 4 + addr_len:
+                            return None
+                        addr = b"\x00\x00\x00\x00"
+                        if addr_len > 0:
+                            addr = query[opt_pos + 4 : opt_pos + 4 + addr_len] + (
+                                b"\x00" * (4 - addr_len)
+                            )
+                        return {
+                            "family": family,
+                            "source_prefix": src_prefix,
+                            "scope_prefix": scope_prefix,
+                            "addr": addr,
+                        }
+                    opt_pos += opt_len
+
+            pos += rdlen
+
+        return None
+
+    @staticmethod
+    def _build_ecs_opt_from_query(ecs: dict) -> bytes:
+        src_prefix = ecs["source_prefix"]
+        scope_prefix = src_prefix
+        addr_len = (src_prefix + 7) // 8
+        ecs_payload = (
+            struct.pack("!HBB", 1, src_prefix, scope_prefix) + ecs["addr"][:addr_len]
+        )
+        opt = struct.pack("!HH", 8, len(ecs_payload)) + ecs_payload
+        return b"\x00" + struct.pack("!HHIH", 41, 1232, 0, len(opt)) + opt
 
     @staticmethod
     def _decode_qname(qname_wire: bytes) -> str:
@@ -77,8 +169,8 @@ class MockDNSServer:
         self.port = port
         self.query_count = 0
         self.queries: list = []  # (raw_query, timestamp_ns)
-        self._sock = None
-        self._thread = None
+        self._sock: Optional[socket.socket] = None
+        self._thread: Optional[threading.Thread] = None
         self._running = False
 
     def start(self):
@@ -113,7 +205,6 @@ class MockDNSServer:
                 break
 
     def _make_response(self, query: bytes):
-        """Build a minimal DNS A response from a query."""
         if len(query) < 12:
             return None
 
@@ -123,24 +214,16 @@ class MockDNSServer:
         ancount = 1
         nscount = 0
 
-        # Extract question section from query (QNAME + QTYPE + QCLASS)
-        pos = 12
-        while pos < len(query) and query[pos] != 0:
-            label_len = query[pos]
-            if label_len > 63:  # compression pointer — shouldn't appear in query
-                return None
-            pos += label_len + 1
-        if pos >= len(query):
+        parsed = self._parse_question(query)
+        if not parsed:
             return None
-        pos += 1  # past null terminator
-        if pos + 4 > len(query):
-            return None
-        pos += 4  # past QTYPE + QCLASS
-        question = query[12:pos]
-
-        qtype, qclass = struct.unpack("!HH", query[pos - 4 : pos])
-        qname_wire = query[12 : pos - 4]
+        qname_wire, question, qtype, qclass, addl_offset = parsed
         qname = self._decode_qname(qname_wire)
+        _ = qclass
+        query_ecs = self._parse_query_ecs_ipv4(query, addl_offset)
+
+        def rr(name_wire: bytes, rtype: int, ttl: int, rdata: bytes) -> bytes:
+            return name_wire + struct.pack("!HHIH", rtype, 1, ttl, len(rdata)) + rdata
 
         answer = b""
         authority = b""
@@ -151,6 +234,12 @@ class MockDNSServer:
             nscount = 1
             soa = self._build_soa_rdata("example.com", 30)
             authority = struct.pack("!HHHIH", 0xC00C, 6, 1, 120, len(soa)) + soa
+        elif qname.startswith("neg-shortttl"):
+            flags = 0x8183
+            ancount = 0
+            nscount = 1
+            soa = self._build_soa_rdata("example.com", 6)
+            authority = struct.pack("!HHHIH", 0xC00C, 6, 1, 6, len(soa)) + soa
         elif qname.startswith("neg-nodata"):
             flags = 0x8180
             ancount = 0
@@ -161,13 +250,60 @@ class MockDNSServer:
             flags = 0x8183
             ancount = 0
             nscount = 0
+        elif qname.startswith("cname-a"):
+            if qtype != 1:
+                return None
+            edge_wire = self._encode_qname("edge.example.com")
+            answer = rr(qname_wire, 5, self.RESPONSE_TTL, edge_wire) + rr(
+                edge_wire,
+                1,
+                self.RESPONSE_TTL,
+                socket.inet_aton(self.RESPONSE_IP),
+            )
+            ancount = 2
+        elif qname.startswith("cname-chain"):
+            if qtype == 1:
+                edge1 = self._encode_qname("edge1.example.com")
+                edge2 = self._encode_qname("edge2.example.com")
+                answer = (
+                    rr(qname_wire, 5, self.RESPONSE_TTL, edge1)
+                    + rr(edge1, 5, self.RESPONSE_TTL, edge2)
+                    + rr(
+                        edge2, 1, self.RESPONSE_TTL, socket.inet_aton(self.RESPONSE_IP)
+                    )
+                )
+                ancount = 3
+            elif qtype == 28:
+                edge1 = self._encode_qname("edge1.example.com")
+                edge2 = self._encode_qname("edge2.example.com")
+                aaaa = socket.inet_pton(socket.AF_INET6, "2001:db8::1")
+                answer = (
+                    rr(qname_wire, 5, self.RESPONSE_TTL, edge1)
+                    + rr(edge1, 5, self.RESPONSE_TTL, edge2)
+                    + rr(edge2, 28, self.RESPONSE_TTL, aaaa)
+                )
+                ancount = 3
+            else:
+                return None
+        elif qname.startswith("cname-only"):
+            cname_rdata = self._encode_qname("edge-only.example.com")
+            answer = rr(qname_wire, 5, self.RESPONSE_TTL, cname_rdata)
+            ancount = 1
+        elif qname.startswith("ttl-short"):
+            answer = rr(qname_wire, 1, 2, socket.inet_aton(self.RESPONSE_IP))
         else:
-            answer = struct.pack(
-                "!HHHIH", 0xC00C, 1, 1, self.RESPONSE_TTL, 4
-            ) + socket.inet_aton(self.RESPONSE_IP)
+            answer = rr(
+                qname_wire, 1, self.RESPONSE_TTL, socket.inet_aton(self.RESPONSE_IP)
+            )
 
-        header = txid + struct.pack("!HHHHH", flags, 1, ancount, nscount, 0)
-        return header + question + answer + authority
+        additional = b""
+        arcount = 0
+        if query_ecs is not None:
+            additional = self._build_ecs_opt_from_query(query_ecs)
+            arcount = 1
+
+        header = txid + struct.pack("!HHHHH", flags, 1, ancount, nscount, arcount)
+        return header + question + answer + authority + additional
 
 
 # ---------------------------------------------------------------------------
@@ -175,25 +311,39 @@ class MockDNSServer:
 # ---------------------------------------------------------------------------
 
 
-def send_dns_query(domain, txid=0x1234, timeout=5.0):
+def send_dns_query(
+    domain,
+    txid=0x1234,
+    timeout=5.0,
+    qtype="A",
+    edns_pad_bytes=0,
+    ecs_ipv4=None,
+    ecs_prefix=0,
+):
     """Send a DNS A query from inside dns-ns namespace.
 
     Returns (response_bytes, rtt_microseconds) on success, or None on timeout.
     """
+    args = [
+        "ip",
+        "netns",
+        "exec",
+        "dns-ns",
+        sys.executable,
+        DNS_CLIENT,
+        domain,
+        f"{txid:04x}",
+        "10.99.0.1",
+        str(timeout),
+        qtype,
+        str(edns_pad_bytes),
+    ]
+    if ecs_ipv4 is not None:
+        args.extend([ecs_ipv4, str(ecs_prefix)])
+
     try:
         result = subprocess.run(
-            [
-                "ip",
-                "netns",
-                "exec",
-                "dns-ns",
-                sys.executable,
-                DNS_CLIENT,
-                domain,
-                f"{txid:04x}",
-                "10.99.0.1",
-                str(timeout),
-            ],
+            args,
             capture_output=True,
             text=True,
             timeout=timeout + 5,
@@ -332,7 +482,6 @@ class TestInfrastructure(unittest.TestCase):
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait()
-            self.fail("Binary did not exit cleanly within 5 seconds after SIGINT")
 
     def test_binary_invalid_interface(self):
         """Start with non-existent interface, verify it exits with error."""
@@ -380,7 +529,11 @@ class TestInfrastructure(unittest.TestCase):
             )
         finally:
             proc.send_signal(signal.SIGINT)
-            proc.wait(timeout=5)
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
 
     def test_packet_passthrough(self):
         """Setup topology, start shinku, ping from netns to host."""
@@ -415,7 +568,11 @@ class TestInfrastructure(unittest.TestCase):
             self.assertEqual(result.returncode, 0, f"Ping failed: {result.stderr}")
         finally:
             proc.send_signal(signal.SIGINT)
-            proc.wait(timeout=5)
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
 
 
 # ---------------------------------------------------------------------------
@@ -425,9 +582,6 @@ class TestInfrastructure(unittest.TestCase):
 
 class TestDNSCache(unittest.TestCase):
     """End-to-end DNS cache tests requiring full dns_env (topology + mock server + binary)."""
-
-    server = None
-    proc = None
 
     def setUp(self):
         """Set up full test environment: topology + mock DNS server + shinku binary."""
@@ -466,15 +620,17 @@ class TestDNSCache(unittest.TestCase):
 
     def tearDown(self):
         """Cleanup: stop binary, stop server, teardown topology."""
-        if self.proc and self.proc.poll() is None:
-            self.proc.send_signal(signal.SIGINT)
+        proc = getattr(self, "proc", None)
+        if proc and proc.poll() is None:
+            proc.send_signal(signal.SIGINT)
             try:
-                self.proc.wait(timeout=5)
+                proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                self.proc.kill()
-                self.proc.wait()
-        if self.server:
-            self.server.stop()
+                proc.kill()
+                proc.wait()
+        server = getattr(self, "server", None)
+        if server:
+            server.stop()
         topology_teardown()
 
     def test_dns_query_passthrough(self):
@@ -700,6 +856,266 @@ class TestDNSCache(unittest.TestCase):
             self.server.query_count,
             2,
             "Negative response without SOA must not be cached",
+        )
+
+    def test_dns_cache_hit_cname_with_a(self):
+        domain = "cname-a.example.com"
+
+        result1 = send_dns_query(domain, txid=0xA101, qtype="A", edns_pad_bytes=96)
+        self.assertIsNotNone(result1, "CNAME+A first query: no response")
+        resp1 = parse_dns_response(result1[0])
+        self.assertEqual(resp1["rcode"], 0)
+        self.assertGreaterEqual(resp1["ancount"], 2)
+
+        time.sleep(2)
+        self.assertEqual(self.server.query_count, 1)
+
+        result2 = send_dns_query(domain, txid=0xA102, qtype="A", edns_pad_bytes=96)
+        self.assertIsNotNone(result2, "CNAME+A second query: no response")
+        resp2 = parse_dns_response(result2[0])
+        self.assertEqual(resp2["txid"], 0xA102)
+        self.assertEqual(resp2["rcode"], 0)
+        self.assertGreaterEqual(resp2["ancount"], 2)
+        self.assertEqual(
+            self.server.query_count,
+            1,
+            "CNAME+A second query should be served from cache",
+        )
+
+    def test_dns_cache_hit_cname_chain_terminal_a(self):
+        domain = "cname-chain.example.com"
+
+        result1 = send_dns_query(domain, txid=0xA201, qtype="A", edns_pad_bytes=96)
+        self.assertIsNotNone(result1, "CNAME chain first query: no response")
+        resp1 = parse_dns_response(result1[0])
+        self.assertEqual(resp1["rcode"], 0)
+        self.assertGreaterEqual(resp1["ancount"], 3)
+
+        time.sleep(2)
+        self.assertEqual(self.server.query_count, 1)
+
+        result2 = send_dns_query(domain, txid=0xA202, qtype="A", edns_pad_bytes=96)
+        self.assertIsNotNone(result2, "CNAME chain second query: no response")
+        resp2 = parse_dns_response(result2[0])
+        self.assertEqual(resp2["txid"], 0xA202)
+        self.assertEqual(resp2["rcode"], 0)
+        self.assertGreaterEqual(resp2["ancount"], 3)
+        self.assertEqual(
+            self.server.query_count,
+            1,
+            "CNAME chain second query should be served from cache",
+        )
+
+    def test_dns_cname_only_a_query_not_cached(self):
+        domain = "cname-only.example.com"
+
+        result1 = send_dns_query(domain, txid=0xA301, qtype="A")
+        self.assertIsNotNone(result1, "CNAME-only first A query: no response")
+        resp1 = parse_dns_response(result1[0])
+        self.assertEqual(resp1["rcode"], 0)
+        self.assertEqual(resp1["ancount"], 1)
+
+        time.sleep(2)
+        self.assertEqual(self.server.query_count, 1)
+
+        result2 = send_dns_query(domain, txid=0xA302, qtype="A")
+        self.assertIsNotNone(result2, "CNAME-only second A query: no response")
+        resp2 = parse_dns_response(result2[0])
+        self.assertEqual(resp2["txid"], 0xA302)
+        self.assertEqual(resp2["rcode"], 0)
+        self.assertEqual(resp2["ancount"], 1)
+        self.assertEqual(
+            self.server.query_count,
+            2,
+            "CNAME-only A response must not be cached",
+        )
+
+    def test_dns_cname_only_aaaa_query_not_cached_ipv6_ignored(self):
+        domain = "cname-only.example.com"
+
+        result1 = send_dns_query(domain, txid=0xA401, qtype="AAAA")
+        self.assertIsNotNone(result1, "CNAME-only first AAAA query: no response")
+        resp1 = parse_dns_response(result1[0])
+        self.assertEqual(resp1["rcode"], 0)
+        self.assertEqual(resp1["ancount"], 1)
+
+        time.sleep(2)
+        self.assertEqual(self.server.query_count, 1)
+
+        result2 = send_dns_query(domain, txid=0xA402, qtype="AAAA")
+        self.assertIsNotNone(result2, "CNAME-only second AAAA query: no response")
+        resp2 = parse_dns_response(result2[0])
+        self.assertEqual(resp2["txid"], 0xA402)
+        self.assertEqual(resp2["rcode"], 0)
+        self.assertEqual(resp2["ancount"], 1)
+        self.assertEqual(
+            self.server.query_count,
+            2,
+            "AAAA query path must bypass cache under IPv6-ignore policy",
+        )
+
+    def test_dns_ecs_same_subnet_cache_hit(self):
+        domain = "cache-test.example.com"
+
+        result1 = send_dns_query(
+            domain,
+            txid=0xB101,
+            qtype="A",
+            edns_pad_bytes=96,
+            ecs_ipv4="203.0.113.42",
+            ecs_prefix=24,
+        )
+        self.assertIsNotNone(result1, "ECS same-subnet first query: no response")
+        resp1 = parse_dns_response(result1[0])
+        self.assertEqual(resp1["rcode"], 0)
+
+        time.sleep(2)
+        self.assertEqual(self.server.query_count, 1)
+
+        result2 = send_dns_query(
+            domain,
+            txid=0xB102,
+            qtype="A",
+            edns_pad_bytes=96,
+            ecs_ipv4="203.0.113.77",
+            ecs_prefix=24,
+        )
+        self.assertIsNotNone(result2, "ECS same-subnet second query: no response")
+        resp2 = parse_dns_response(result2[0])
+        self.assertEqual(resp2["txid"], 0xB102)
+        self.assertEqual(resp2["rcode"], 0)
+        self.assertEqual(
+            self.server.query_count,
+            1,
+            "ECS same /24 should hit same cache partition",
+        )
+
+    def test_dns_ecs_different_subnet_not_reused(self):
+        domain = "cache-test.example.com"
+
+        result1 = send_dns_query(
+            domain,
+            txid=0xB201,
+            qtype="A",
+            edns_pad_bytes=96,
+            ecs_ipv4="203.0.113.8",
+            ecs_prefix=24,
+        )
+        self.assertIsNotNone(result1, "ECS different-subnet first query: no response")
+
+        time.sleep(2)
+        self.assertEqual(self.server.query_count, 1)
+
+        result2 = send_dns_query(
+            domain,
+            txid=0xB202,
+            qtype="A",
+            edns_pad_bytes=96,
+            ecs_ipv4="198.51.100.9",
+            ecs_prefix=24,
+        )
+        self.assertIsNotNone(result2, "ECS different-subnet second query: no response")
+        resp2 = parse_dns_response(result2[0])
+        self.assertEqual(resp2["txid"], 0xB202)
+        self.assertEqual(
+            self.server.query_count,
+            2,
+            "Different ECS /24 must not reuse cached response",
+        )
+
+    def test_dns_ecs_zero_scope_global_cache_hit(self):
+        domain = "cache-test.example.com"
+
+        result1 = send_dns_query(
+            domain,
+            txid=0xB301,
+            qtype="A",
+            edns_pad_bytes=96,
+            ecs_ipv4="203.0.113.99",
+            ecs_prefix=0,
+        )
+        self.assertIsNotNone(result1, "ECS /0 first query: no response")
+
+        time.sleep(2)
+        self.assertEqual(self.server.query_count, 1)
+
+        result2 = send_dns_query(
+            domain,
+            txid=0xB302,
+            qtype="A",
+            edns_pad_bytes=96,
+            ecs_ipv4="198.51.100.99",
+            ecs_prefix=0,
+        )
+        self.assertIsNotNone(result2, "ECS /0 second query: no response")
+        resp2 = parse_dns_response(result2[0])
+        self.assertEqual(resp2["txid"], 0xB302)
+        self.assertEqual(
+            self.server.query_count,
+            1,
+            "ECS /0 responses should be globally cacheable",
+        )
+
+    def test_dns_cache_ttl_expiry(self):
+        domain = "ttl-short.example.com"
+
+        result1 = send_dns_query(domain, txid=0xC101, qtype="A")
+        self.assertIsNotNone(result1, "TTL-short first query: no response")
+        resp1 = parse_dns_response(result1[0])
+        self.assertEqual(resp1["rcode"], 0)
+
+        time.sleep(1)
+        result2 = send_dns_query(domain, txid=0xC102, qtype="A")
+        self.assertIsNotNone(result2, "TTL-short second query: no response")
+        resp2 = parse_dns_response(result2[0])
+        self.assertEqual(resp2["txid"], 0xC102)
+        self.assertEqual(
+            self.server.query_count,
+            1,
+            "Second query should hit cache before TTL expiry",
+        )
+
+        time.sleep(3)
+        result3 = send_dns_query(domain, txid=0xC103, qtype="A")
+        self.assertIsNotNone(result3, "TTL-short third query: no response")
+        resp3 = parse_dns_response(result3[0])
+        self.assertEqual(resp3["txid"], 0xC103)
+        self.assertEqual(
+            self.server.query_count,
+            2,
+            "Third query should miss after TTL expiry and reach upstream",
+        )
+
+    def test_dns_negative_cache_ttl_expiry(self):
+        domain = "neg-shortttl.example.com"
+
+        result1 = send_dns_query(domain, txid=0xC201, qtype="A")
+        self.assertIsNotNone(result1, "Negative short-TTL first query: no response")
+        resp1 = parse_dns_response(result1[0])
+        self.assertEqual(resp1["rcode"], 3)
+
+        time.sleep(2)
+        result2 = send_dns_query(domain, txid=0xC202, qtype="A")
+        self.assertIsNotNone(result2, "Negative short-TTL second query: no response")
+        resp2 = parse_dns_response(result2[0])
+        self.assertEqual(resp2["txid"], 0xC202)
+        self.assertEqual(resp2["rcode"], 3)
+        self.assertEqual(
+            self.server.query_count,
+            1,
+            "Second negative query should be served from cache before expiry",
+        )
+
+        time.sleep(6)
+        result3 = send_dns_query(domain, txid=0xC203, qtype="A")
+        self.assertIsNotNone(result3, "Negative short-TTL third query: no response")
+        resp3 = parse_dns_response(result3[0])
+        self.assertEqual(resp3["txid"], 0xC203)
+        self.assertEqual(resp3["rcode"], 3)
+        self.assertEqual(
+            self.server.query_count,
+            2,
+            "Third negative query should miss after negative TTL expiry",
         )
 
 

@@ -21,3 +21,6 @@ docs/reference/
 
 # Benchmark results (generated locally)
 tests/benchmark/results/
+
+# Temporary benchmark and analysis artifacts
+*.bench.log
