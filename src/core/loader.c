@@ -25,6 +25,10 @@
 #define ATTACH_RETRY_BASE_MS 50
 #define ATTACH_RETRY_MAX_MS 800
 
+static int is_tcx_not_supported_err(int err) {
+    return err == -EOPNOTSUPP || err == -EINVAL || err == -ENOTSUP || err == -ENOSYS;
+}
+
 static void sync_bpf_metrics(struct bpf_ctx* ctx) {
 #if SHINKU_OBS_ENABLED
     if (!ctx || !ctx->metrics.cfg.enabled || !ctx->metrics.cfg.bpf_enabled)
@@ -338,9 +342,7 @@ int loader_setup_bpf(struct bpf_ctx* ctx, const struct env* env) {
         }
         err = -errno;
 
-        // TODO: error handling here need to be improved;
-        // It only handels 'Eopnotsupp' and 'EINVAL' for now, but there might be other error codes that indicate TCX is not supported or failed to attach.
-        if (err == -EOPNOTSUPP || err == -EINVAL) {
+        if (is_tcx_not_supported_err(err)) {
             fprintf(stderr, "TCX not supported on %s, falling back to TC\n", env->interface);
             obs_metrics_mark_degraded(&ctx->metrics, OBS_DEGRADED_TCX_ATTACH_FAILED);
             ctx->skel->links.tc_tx = NULL;
@@ -349,6 +351,7 @@ int loader_setup_bpf(struct bpf_ctx* ctx, const struct env* env) {
                 attached = 1;
                 break;
             }
+            fprintf(stderr, "Legacy TC fallback attach failed: %d\n", err);
         }
 
         ctx->skel->links.tc_tx = NULL;
