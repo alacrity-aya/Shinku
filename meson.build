@@ -79,6 +79,7 @@ core_src = files(
   'src/runtime/events.c',
   'src/core/degraded_mode.c',
   'src/core/hash.c',
+  'src/core/cache_ops.c',
   'src/core/dns_parser.c',
   'src/core/obs_metrics.c',
   'src/core/obs_http.c',

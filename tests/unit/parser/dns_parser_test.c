@@ -390,8 +390,7 @@ static void test_reject_query() {
     TEST_ASSERT(test_next_idx == 0, "test_reject_query: next_idx unchanged");
 }
 
-// 8. test_reject_truncated
-static void test_reject_truncated() {
+static void test_cache_truncated_response() {
     setup_test();
     struct dns_builder b;
     // TC=1 -> flags = 0x8380
@@ -401,7 +400,16 @@ static void test_reject_truncated() {
     builder_add_answer(&b, "www.example.com", DNS_TYPE_A, DNS_CLASS_IN, 300, 4, a_rdata);
 
     call_handle_packet(&test_ctx, b.buf, b.len);
-    TEST_ASSERT(test_next_idx == 0, "test_reject_truncated: next_idx unchanged");
+    TEST_ASSERT(test_next_idx == 1, "test_cache_truncated_response: next_idx incremented");
+
+    if (has_bpf) {
+        uint32_t expected_hash = 0;
+        calculate_hash_strict_impl(b.buf, sizeof(struct dns_hdr), b.len, &expected_hash);
+        struct cache_key key = { CACHE_KEY_CORE_INIT(expected_hash, DNS_TYPE_A, DNS_CLASS_IN) };
+        struct cache_value val;
+        int err = bpf_map_lookup_elem(test_ctx.cache_map_fd, &key, &val);
+        TEST_ASSERT(err == 0, "test_cache_truncated_response: cache key exists");
+    }
 }
 
 // 9. test_reject_rcode_nonzero
@@ -928,7 +936,7 @@ int main(void) {
     test_sequential_stores();
 
     test_reject_query();
-    test_reject_truncated();
+    test_cache_truncated_response();
     test_reject_rcode_nonzero();
     test_negative_cache_nxdomain_with_soa();
     test_negative_cache_nodata_with_soa();

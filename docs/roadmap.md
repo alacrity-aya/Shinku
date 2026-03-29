@@ -44,6 +44,10 @@ This roadmap is based on the current repository state, not historical assumption
     - bounded integer threshold checks
     - no extra allocations in fast path.
   - Test coverage: `tests/unit/degraded/degraded_mode_test.c`.
+- **Transport fallback baseline (TC UDP cache shield)**:
+  - Truncated UDP responses (`TC=1`) are accepted into cache as UDP fallback hints.
+  - Repeated UDP clients for large answers can be served cached `TC=1` without repeatedly burdening upstream with identical UDP work.
+  - Integration coverage includes `test_dns_tc_response_cached_for_udp_clients`.
 
 ### Partially implemented
 - ECS handling is now subnet-partitioned for IPv4 ECS keys (`ecs_addr_v4`, `ecs_prefix`, `ecs_family`) to prevent cross-subnet cache pollution.
@@ -180,14 +184,16 @@ These are prioritized below in P0/P1/P2 without introducing IPv6 scope.
 
 **Implement**
 - Define explicit policy for `TC=1` responses:
-  - pass-through only,
-  - optional userspace TCP retry module (future),
-  - observability tags for truncation-triggered misses.
+  - cache-and-serve truncated UDP responses as transport fallback hints,
+  - clients retry over TCP to upstream (no local TCP synthesis yet),
+  - optional userspace TCP retry module remains future work.
 - Add integration scenarios for large/TC responses and verify deterministic behavior.
 
 **Acceptance criteria**
 - No ambiguous handling of truncated responses.
-- Metrics expose truncation-driven bypass/miss volume.
+- Repeated UDP queries for the same large name avoid repeated upstream UDP pressure.
+
+**Status:** Baseline implemented (cached `TC=1` UDP fallback behavior + integration coverage). Remaining work is richer metrics and optional TCP retry module.
 
 ---
 
@@ -366,7 +372,7 @@ Remaining follow-ups:
 - No-ECS-support zone memory/aggregation policy (future security hardening).
 - Future IPv6 ECS support only if IPv6 scope is revisited.
 
-### P2.1.1 ECS feature-gating and deployment profiles
+### P2.1.1 ECS feature-gating and deployment profiles ✅
 **Goal:** Make ECS optional by build/deploy profile instead of mandatory behavior.
 
 Plan:
@@ -381,6 +387,8 @@ Performance invariant:
 Acceptance criteria:
 - `ecs=disabled` build has no ECS parsing in hot path and passes full test suite (except ECS-specific tests skipped by profile).
 - `ecs=enabled` build preserves current ECS safety tests plus normalization-mode tests.
+
+Status: Meson feature gate + compile-time macro wiring implemented; integration tests are profile-gated.
 
 ### P2.2 EDNS and large-response strategy
 **Goal:** Improve behavior for >512-byte realities while preserving XDP hot-path safety.

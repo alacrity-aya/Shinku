@@ -27,7 +27,7 @@ This document lists all features covered by the test suite.
 
 **Negative Tests:**
 - Reject query packets (QR=0)
-- Reject truncated responses (TC=1)
+- Cache truncated responses (TC=1) as UDP fallback hints for repeated UDP clients
 - Reject zero answer count
 - Reject QDCOUNT != 1
 - Reject packets shorter than DNS header (12 bytes)

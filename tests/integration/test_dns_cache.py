@@ -294,6 +294,11 @@ class MockDNSServer:
             ancount = 1
         elif qname.startswith("ttl-short"):
             answer = rr(qname_wire, 1, 2, socket.inet_aton(self.RESPONSE_IP))
+        elif qname.startswith("tc-large"):
+            flags = 0x8380
+            answer = rr(
+                qname_wire, 1, self.RESPONSE_TTL, socket.inet_aton(self.RESPONSE_IP)
+            )
         else:
             answer = rr(
                 qname_wire, 1, self.RESPONSE_TTL, socket.inet_aton(self.RESPONSE_IP)
@@ -586,44 +591,38 @@ class TestInfrastructure(unittest.TestCase):
 class TestDNSCache(unittest.TestCase):
     """End-to-end DNS cache tests requiring full dns_env (topology + mock server + binary)."""
 
-    def setUp(self):
-        """Set up full test environment: topology + mock DNS server + shinku binary."""
-        # Clean any leftovers
+    @classmethod
+    def setUpClass(cls):
         topology_teardown()
-
-        # 1. Setup topology (veth pair + netns)
         result = topology_setup()
         if result.returncode != 0:
-            self.fail(f"Topology setup failed: {result.stderr}")
+            raise RuntimeError(f"Topology setup failed: {result.stderr}")
 
-        # 2. Start mock DNS server on host-side veth IP
-        self.server = MockDNSServer("10.99.0.1", 53)
-        self.server.start()
-        time.sleep(0.3)
+        cls.server = MockDNSServer("10.99.0.1", 53)
+        cls.server.start()
+        time.sleep(0.2)
 
-        # 3. Start shinku attached to veth-host
-        self.proc = subprocess.Popen(
+        cls.proc = subprocess.Popen(
             [BINARY, "-i", "veth-host"],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
 
-        # Wait for BPF programs to load and attach (~2-3s)
-        time.sleep(3)
-
-        poll_result = self.proc.poll()
+        time.sleep(1.2)
+        poll_result = cls.proc.poll()
         if poll_result is not None:
-            stdout, stderr = self.proc.communicate(timeout=2)
-            self.server.stop()
-            self.fail(
+            stdout, stderr = cls.proc.communicate(timeout=2)
+            cls.server.stop()
+            topology_teardown()
+            raise RuntimeError(
                 f"shinku exited prematurely with code {poll_result}.\n"
                 f"stdout: {stdout.decode(errors='replace')}\n"
                 f"stderr: {stderr.decode(errors='replace')}"
             )
 
-    def tearDown(self):
-        """Cleanup: stop binary, stop server, teardown topology."""
-        proc = getattr(self, "proc", None)
+    @classmethod
+    def tearDownClass(cls):
+        proc = getattr(cls, "proc", None)
         if proc and proc.poll() is None:
             proc.send_signal(signal.SIGINT)
             try:
@@ -631,10 +630,19 @@ class TestDNSCache(unittest.TestCase):
             except subprocess.TimeoutExpired:
                 proc.kill()
                 proc.communicate()
-        server = getattr(self, "server", None)
+
+        server = getattr(cls, "server", None)
         if server:
             server.stop()
+
         topology_teardown()
+
+    def setUp(self):
+        self.server.query_count = 0
+        self.server.queries = []
+
+    def tearDown(self):
+        pass
 
     def test_dns_query_passthrough(self):
         """Send a DNS query through XDP (cache miss), verify valid response from upstream."""
@@ -780,6 +788,13 @@ class TestDNSCache(unittest.TestCase):
             2,
             f"Expected 2 total queries, got {self.server.query_count}. "
             f"Repeated queries were not served from XDP cache.",
+        )
+
+    def test_dns_cache_state_reset_between_tests(self):
+        self.assertEqual(
+            self.server.query_count,
+            0,
+            "Server query counter should reset before each test",
         )
 
     def test_dns_negative_cache_nxdomain(self):
@@ -1125,6 +1140,33 @@ class TestDNSCache(unittest.TestCase):
             self.server.query_count,
             2,
             "Third negative query should miss after negative TTL expiry",
+        )
+
+    def test_dns_tc_response_cached_for_udp_clients(self):
+        domain = "tc-large.example.com"
+
+        result1 = send_dns_query(domain, txid=0xD101, qtype="A")
+        self.assertIsNotNone(result1, "TC first query: no response")
+        resp1 = parse_dns_response(result1[0])
+        self.assertTrue(resp1["flags"] & 0x0200, "Expected TC=1 on first response")
+
+        time.sleep(2)
+        self.assertEqual(
+            self.server.query_count,
+            1,
+            "TC first query should reach upstream once",
+        )
+
+        result2 = send_dns_query(domain, txid=0xD102, qtype="A")
+        self.assertIsNotNone(result2, "TC second query: no response")
+        resp2 = parse_dns_response(result2[0])
+        self.assertEqual(resp2["txid"], 0xD102)
+        self.assertTrue(resp2["flags"] & 0x0200, "Expected TC=1 on cached response")
+
+        self.assertEqual(
+            self.server.query_count,
+            1,
+            "TC second query should be served from cache without upstream",
         )
 
 
