@@ -217,75 +217,50 @@ static int skip_name(const uint8_t* packet, int offset, int max_len) {
     return calculate_hash_strict(packet, offset, max_len, &unused_hash);
 }
 
-/**
- * @brief Parse OPT RR RDATA for EDNS Client Subnet scope prefix.
- * @param pkt DNS packet data.
- * @param offset Offset to start of OPT RDATA.
- * @param max_len Maximum bytes to read.
- * @param rdlen Length of RDATA.
- * @return 0 if no ECS or scope==0 (global), >0 for subnet-specific scope, -1 on parse error.
- */
-static int check_ecs_scope(const uint8_t* pkt, int offset, int max_len, int rdlen) {
-    int end = offset + rdlen;
+struct ecs_parse_result {
+    uint8_t present;
+    uint8_t scope_prefix;
+    uint8_t source_prefix;
+    uint8_t family;
+    uint32_t addr_v4;
+};
 
-    while (offset + 4 <= end && offset + 4 <= max_len) {
-        uint16_t opt_code = read_u16(pkt + offset);
-        uint16_t opt_len = read_u16(pkt + offset + 2);
-        offset += 4;
-
-        if (offset + opt_len > end || offset + opt_len > max_len)
-            return -1;
-
-        if (opt_code == EDNS0_OPT_CODE_ECS && opt_len >= 4) {
-            /* ECS wire format: FAMILY(2) | SOURCE_PREFIX(1) | SCOPE_PREFIX(1) | ADDRESS... */
-            uint8_t scope = pkt[offset + 3];
-            return scope;
-        }
-
-        offset += opt_len;
-    }
-
-    return 0;
-}
-
-/**
- * @brief Parse ECS (EDNS Client Subnet) option and extract IPv4 subnet.
- * @param pkt DNS packet data.
- * @param offset Offset to start of OPT RDATA.
- * @param max_len Maximum bytes to read.
- * @param rdlen Length of RDATA.
- * @param out_addr_v4 Output: IPv4 subnet address (network order, masked).
- * @param out_prefix Output: Source prefix length.
- * @param out_family Output: Address family (1 for IPv4).
- * @return 1 if ECS found and valid, 0 if no ECS, -1 on parse error.
- * @note Only IPv4 (family=1) is supported; other families return error.
- */
-static int parse_ecs_subnet_ipv4(
+static int parse_ecs_option_ipv4(
     const uint8_t* pkt,
     int offset,
     int max_len,
     int rdlen,
-    uint32_t* out_addr_v4,
-    uint8_t* out_prefix,
-    uint8_t* out_family
+    struct ecs_parse_result* out
 ) {
-    int end = offset + rdlen;
+    if (!out)
+        return -1;
 
-    while (offset + 4 <= end && offset + 4 <= max_len) {
+    memset(out, 0, sizeof(*out));
+
+    int end = offset + rdlen;
+    if (end < offset || end > max_len)
+        return -1;
+
+    while (offset + 4 <= end) {
         uint16_t opt_code = read_u16(pkt + offset);
         uint16_t opt_len = read_u16(pkt + offset + 2);
         offset += 4;
 
-        if (offset + opt_len > end || offset + opt_len > max_len)
+        if (offset + opt_len > end)
             return -1;
 
         if (opt_code == EDNS0_OPT_CODE_ECS && opt_len >= 4) {
             uint16_t family = read_u16(pkt + offset);
             uint8_t src_prefix = pkt[offset + 2];
+            uint8_t scope_prefix = pkt[offset + 3];
 
             if (family != 1)
                 return -1;
             if (src_prefix > 32)
+                return -1;
+            if (scope_prefix > 32)
+                return -1;
+            if (scope_prefix > src_prefix)
                 return -1;
 
             int addr_bytes = (src_prefix + 7) / 8;
@@ -300,9 +275,11 @@ static int parse_ecs_subnet_ipv4(
             uint32_t mask = src_prefix == 0 ? 0 : (0xffffffffu << (32 - src_prefix));
             addr &= mask;
 
-            *out_addr_v4 = htonl(addr);
-            *out_prefix = src_prefix;
-            *out_family = 1;
+            out->present = 1;
+            out->scope_prefix = scope_prefix;
+            out->source_prefix = src_prefix;
+            out->family = 1;
+            out->addr_v4 = htonl(addr);
             return 1;
         }
 
@@ -907,9 +884,7 @@ int dns_parser_handle_event(void* ctx, void* data, [[maybe_unused]] size_t len) 
 
     /* Scan Additional Section for OPT RR / ECS */
     uint8_t ecs_scope = 0;
-    uint32_t ecs_addr_v4 = 0;
-    uint8_t ecs_prefix = 0;
-    uint8_t ecs_family = 0;
+    struct ecs_parse_result ecs = { 0 };
     uint16_t arcount = ntohs(dns->arcount);
     for (int i = 0; i < arcount; i++) {
         int name_skip = skip_name(pkt_data, read_offset, pkt_len);
@@ -934,22 +909,7 @@ int dns_parser_handle_event(void* ctx, void* data, [[maybe_unused]] size_t len) 
         read_offset += 10;
 
         if (rtype == DNS_TYPE_OPT) {
-            int scope = check_ecs_scope(pkt_data, read_offset, pkt_len, rdlen);
-            if (scope > 0) {
-                ecs_scope = (uint8_t)scope;
-            }
-            if (scope == 0)
-                ecs_scope = 0;
-
-            int ecs_parse = parse_ecs_subnet_ipv4(
-                pkt_data,
-                read_offset,
-                pkt_len,
-                rdlen,
-                &ecs_addr_v4,
-                &ecs_prefix,
-                &ecs_family
-            );
+            int ecs_parse = parse_ecs_option_ipv4(pkt_data, read_offset, pkt_len, rdlen, &ecs);
             if (ecs_parse < 0) {
                 obs_metrics_count_parser_reject(
                     runtime && runtime->obs ? runtime->obs->metrics : NULL,
@@ -957,6 +917,9 @@ int dns_parser_handle_event(void* ctx, void* data, [[maybe_unused]] size_t len) 
                 );
                 return 0;
             }
+
+            if (ecs_parse > 0)
+                ecs_scope = ecs.scope_prefix;
         }
 
         if (read_offset + rdlen > pkt_len) {
@@ -981,9 +944,9 @@ int dns_parser_handle_event(void* ctx, void* data, [[maybe_unused]] size_t len) 
         .name_hash = name_hash,
         .qtype = qtype,
         .qclass = qclass,
-        .ecs_addr_v4 = ecs_addr_v4,
-        .ecs_prefix = ecs_scope > 0 ? ecs_prefix : 0,
-        .ecs_family = ecs_scope > 0 ? ecs_family : 0,
+        .ecs_addr_v4 = ecs_scope > 0 ? ecs.addr_v4 : 0,
+        .ecs_prefix = ecs_scope > 0 ? ecs.source_prefix : 0,
+        .ecs_family = ecs_scope > 0 ? ecs.family : 0,
         ._pad = 0,
     };
 
