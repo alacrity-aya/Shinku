@@ -16,8 +16,21 @@ static inline uint32_t ring_buffer_alloc_idx(atomic_uint* next_idx, uint32_t max
 
 #define DNS_PARSER_FLAT_BUF_SIZE 1500
 
+/** @brief Thread-local buffer for flattening DNS packets */
 static _Thread_local uint8_t dns_parser_flat_buf_tls[DNS_PARSER_FLAT_BUF_SIZE];
 
+/**
+ * @brief Store a DNS response in the cache with explicit flags.
+ * @param cache_ctx Cache context for storage operations.
+ * @param runtime Runtime dependencies (metrics, degraded state).
+ * @param key Cache key for lookup.
+ * @param flat_buf Flattened DNS response packet.
+ * @param flat_len Length of flattened packet.
+ * @param min_ttl Minimum TTL from response records.
+ * @param ecs_scope ECS scope prefix length (0 if no ECS).
+ * @param flags Entry flags (negative cache, NXDOMAIN, etc.).
+ * @return 0 on success, negative on error.
+ */
 static int cache_store_response_with_flags(
     struct cache_context* cache_ctx,
     struct dns_parser_runtime* runtime,
@@ -29,13 +42,18 @@ static int cache_store_response_with_flags(
     uint8_t flags
 );
 
+/**
+ * @struct negative_cache_info
+ * @brief Parsed information from a negative cache response.
+ */
 struct negative_cache_info {
-    int valid;
-    enum obs_negative_type type;
-    uint8_t flags;
-    uint32_t ttl;
+    int valid; /**< Non-zero if this is a valid negative response */
+    enum obs_negative_type type; /**< NXDOMAIN or NODATA */
+    uint8_t flags; /**< Cache entry flags */
+    uint32_t ttl; /**< TTL from SOA minimum field (clamped) */
 };
 
+/** @brief Clamp TTL to valid negative cache range (5-600 seconds per RFC 2308) */
 static uint32_t clamp_negative_ttl(uint32_t ttl) {
     if (ttl < NEGATIVE_TTL_MIN)
         return NEGATIVE_TTL_MIN;
@@ -44,27 +62,32 @@ static uint32_t clamp_negative_ttl(uint32_t ttl) {
     return ttl;
 }
 
+/** @brief Begin a seqlock write critical section (increment to odd) */
 static inline void seqlock_write_begin(atomic_uint* seq) {
     atomic_fetch_add_explicit(seq, 1, memory_order_relaxed);
     atomic_thread_fence(memory_order_seq_cst);
 }
 
+/** @brief End a seqlock write critical section (increment to even) */
 static inline void seqlock_write_end(atomic_uint* seq) {
     atomic_thread_fence(memory_order_seq_cst);
     atomic_fetch_add_explicit(seq, 1, memory_order_release);
 }
 
+/** @brief Write a 16-bit value in network byte order */
 static inline void write_u16(uint8_t* ptr, uint16_t val) {
     val = htons(val);
     memcpy(ptr, &val, 2);
 }
 
+/** @brief Read a 16-bit value from network byte order */
 static inline uint16_t read_u16(const uint8_t* ptr) {
     uint16_t val;
     memcpy(&val, ptr, 2);
     return ntohs(val);
 }
 
+/** @brief Read a 32-bit value from network byte order */
 static inline uint32_t read_u32(const uint8_t* ptr) {
     uint32_t val;
     memcpy(&val, ptr, 4);
@@ -175,20 +198,33 @@ int dns_parser_flatten_name_impl(
     return -1;
 }
 
+/** @brief Wrapper for dns_parser_flatten_name_impl */
 static int
 flatten_name(const uint8_t* packet, int offset, int max_len, uint8_t* dest, int dest_max) {
     return dns_parser_flatten_name_impl(packet, offset, max_len, dest, dest_max);
 }
 
-/* Skip a DNS name in wire format, returning bytes consumed.
- * Re-uses calculate_hash_strict with a throwaway hash. */
+/**
+ * @brief Skip a DNS name in wire format, returning bytes consumed.
+ * @param packet DNS packet data.
+ * @param offset Offset to start of DNS name.
+ * @param max_len Maximum bytes to read.
+ * @return Bytes consumed, or negative on error.
+ * @note Re-uses calculate_hash_strict with a throwaway hash.
+ */
 static int skip_name(const uint8_t* packet, int offset, int max_len) {
     uint32_t unused_hash;
     return calculate_hash_strict(packet, offset, max_len, &unused_hash);
 }
 
-/* Parse OPT RR RDATA for EDNS Client Subnet option.
- * Returns: 0 = no ECS / scope==0 (global), >0 = subnet-specific scope, -1 = parse error */
+/**
+ * @brief Parse OPT RR RDATA for EDNS Client Subnet scope prefix.
+ * @param pkt DNS packet data.
+ * @param offset Offset to start of OPT RDATA.
+ * @param max_len Maximum bytes to read.
+ * @param rdlen Length of RDATA.
+ * @return 0 if no ECS or scope==0 (global), >0 for subnet-specific scope, -1 on parse error.
+ */
 static int check_ecs_scope(const uint8_t* pkt, int offset, int max_len, int rdlen) {
     int end = offset + rdlen;
 
@@ -212,6 +248,18 @@ static int check_ecs_scope(const uint8_t* pkt, int offset, int max_len, int rdle
     return 0;
 }
 
+/**
+ * @brief Parse ECS (EDNS Client Subnet) option and extract IPv4 subnet.
+ * @param pkt DNS packet data.
+ * @param offset Offset to start of OPT RDATA.
+ * @param max_len Maximum bytes to read.
+ * @param rdlen Length of RDATA.
+ * @param out_addr_v4 Output: IPv4 subnet address (network order, masked).
+ * @param out_prefix Output: Source prefix length.
+ * @param out_family Output: Address family (1 for IPv4).
+ * @return 1 if ECS found and valid, 0 if no ECS, -1 on parse error.
+ * @note Only IPv4 (family=1) is supported; other families return error.
+ */
 static int parse_ecs_subnet_ipv4(
     const uint8_t* pkt,
     int offset,
@@ -264,6 +312,17 @@ static int parse_ecs_subnet_ipv4(
     return 0;
 }
 
+/**
+ * @brief Store a DNS response in the cache (wrapper without flags).
+ * @param cache_ctx Cache context for storage operations.
+ * @param runtime Runtime dependencies (metrics, degraded state).
+ * @param key Cache key for lookup.
+ * @param flat_buf Flattened DNS response packet.
+ * @param flat_len Length of flattened packet.
+ * @param min_ttl Minimum TTL from response records.
+ * @param ecs_scope ECS scope prefix length (0 if no ECS).
+ * @return 0 on success, negative on error.
+ */
 static int cache_store_response(
     struct cache_context* cache_ctx,
     struct dns_parser_runtime* runtime,

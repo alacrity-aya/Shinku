@@ -4,6 +4,25 @@
 #include "bpf_arena_alloc.h"
 #include "bpf_arena_list.h"
 
+/**
+ * @file bpf_arena_htab.h
+ * @brief Simple hash table implementation for BPF arena.
+ *
+ * This header provides a basic hash table using chained buckets.
+ * Each bucket contains a linked list of entries, allowing for
+ * collision resolution via chaining.
+ *
+ * Key features:
+ *   - Uses arena list for bucket chains
+ *   - Simple integer key/value pairs
+ *   - Dynamic memory allocation via bpf_alloc
+ *   - O(1) average case lookup and update
+ *
+ * @note This is a minimal hash table for demonstration purposes.
+ *       Production use may require more sophisticated collision
+ *       handling and resizing strategies.
+ */
+
 #ifndef ENOMEM
 #define ENOMEM 12
 #endif

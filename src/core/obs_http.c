@@ -1,4 +1,17 @@
 // SPDX-License-Identifier: GPL-2.0-only OR Apache-2.0
+// SPDX-License-Identifier: GPL-2.0-only OR Apache-2.0
+
+/**
+ * @file obs_http.c
+ * @brief Implementation of HTTP server for Prometheus metrics export.
+ *
+ * This file implements a minimal HTTP server that exposes:
+ *   - GET /metrics : Prometheus-formatted metrics
+ *   - GET /healthz : Health check endpoint (always 200 OK)
+ *   - GET /readyz  : Readiness check (200 when BPF ready, 503 otherwise)
+ *
+ * The server runs in a dedicated thread and uses blocking I/O.
+ */
 #include "obs_http.h"
 
 #include <arpa/inet.h>
@@ -14,6 +27,13 @@
 
 #define OBS_HTTP_BUF_SIZE 8192
 
+/**
+ * @brief Write an HTTP response to a socket.
+ * @param fd Socket file descriptor.
+ * @param status HTTP status line (e.g., "200 OK").
+ * @param content_type MIME type for Content-Type header.
+ * @param body Response body content.
+ */
 static void write_response(int fd, const char* status, const char* content_type, const char* body) {
     char header[512];
     size_t body_len = strlen(body);
@@ -267,6 +287,16 @@ render_metrics(char* out, size_t out_size, struct obs_metrics* m, struct degrade
 #undef COUNTER
 }
 
+/**
+ * @brief Handle a single HTTP client request.
+ * @param client_fd Client socket file descriptor.
+ * @param srv HTTP server context.
+ *
+ * Routes requests to appropriate handlers:
+ *   - GET /healthz -> 200 OK
+ *   - GET /readyz -> 200 or 503 based on BPF ready state
+ *   - GET /metrics -> Prometheus metrics
+ */
 static void handle_client(int client_fd, struct obs_http_server* srv) {
     char req[1024];
     ssize_t n = recv(client_fd, req, sizeof(req) - 1, 0);
@@ -302,6 +332,14 @@ static void handle_client(int client_fd, struct obs_http_server* srv) {
     write_response(client_fd, "404 Not Found", "text/plain; charset=utf-8", "not_found\n");
 }
 
+/**
+ * @brief Main loop for the HTTP server thread.
+ * @param arg HTTP server context pointer.
+ * @return NULL on thread exit.
+ *
+ * Accepts connections in a loop and dispatches to handle_client().
+ * Thread exits when srv->running is cleared.
+ */
 static void* obs_http_thread(void* arg) {
     struct obs_http_server* srv = arg;
     while (atomic_load_explicit(&srv->running, memory_order_acquire)) {

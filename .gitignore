@@ -3,6 +3,7 @@ build/
 build-asan/
 build-tsan/
 build-bench/
+build-log/
 .cache/
 
 # Editor/tool artifacts
@@ -15,12 +16,11 @@ subprojects/*/
 subprojects/packagecache/
 !subprojects/*.wrap
 
-# Documentation not for version control
-docs/learnings.md
-docs/reference/
-
 # Benchmark results (generated locally)
 tests/benchmark/results/
 
 # Temporary benchmark and analysis artifacts
 *.bench.log
+
+# Generated documentation
+docs/dns-packet-processing.md

@@ -4,6 +4,24 @@
 #include "bpf_arena_common.h"
 #include <stdbool.h>
 
+/**
+ * @file bpf_arena_list.h
+ * @brief Intrusive doubly-linked list for BPF arena objects.
+ *
+ * This header provides a linked list implementation optimized for
+ * BPF arena memory. It uses the "pprev" pattern (pointer to pointer)
+ * for efficient insertion and deletion without special cases.
+ *
+ * Key features:
+ *   - Intrusive design: list nodes embedded in target structures
+ *   - Arena-compatible: uses __arena address space qualifiers
+ *   - Safe iteration with list_for_each_entry macro
+ *   - Supports deletion during iteration
+ *
+ * @note Userspace stubs are provided for compilation; actual list
+ *       operations should only occur in BPF context.
+ */
+
 struct arena_list_node;
 
 typedef struct arena_list_node __arena arena_list_node_t;

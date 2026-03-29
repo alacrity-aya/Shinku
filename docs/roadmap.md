@@ -70,6 +70,27 @@ To be “industrial-grade,” Shinku must close six categories of gaps:
 
 This plan prioritizes reliability and operability before feature breadth.
 
+### 1.1 Real-network reasonability gaps (non-IPv6)
+
+From a real production DNS perspective, the highest remaining “unreasonable” points are:
+
+1. **Single-upstream dependency without health-based failover policy**
+   - Current behavior assumes a single healthy upstream path; attach/degraded handling exists, but upstream pool health/routing policy is not defined.
+2. **No explicit truncation/TCP fallback strategy**
+   - Parser currently rejects TC responses; this is fine for strict UDP cacheability but incomplete for mixed real traffic where truncation is normal.
+3. **EDNS behavior is not fully operationalized**
+   - ECS baseline exists, but end-to-end policy for EDNS fallback/normalization (including malformed or unsupported EDNS behaviors) is not fully specified.
+4. **Capacity governance is too coarse under churn**
+   - Ring-slot overwrite is efficient, but lacks policy-level admission/eviction controls for hot-key preservation and high-cardinality pressure.
+5. **No stale-serve policy during upstream instability**
+   - Current TTL expiry is strict; in real outages, controlled stale serve (`stale-if-error`) is often preferable to hard miss.
+6. **Security hardening remains too abstract**
+   - Rate limiting, ACL/source policy, and anti-amplification posture are listed but not planned as concrete deliverables.
+7. **SLO-first operations are still incomplete**
+   - Metrics exist, but SLO targets, alert thresholds, and runbook-driven remediation paths are not yet encoded.
+
+These are prioritized below in P0/P1/P2 without introducing IPv6 scope.
+
 ---
 
 ## 2. Prioritized Implementation Plan
@@ -151,6 +172,50 @@ This plan prioritizes reliability and operability before feature breadth.
 **Acceptance criteria**
 - No unbounded memory growth in userspace.
 - Stable cache hit rate envelope under repeated churn.
+
+---
+
+### P0.5 Transport and fallback correctness (UDP truncation/TCP strategy)
+**Goal:** Make behavior sane under real DNS response size/path constraints.
+
+**Implement**
+- Define explicit policy for `TC=1` responses:
+  - pass-through only,
+  - optional userspace TCP retry module (future),
+  - observability tags for truncation-triggered misses.
+- Add integration scenarios for large/TC responses and verify deterministic behavior.
+
+**Acceptance criteria**
+- No ambiguous handling of truncated responses.
+- Metrics expose truncation-driven bypass/miss volume.
+
+---
+
+### P0.6 Upstream resiliency baseline
+**Goal:** Avoid single-upstream fragility in real networks.
+
+**Implement**
+- Introduce upstream pool health checks (at least primary + backup policy).
+- Add bounded failover/failback policy with jittered probes.
+- Expose upstream health/failover counters in metrics.
+
+**Acceptance criteria**
+- Fault injection on primary upstream does not cause prolonged resolution failure.
+- Automatic recovery to primary is bounded and observable.
+
+---
+
+### P0.7 Resolver security baseline (cache poisoning resistance)
+**Goal:** Raise spoofing/poisoning cost to production-grade baseline.
+
+**Implement**
+- Add strict response correlation policy in userspace ingest (5-tuple + DNS ID + question tuple consistency checks where applicable).
+- Add query coalescing for identical in-flight upstream lookups.
+- Define and implement entropy requirements for upstream query source port and transaction ID handling policy.
+
+**Acceptance criteria**
+- Documented threat model + mitigation checklist in docs.
+- Integration/fault-injection tests validate rejection of mismatched/spoof-like response shapes.
 
 ---
 
@@ -238,6 +303,47 @@ This plan prioritizes reliability and operability before feature breadth.
 
 ---
 
+### P1.6 EDNS behavior hardening
+**Goal:** Make EDNS/ECS behavior predictable across heterogeneous resolvers.
+
+**Implement**
+- Document and enforce EDNS normalization policy for cache keying.
+- Add explicit malformed/unsupported EDNS fallback behavior (pass-through vs reject) with reason metrics.
+- Add integration tests for mixed OPT options, unknown options, and malformed-length cases.
+
+**Acceptance criteria**
+- ECS anti-pollution guarantees remain intact under mixed EDNS option sets.
+- EDNS parse failures are observable and do not destabilize cache behavior.
+
+---
+
+### P1.7 SLO + runbook operationalization
+**Goal:** Convert existing metrics into actionable operations.
+
+**Implement**
+- Define SLOs for hit ratio, miss ratio, parser reject ratio, and degraded mode duration.
+- Add alert thresholds and runbook mapping per degraded reason.
+- Add benchmark-to-SLO interpretation section in docs/performance.
+
+**Acceptance criteria**
+- Oncall can detect and triage degraded states using documented thresholds.
+- SLO compliance can be evaluated directly from exported metrics.
+
+---
+
+### P1.8 Truncation/TCP operational path
+**Goal:** Handle large-answer realities without ambiguous behavior.
+
+**Implement**
+- Add explicit TCP retry path policy for truncated answers (initially userspace path acceptable).
+- Add metrics for truncation ratio, TCP retry success/failure, and fallback latency impact.
+
+**Acceptance criteria**
+- TC-heavy integration scenarios have deterministic behavior and observability.
+- No silent drops or indefinite retry loops.
+
+---
+
 ## P2 (Strategic scope expansion)
 
 ### P2.1 ECS hardening follow-ups
@@ -260,6 +366,18 @@ Remaining follow-ups:
 
 ### P2.4 Advanced admission/eviction policy
 **Goal:** Improve hit ratio under skew/churn (e.g., admission filtering, smarter eviction).
+
+### P2.6 Stale-if-error / stale-while-revalidate policy
+**Goal:** Improve availability and tail-latency during upstream instability.
+
+### P2.7 Security execution package (non-IPv6)
+**Goal:** Convert security hardening from generic intent to concrete controls.
+
+Planned controls:
+- per-client/per-subnet QPS limits,
+- optional source ACL mode,
+- anti-amplification safeguards for suspicious query patterns,
+- auditable deny/reject metrics.
 
 ### P2.5 Security hardening
 **Goal:** Minimize abuse/risk surface (ACLs, anti-reflection posture, least-privilege runtime).

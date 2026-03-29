@@ -2,6 +2,24 @@
 /* Copyright (c) 2024 Meta Platforms, Inc. and affiliates. */
 #pragma once
 
+/**
+ * @file bpf_arena_common.h
+ * @brief Common macros and definitions for BPF arena programming.
+ *
+ * This header provides the foundational macros and utilities needed
+ * for writing code that works in both BPF (kernel) and userspace contexts.
+ *
+ * Key abstractions:
+ *   - __arena: Address space qualifier for arena memory
+ *   - cast_kern/cast_user: Address space casting for pointer conversions
+ *   - READ_ONCE/WRITE_ONCE: Atomic memory access patterns
+ *   - arena_container_of: Macro for getting containing structure from member
+ *
+ * The implementation adapts based on compilation context:
+ *   - BPF: Uses address_space(1) attribute and LLVM intrinsics
+ *   - Userspace: Stubs for compilation compatibility
+ */
+
 #ifndef WRITE_ONCE
 #define WRITE_ONCE(x, val) ((*(volatile typeof(x) *) &(x)) = (val))
 #endif

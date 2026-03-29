@@ -1,9 +1,30 @@
 // SPDX-License-Identifier: GPL-2.0-only
+/**
+ * @file cache.bpf.c
+ * @brief Main XDP/TC BPF program for DNS caching.
+ *
+ * This file contains the core packet processing logic:
+ *   - XDP program: Handles DNS query lookup and cache serving
+ *   - TC program: Captures DNS responses for userspace processing
+ *
+ * Packet flow:
+ *   1. XDP receives DNS queries on port 53
+ *   2. Query name is hashed and looked up in cache_map
+ *   3. On hit: Response is constructed and transmitted (XDP_TX)
+ *   4. On miss: Packet passes through to upstream resolver
+ *   5. TC captures responses and sends to userspace via ring buffer
+ *
+ * Memory model:
+ *   - cache_map: BPF hashmap for cache metadata lookup
+ *   - arena: Shared BPF/userspace memory for DNS packet storage
+ *   - rb_pkt: Ring buffer for DNS response capture
+ */
 #include <vmlinux.h>
 
 #include <bpf/bpf_endian.h>
 #include <bpf/bpf_helpers.h>
 
+/** @defgroup bpf_metrics_local Local BPF metric IDs (mirror of obs_bpf_metrics.h) */
 #define OBS_BPF_CACHE_HIT 0
 #define OBS_BPF_CACHE_MISS 1
 #define OBS_BPF_CACHE_EXPIRED 2
@@ -26,11 +47,17 @@
 
 char LICENSE[] SEC("license") = "GPL";
 
+/** @brief Read a potentially unaligned 16-bit value (network byte order) */
 static __always_inline __u16 read_u16_unaligned(void* ptr) {
     __u8* b = (__u8*)ptr;
     return (b[0] << 8) | b[1];
 }
 
+/**
+ * @brief Generate IPv4 prefix mask for subnet extraction.
+ * @param prefix Prefix length (0-32).
+ * @return Mask value with prefix bits set to 1.
+ */
 static __always_inline __u32 prefix_mask_v4(__u8 prefix) {
     if (prefix == 0)
         return 0;
@@ -52,11 +79,13 @@ static __always_inline void csum_replace2(__sum16* csum, __be16 old_val, __be16 
     *csum = (__sum16)(~sum & 0xffff);
 }
 
+/** @brief Ring buffer for sending captured DNS responses to userspace */
 struct {
     __uint(type, BPF_MAP_TYPE_RINGBUF);
     __uint(max_entries, RINGBUF_SIZE_PKT);
 } rb_pkt SEC(".maps");
 
+/** @brief Hash map for cache metadata (key: cache_key, value: cache_value) */
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, CACHE_MAP_MAX_ENTRIES);
@@ -64,12 +93,14 @@ struct {
     __type(value, struct cache_value);
 } cache_map SEC(".maps");
 
+/** @brief Shared arena for DNS packet storage (BPF/userspace mmap) */
 struct {
     __uint(type, BPF_MAP_TYPE_ARENA);
     __uint(max_entries, ARENA_DEFAULT_PAGES);
     __uint(map_flags, BPF_F_MMAPABLE);
 } arena SEC(".maps");
 
+/** @brief Per-CPU array for BPF-side performance counters */
 struct {
     __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
     __uint(max_entries, OBS_BPF_METRIC_MAX);
@@ -77,7 +108,10 @@ struct {
     __type(value, __u64);
 } obs_bpf_metrics SEC(".maps");
 
+/** @brief Runtime configuration: BPF metrics collection enabled flag */
 const volatile __u32 obs_bpf_enabled = 0;
+
+/** @brief Runtime configuration: Sampling mask for BPF metrics */
 const volatile __u32 obs_bpf_sample_mask = 0xff;
 
 static __always_inline int obs_sample_hit(void) {

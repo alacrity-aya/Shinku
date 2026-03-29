@@ -1,4 +1,16 @@
 // SPDX-License-Identifier: GPL-2.0-only OR Apache-2.0
+// SPDX-License-Identifier: GPL-2.0-only OR Apache-2.0
+
+/**
+ * @file loader.c
+ * @brief BPF program loader and lifecycle management implementation.
+ *
+ * This file implements the core BPF infrastructure:
+ *   - Loading and attaching XDP/TC programs with retry logic
+ *   - Ring buffer initialization and polling
+ *   - Cleanup thread management
+ *   - BPF metrics synchronization
+ */
 #include "loader.h"
 
 #include "bpf_log.h"
@@ -14,21 +26,33 @@
 #include <time.h>
 #include <unistd.h>
 
-// Error codes for loader_setup_bpf
-#define ERR_SKEL_LOAD -1
-#define ERR_RB_CREATE -2
-#define ERR_INVALID_IFACE -3
-#define ERR_XDP_ATTACH -4
-#define ERR_TC_ATTACH -5
+/** @defgroup loader_errors Internal error codes for loader_setup_bpf */
+#define ERR_SKEL_LOAD -1     /**< Skeleton load failed */
+#define ERR_RB_CREATE -2     /**< Ring buffer creation failed */
+#define ERR_INVALID_IFACE -3 /**< Invalid network interface */
+#define ERR_XDP_ATTACH -4    /**< XDP attach failed */
+#define ERR_TC_ATTACH -5     /**< TC attach failed */
 
-#define ATTACH_RETRY_MAX 5
-#define ATTACH_RETRY_BASE_MS 50
-#define ATTACH_RETRY_MAX_MS 800
+#define ATTACH_RETRY_MAX 5       /**< Maximum attachment retry attempts */
+#define ATTACH_RETRY_BASE_MS 50  /**< Base retry delay (ms) */
+#define ATTACH_RETRY_MAX_MS 800  /**< Maximum retry delay (ms) */
 
+/**
+ * @brief Check if error indicates TCX is not supported.
+ * @param err Error code from TCX attach attempt.
+ * @return Non-zero if TCX is unsupported, zero otherwise.
+ */
 static int is_tcx_not_supported_err(int err) {
     return err == -EOPNOTSUPP || err == -EINVAL || err == -ENOTSUP || err == -ENOSYS;
 }
 
+/**
+ * @brief Synchronize BPF-side metrics to userspace counters.
+ * @param ctx BPF context containing metrics and skeleton.
+ *
+ * Reads per-CPU BPF counters and aggregates them into userspace metrics.
+ * Called periodically to update Prometheus-exported values.
+ */
 static void sync_bpf_metrics(struct bpf_ctx* ctx) {
 #if SHINKU_OBS_ENABLED
     if (!ctx || !ctx->metrics.cfg.enabled || !ctx->metrics.cfg.bpf_enabled)
@@ -62,6 +86,13 @@ static void sync_bpf_metrics(struct bpf_ctx* ctx) {
 #endif
 }
 
+/**
+ * @brief libbpf print callback for logging library messages.
+ * @param level Log level (WARN, INFO, DEBUG).
+ * @param format Printf-style format string.
+ * @param args Format arguments.
+ * @return Number of characters printed.
+ */
 static int libbpf_print_fn(enum libbpf_print_level level, const char* format, va_list args) {
     char ts[LOG_TIMESTAMP_LEN];
     time_t t = time(NULL);
@@ -98,6 +129,13 @@ static int libbpf_print_fn(enum libbpf_print_level level, const char* format, va
     return ret;
 }
 
+/**
+ * @brief Attach TC program using legacy TC-BPF API.
+ * @param ctx BPF context containing skeleton.
+ * @param ifindex Network interface index.
+ * @return 0 on success, negative on error.
+ * @note Used as fallback when TCX (tcx_link_create) is not supported.
+ */
 static int attach_tc_legacy(struct bpf_ctx* ctx, int ifindex) {
     int err;
 
@@ -510,6 +548,14 @@ void loader_cleanup_bpf(struct bpf_ctx* ctx) {
  * Cleanup Thread
  * ============================================================================ */
 
+/**
+ * @brief Background thread function for periodic cache cleanup.
+ * @param arg BPF context pointer.
+ * @return NULL on thread exit.
+ *
+ * Runs in a loop, calling cache_cleanup_expired_entries() at configured
+ * intervals until cleanup_running flag is cleared.
+ */
 static void* cleanup_thread_func(void* arg) {
     struct bpf_ctx* ctx = arg;
 

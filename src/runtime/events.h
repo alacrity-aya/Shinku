@@ -102,6 +102,15 @@ struct shinku_event_bus {
  */
 void shinku_events_init(struct shinku_event_bus* bus);
 
+/**
+ * @brief Destroy an event bus structure.
+ * @param bus Pointer to event bus to destroy (may be NULL).
+ *
+ * Destroys the internal mutex if initialized. After destruction,
+ * the bus structure should not be used until re-initialized.
+ *
+ * @note Safe to call with NULL pointer (no-op).
+ */
 void shinku_events_destroy(struct shinku_event_bus* bus);
 
 /**

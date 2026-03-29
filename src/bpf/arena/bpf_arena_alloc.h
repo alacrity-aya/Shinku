@@ -3,6 +3,23 @@
 #pragma once
 #include "bpf_arena_common.h"
 
+/**
+ * @file bpf_arena_alloc.h
+ * @brief Simple page-fragment allocator for BPF arena memory.
+ *
+ * This header provides a page-based memory allocator for BPF arena.
+ * It uses a per-CPU page fragment cache to efficiently allocate
+ * small objects without fragmentation overhead.
+ *
+ * Allocation strategy:
+ *   - Each CPU maintains a current page and offset
+ *   - Allocations are carved from the current page
+ *   - When a page is exhausted, a new page is allocated from the arena
+ *   - Pages are freed when all objects within them are freed
+ *
+ * @note This allocator is BPF-only; userspace stubs return NULL.
+ */
+
 #ifndef __round_mask
 #define __round_mask(x, y) ((__typeof__(x))((y)-1))
 #endif

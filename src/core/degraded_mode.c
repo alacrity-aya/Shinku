@@ -1,10 +1,25 @@
 // SPDX-License-Identifier: GPL-2.0-only OR Apache-2.0
+// SPDX-License-Identifier: GPL-2.0-only OR Apache-2.0
+
+/**
+ * @file degraded_mode.c
+ * @brief Implementation of degraded mode state machine.
+ *
+ * This file implements the degradation tracking system that monitors
+ * system health and activates degraded mode when persistent failures
+ * exceed configured thresholds.
+ */
 #include "degraded_mode.h"
 
 #include "runtime/events.h"
 
 #include <string.h>
 
+/**
+ * @brief Convert reason flag to array index.
+ * @param reason_flag Degraded reason flag.
+ * @return Array index (0-3) for reason_set_total, or -1 if invalid.
+ */
 static int reason_index(uint32_t reason_flag) {
     switch (reason_flag) {
         case DEGRADED_REASON_USERSPACE_LAG:

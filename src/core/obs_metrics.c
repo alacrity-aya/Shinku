@@ -1,10 +1,25 @@
 // SPDX-License-Identifier: GPL-2.0-only OR Apache-2.0
+// SPDX-License-Identifier: GPL-2.0-only OR Apache-2.0
+
+/**
+ * @file obs_metrics.c
+ * @brief Implementation of observability metrics collection.
+ *
+ * This file implements the metrics collection functions declared in obs_metrics.h.
+ * All counters use relaxed atomics for performance; metric values are eventually
+ * consistent with actual counts.
+ */
 #include "obs_metrics.h"
 
 #include "degraded_mode.h"
 #include "runtime/events.h"
 #include <string.h>
 
+/**
+ * @brief Convert degraded reason flag to observability reason enum.
+ * @param reason_flag Degraded reason flag from degraded_mode.h.
+ * @return Corresponding obs_degraded_reason value.
+ */
 static enum obs_degraded_reason reason_to_obs_reason(uint32_t reason_flag) {
     switch (reason_flag) {
         case DEGRADED_REASON_USERSPACE_LAG:
