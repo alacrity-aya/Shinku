@@ -66,6 +66,82 @@ static __always_inline __u32 prefix_mask_v4(__u8 prefix) {
     return 0xffffffffu << (32 - prefix);
 }
 
+enum {
+    OPT_RR_HDR_LEN = 11,
+    OPT_RR_TYPE_OFF = 1,
+    OPT_RR_RDLEN_OFF = 9,
+    ECS_OPT_CODE_OFF = 11,
+    ECS_OPT_LEN_OFF = 13,
+    ECS_FAMILY_OFF = 15,
+    ECS_SRC_PREFIX_OFF = 17,
+    ECS_ADDR_OFF = 19,
+    ECS_MAX_SCAN_END_OFF = 23,
+    ECS_OPT_MIN_LEN = 4,
+    ECS_OPT_MAX_LEN = 8,
+    ECS_RDLEN_MIN = 8,
+};
+
+static __always_inline void parse_query_ecs_v4_single_opt(
+    __u8* p,
+    __u8* data_end,
+    __u32* ecs_addr_v4,
+    __u8* ecs_prefix,
+    __u8* ecs_family
+) {
+    if (!p || !ecs_addr_v4 || !ecs_prefix || !ecs_family)
+        return;
+
+    if (p + OPT_RR_HDR_LEN > data_end)
+        return;
+
+    if (p[0] != 0)
+        return;
+
+    __u16 opt_rr_type = ((__u16)p[OPT_RR_TYPE_OFF] << 8) | p[OPT_RR_TYPE_OFF + 1];
+    if (opt_rr_type != DNS_TYPE_OPT)
+        return;
+
+    __u16 rdlen = ((__u16)p[OPT_RR_RDLEN_OFF] << 8) | p[OPT_RR_RDLEN_OFF + 1];
+    if (rdlen < ECS_RDLEN_MIN)
+        return;
+
+    if (p + ECS_MAX_SCAN_END_OFF > data_end)
+        return;
+
+    __u16 opt_code = ((__u16)p[ECS_OPT_CODE_OFF] << 8) | p[ECS_OPT_CODE_OFF + 1];
+    if (opt_code != EDNS0_OPT_CODE_ECS)
+        return;
+
+    __u16 opt_len = ((__u16)p[ECS_OPT_LEN_OFF] << 8) | p[ECS_OPT_LEN_OFF + 1];
+    __u16 family = ((__u16)p[ECS_FAMILY_OFF] << 8) | p[ECS_FAMILY_OFF + 1];
+    __u8 src_prefix = p[ECS_SRC_PREFIX_OFF];
+
+    if (family != 1 || src_prefix > 32)
+        return;
+
+    __u8 addr_bytes = (src_prefix + 7) / 8;
+    if (opt_len != (__u16)(ECS_OPT_MIN_LEN + addr_bytes) || opt_len > ECS_OPT_MAX_LEN)
+        return;
+
+    if (rdlen < (__u16)(opt_len + ECS_OPT_MIN_LEN))
+        return;
+
+    __u32 addr = 0;
+    if (addr_bytes > 0)
+        addr |= ((__u32)p[ECS_ADDR_OFF]) << 24;
+    if (addr_bytes > 1)
+        addr |= ((__u32)p[ECS_ADDR_OFF + 1]) << 16;
+    if (addr_bytes > 2)
+        addr |= ((__u32)p[ECS_ADDR_OFF + 2]) << 8;
+    if (addr_bytes > 3)
+        addr |= (__u32)p[ECS_ADDR_OFF + 3];
+
+    addr &= prefix_mask_v4(src_prefix);
+    *ecs_addr_v4 = bpf_htonl(addr);
+    *ecs_prefix = src_prefix;
+    *ecs_family = src_prefix > 0 ? 1 : 0;
+}
+
 /* Incremental checksum update (RFC 1624).
  * Updates a 16-bit one's complement checksum when a single 16-bit word changes.
  * All values in network byte order. */
@@ -229,46 +305,14 @@ int xdp_rx(struct xdp_md* ctx) {
     __u8 ecs_prefix = 0;
     __u8 ecs_family = 0;
     void* addl = cursor + 4;
-    if (arcount == 1) {
-        __u8* p = (__u8*)addl;
-
-        if (p + 11 <= (__u8*)data_end && p[0] == 0) {
-            __u16 opt_rr_type = ((__u16)p[1] << 8) | p[2];
-            if (opt_rr_type == DNS_TYPE_OPT) {
-                __u16 rdlen = ((__u16)p[9] << 8) | p[10];
-
-                if (rdlen >= 8 && p + 23 <= (__u8*)data_end) {
-                    __u16 opt_code = ((__u16)p[11] << 8) | p[12];
-                    __u16 opt_len = ((__u16)p[13] << 8) | p[14];
-                    __u16 family = ((__u16)p[15] << 8) | p[16];
-                    __u8 src_prefix = p[17];
-
-                    if (opt_code == EDNS0_OPT_CODE_ECS && family == 1 && src_prefix <= 32) {
-                        __u8 addr_bytes = (src_prefix + 7) / 8;
-                        if (opt_len == (__u16)(4 + addr_bytes) && opt_len <= 8
-                            && rdlen >= (__u16)(opt_len + 4))
-                        {
-                            __u32 addr = 0;
-
-                            if (addr_bytes > 0)
-                                addr |= ((__u32)p[19]) << 24;
-                            if (addr_bytes > 1)
-                                addr |= ((__u32)p[20]) << 16;
-                            if (addr_bytes > 2)
-                                addr |= ((__u32)p[21]) << 8;
-                            if (addr_bytes > 3)
-                                addr |= (__u32)p[22];
-
-                            addr &= prefix_mask_v4(src_prefix);
-                            ecs_addr_v4 = bpf_htonl(addr);
-                            ecs_prefix = src_prefix;
-                            ecs_family = src_prefix > 0 ? 1 : 0;
-                        }
-                    }
-                }
-            }
-        }
-    }
+    if (arcount == 1)
+        parse_query_ecs_v4_single_opt(
+            (__u8*)addl,
+            (__u8*)data_end,
+            &ecs_addr_v4,
+            &ecs_prefix,
+            &ecs_family
+        );
 
     /* ── Phase 2: Cache lookup ── */
     struct cache_key key = {
