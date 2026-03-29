@@ -354,9 +354,33 @@ Current baseline already implemented:
 - ECS integration tests for same-subnet hit, different-subnet miss, and `/0` global behavior.
 
 Remaining follow-ups:
+- Scope-aware key normalization policy (RFC 7871 §7.3.1 aligned) with explicit mode switch:
+  - `strict-source` (current behavior, exact source-prefix partition)
+  - `scope-aware` (normalize cache key by validated scope prefix when safe)
+  - optional guarded hybrid mode for controlled aggregation
+- Add validation guardrails for normalization:
+  - only allow normalization when `scope <= source`
+  - preserve anti-pollution invariants in cross-subnet integration tests
+  - cap normalization breadth via configurable prefix floor to avoid cache blow-up
 - Configurable ECS forwarding/normalization policy (`/24` defaults, privacy knobs).
 - No-ECS-support zone memory/aggregation policy (future security hardening).
 - Future IPv6 ECS support only if IPv6 scope is revisited.
+
+### P2.1.1 ECS feature-gating and deployment profiles
+**Goal:** Make ECS optional by build/deploy profile instead of mandatory behavior.
+
+Plan:
+- Introduce compile-time flag `SHINKU_ECS_ENABLED` (userspace + BPF) with Meson option wiring.
+- Provide two first-class build profiles:
+  - `ecs=disabled` (default): strict non-ECS cache key path (lean default for private/internal recursive deployments)
+  - `ecs=enabled`: ECS parse + partition + normalization policy path (CDN/geo-sensitive deployments)
+
+Performance invariant:
+- ECS disabled profile must compile out ECS parse/key code paths with no runtime branches in hot path.
+
+Acceptance criteria:
+- `ecs=disabled` build has no ECS parsing in hot path and passes full test suite (except ECS-specific tests skipped by profile).
+- `ecs=enabled` build preserves current ECS safety tests plus normalization-mode tests.
 
 ### P2.2 EDNS and large-response strategy
 **Goal:** Improve behavior for >512-byte realities while preserving XDP hot-path safety.
@@ -378,6 +402,21 @@ Planned controls:
 - optional source ACL mode,
 - anti-amplification safeguards for suspicious query patterns,
 - auditable deny/reject metrics.
+
+### P2.8 Attack-surface expansion gate (deployment-driven)
+**Goal:** Expand to water-torture / amplification defense only when deployment role requires it.
+
+Prioritization policy:
+- Recursive/forwarder in controlled networks:
+  - keep focus on cache correctness, upstream resiliency, and abuse observability first.
+  - treat heavy anti-DDoS features as optional add-ons.
+- Authoritative-facing or Internet-exposed resolver role:
+  - prioritize water-torture controls (random-subdomain miss shaping, negative-response strategy tuning, upstream protection).
+  - prioritize amplification controls (open-resolver exposure prevention, response shaping/limiting, ACL defaults).
+
+Acceptance criteria:
+- A deployment-role matrix is documented (default profile vs exposed profile).
+- Security controls are mapped to role-specific SLO/alert thresholds and benchmark scenarios.
 
 ### P2.5 Security hardening
 **Goal:** Minimize abuse/risk surface (ACLs, anti-reflection posture, least-privilege runtime).

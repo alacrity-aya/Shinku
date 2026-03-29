@@ -14,7 +14,3 @@
 int hash_calculate_dns_name_hash_test(void** cursor, void* data_end, __u32* hash_out) {
     return calculate_dns_name_hash(cursor, data_end, hash_out);
 }
-
-int calculate_dns_name_hash_test(void** cursor, void* data_end, __u32* hash_out) {
-    return hash_calculate_dns_name_hash_test(cursor, data_end, hash_out);
-}

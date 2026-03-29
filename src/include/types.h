@@ -46,21 +46,40 @@ struct dns_hdr {
     __be16 arcount; /**< Additional Record Count */
 } __attribute__((packed));
 
-/**
- * @struct cache_key
- * @brief Cache lookup key (16 bytes).
- *
- * Used as the key for BPF hashmap lookups. The name is hashed using
- * FNV-1a algorithm for consistent lookup performance.
- */
+#if defined(SHINKU_ECS_ENABLED) && SHINKU_ECS_ENABLED
+    #define CACHE_KEY_ECS_FIELDS \
+        __u32 ecs_addr_v4; \
+        __u8 ecs_prefix; \
+        __u8 ecs_family; \
+        __u16 _pad;
+
+    #define CACHE_KEY_ECS_INIT(addr_v4, prefix, family) \
+        .ecs_addr_v4 = (addr_v4), .ecs_prefix = (prefix), .ecs_family = (family), ._pad = 0
+#else
+    #define CACHE_KEY_ECS_FIELDS
+    #define CACHE_KEY_ECS_INIT(addr_v4, prefix, family)
+#endif
+
+#if defined(SHINKU_ECS_ENABLED) && SHINKU_ECS_ENABLED
+    #define CACHE_KEY_CORE_AND_ECS_INIT(name_hash_, qtype_, qclass_, addr_v4_, prefix_, family_) \
+        .name_hash = (name_hash_), .qtype = (qtype_), .qclass = (qclass_), \
+        CACHE_KEY_ECS_INIT((addr_v4_), (prefix_), (family_))
+#else
+    #define CACHE_KEY_CORE_AND_ECS_INIT(name_hash_, qtype_, qclass_, addr_v4_, prefix_, family_) \
+        .name_hash = (name_hash_), .qtype = (qtype_), .qclass = (qclass_)
+#endif
+
+#define CACHE_KEY_CORE_INIT(name_hash_, qtype_, qclass_) \
+    CACHE_KEY_CORE_AND_ECS_INIT((name_hash_), (qtype_), (qclass_), 0, 0, 0)
+
+#define CACHE_KEY_CORE_AND_ECS_INIT_DESIG(name_hash_, qtype_, qclass_, addr_v4_, prefix_, family_) \
+    CACHE_KEY_CORE_AND_ECS_INIT((name_hash_), (qtype_), (qclass_), (addr_v4_), (prefix_), (family_))
+
 struct cache_key {
     __u32 name_hash; /**< FNV-1a hash of DNS question name */
     __u16 qtype; /**< Query type (A=1, AAAA=28, etc.) */
     __u16 qclass; /**< Query class (IN=1) */
-    __u32 ecs_addr_v4; /**< ECS IPv4 subnet address (network order, masked by prefix) */
-    __u8 ecs_prefix; /**< ECS source prefix length (0 when ECS absent) */
-    __u8 ecs_family; /**< ECS family (1=IPv4, 0 when ECS absent) */
-    __u16 _pad; /**< Padding for alignment */
+    CACHE_KEY_ECS_FIELDS;
 };
 
 /**

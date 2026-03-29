@@ -85,22 +85,6 @@ struct dns_parser_context {
 int dns_parser_handle_event(void* ctx, void* data, size_t len);
 
 /**
- * @brief Compatibility alias for dns_parser_handle_event.
- * @deprecated Use dns_parser_handle_event() instead.
- */
-int cache_handle_event(void* ctx, void* data, size_t len);
-
-/**
- * @brief Legacy alias for cache_handle_event.
- * @param ctx Cache context.
- * @param data Packet data.
- * @param len Packet length.
- * @return 0 on success, negative on error.
- * @deprecated Use cache_handle_event() instead.
- */
-int handle_packet(void* ctx, void* data, size_t len);
-
-/**
  * @brief Remove expired cache entries.
  * @param cache_ctx Cache context.
  * @return Number of entries removed, or negative on error.
@@ -112,20 +96,6 @@ int handle_packet(void* ctx, void* data, size_t len);
  * @note Should be called periodically from main loop (e.g., every 10 seconds).
  */
 int dns_parser_cleanup_expired_entries(struct cache_context* cache_ctx);
-
-/**
- * @brief Compatibility alias for dns_parser_cleanup_expired_entries.
- * @deprecated Use dns_parser_cleanup_expired_entries() instead.
- */
-int cache_cleanup_expired_entries(struct cache_context* cache_ctx);
-
-/**
- * @brief Legacy alias for cache_cleanup_expired_entries.
- * @param cache_ctx Cache context.
- * @return Number of entries removed, or negative on error.
- * @deprecated Use cache_cleanup_expired_entries() instead.
- */
-int cleanup_expired_entries(struct cache_context* cache_ctx);
 
 /**
  * @brief Calculate FNV-1a hash of DNS name (strict mode, no compression).

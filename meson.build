@@ -14,6 +14,7 @@ bpf_log = get_option('bpf_log')
 obs = get_option('obs')
 obs_bpf = get_option('obs_bpf')
 build_benchmark_bin = get_option('build_benchmark_bin')
+ecs = get_option('ecs')
 
 cares_dep = dependency('libcares', fallback : ['c-ares', 'cares_dep'])
 libbpf_dep = dependency('libbpf')
@@ -42,7 +43,7 @@ bpf_obj = custom_target(
   depends: vmlinux_h,
   command: [
     clang, '-g', '-O2', '-target', 'bpf',
-  ] + (bpf_log ? ['-DSHINKU_BPF_LOG_ENABLED=1'] : ['-DSHINKU_BPF_LOG_ENABLED=0']) + (obs_bpf ? ['-DSHINKU_OBS_BPF_ENABLED=1'] : ['-DSHINKU_OBS_BPF_ENABLED=0']) + [
+  ] + (bpf_log ? ['-DSHINKU_BPF_LOG_ENABLED=1'] : ['-DSHINKU_BPF_LOG_ENABLED=0']) + (obs_bpf ? ['-DSHINKU_OBS_BPF_ENABLED=1'] : ['-DSHINKU_OBS_BPF_ENABLED=0']) + (ecs ? ['-DSHINKU_ECS_ENABLED=1'] : ['-DSHINKU_ECS_ENABLED=0']) + [
     '-I' + meson.current_build_dir(),
     '-I' + meson.current_source_dir() + '/src/include',
     '-I' + meson.current_source_dir() + '/src',
@@ -98,7 +99,7 @@ executable(
   bpf_skel,         
   dependencies: [libbpf_dep],
   include_directories: [inc_src, inc_runtime],
-  c_args: (bpf_log ? ['-DSHINKU_BPF_LOG_ENABLED=1'] : ['-DSHINKU_BPF_LOG_ENABLED=0']) + (obs ? ['-DSHINKU_OBS_ENABLED=1'] : ['-DSHINKU_OBS_ENABLED=0']),
+  c_args: (bpf_log ? ['-DSHINKU_BPF_LOG_ENABLED=1'] : ['-DSHINKU_BPF_LOG_ENABLED=0']) + (obs ? ['-DSHINKU_OBS_ENABLED=1'] : ['-DSHINKU_OBS_ENABLED=0']) + (ecs ? ['-DSHINKU_ECS_ENABLED=1'] : ['-DSHINKU_ECS_ENABLED=0']),
   install: true
 )
 
@@ -113,7 +114,7 @@ if build_benchmark_bin
     c_args: [
       '-O3',
       '-DNDEBUG',
-    ] + (bpf_log ? ['-DSHINKU_BPF_LOG_ENABLED=1'] : ['-DSHINKU_BPF_LOG_ENABLED=0']) + (obs ? ['-DSHINKU_OBS_ENABLED=1'] : ['-DSHINKU_OBS_ENABLED=0']),
+    ] + (bpf_log ? ['-DSHINKU_BPF_LOG_ENABLED=1'] : ['-DSHINKU_BPF_LOG_ENABLED=0']) + (obs ? ['-DSHINKU_OBS_ENABLED=1'] : ['-DSHINKU_OBS_ENABLED=0']) + (ecs ? ['-DSHINKU_ECS_ENABLED=1'] : ['-DSHINKU_ECS_ENABLED=0']),
     override_options: [
       'b_sanitize=none',
       'buildtype=release',

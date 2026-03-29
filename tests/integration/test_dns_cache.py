@@ -14,6 +14,9 @@ import sys
 import threading
 import time
 import unittest
+
+
+ECS_ENABLED = os.environ.get("SHINKU_TEST_ECS_ENABLED", "0") == "1"
 from typing import Optional
 
 PROJECT_ROOT = os.path.dirname(
@@ -955,6 +958,8 @@ class TestDNSCache(unittest.TestCase):
         )
 
     def test_dns_ecs_same_subnet_cache_hit(self):
+        if not ECS_ENABLED:
+            self.skipTest("ECS disabled in build profile")
         domain = "cache-test.example.com"
 
         result1 = send_dns_query(
@@ -991,6 +996,8 @@ class TestDNSCache(unittest.TestCase):
         )
 
     def test_dns_ecs_different_subnet_not_reused(self):
+        if not ECS_ENABLED:
+            self.skipTest("ECS disabled in build profile")
         domain = "cache-test.example.com"
 
         result1 = send_dns_query(
@@ -1024,6 +1031,8 @@ class TestDNSCache(unittest.TestCase):
         )
 
     def test_dns_ecs_zero_scope_global_cache_hit(self):
+        if not ECS_ENABLED:
+            self.skipTest("ECS disabled in build profile")
         domain = "cache-test.example.com"
 
         result1 = send_dns_query(

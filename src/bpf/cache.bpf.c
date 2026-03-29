@@ -81,6 +81,7 @@ enum {
     ECS_RDLEN_MIN = 8,
 };
 
+#if SHINKU_ECS_ENABLED
 static __always_inline void parse_query_ecs_v4_single_opt(
     __u8* p,
     __u8* data_end,
@@ -141,6 +142,24 @@ static __always_inline void parse_query_ecs_v4_single_opt(
     *ecs_prefix = src_prefix;
     *ecs_family = src_prefix > 0 ? 1 : 0;
 }
+#else
+static __always_inline void parse_query_ecs_v4_single_opt(
+    __u8* p,
+    __u8* data_end,
+    __u32* ecs_addr_v4,
+    __u8* ecs_prefix,
+    __u8* ecs_family
+) {
+    (void)p;
+    (void)data_end;
+    if (ecs_addr_v4)
+        *ecs_addr_v4 = 0;
+    if (ecs_prefix)
+        *ecs_prefix = 0;
+    if (ecs_family)
+        *ecs_family = 0;
+}
+#endif
 
 /* Incremental checksum update (RFC 1624).
  * Updates a 16-bit one's complement checksum when a single 16-bit word changes.
@@ -315,15 +334,14 @@ int xdp_rx(struct xdp_md* ctx) {
         );
 
     /* ── Phase 2: Cache lookup ── */
-    struct cache_key key = {
-        .name_hash = name_hash,
-        .qtype = qtype,
-        .qclass = qclass,
-        .ecs_addr_v4 = ecs_addr_v4,
-        .ecs_prefix = ecs_prefix,
-        .ecs_family = ecs_family,
-        ._pad = 0,
-    };
+    struct cache_key key = { CACHE_KEY_CORE_AND_ECS_INIT_DESIG(
+        name_hash,
+        qtype,
+        qclass,
+        ecs_addr_v4,
+        ecs_prefix,
+        ecs_family
+    ) };
 
     bpf_debug("[XDP] Key: Hash=0x%x Type=%d Class=%d", key.name_hash, key.qtype, key.qclass);
 

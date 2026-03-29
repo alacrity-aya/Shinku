@@ -160,7 +160,3 @@ int config_parse_args(int argc, char** argv, struct env* env) {
     env->obs_bpf_sample_mask = 0xff;
     return argp_parse(&argp, argc, argv, 0, NULL, env); // NOLINT(concurrency-mt-unsafe)
 }
-
-int parse_args(int argc, char** argv, struct env* env) {
-    return config_parse_args(argc, argv, env);
-}

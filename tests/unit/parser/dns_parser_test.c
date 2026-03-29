@@ -184,6 +184,7 @@ static void builder_add_soa_answer(
     builder_add_answer(b, owner, DNS_TYPE_SOA, DNS_CLASS_IN, ttl, (uint16_t)pos, rdata);
 }
 
+#if SHINKU_ECS_ENABLED
 static void builder_add_opt_ecs(
     struct dns_builder* b,
     uint16_t udp_payload_size,
@@ -226,6 +227,7 @@ static void builder_add_opt_ecs(
         b->buf[b->len++] = addr[i];
     }
 }
+#endif
 
 /* --- Positive Tests --- */
 
@@ -298,10 +300,7 @@ static void test_min_ttl_selection() {
         // We only have bpf_map_lookup_elem if we use it, but qname_hash needs to be known.
         uint32_t expected_hash = 0;
         calculate_hash_strict_impl(b.buf, sizeof(struct dns_hdr), b.len, &expected_hash);
-        struct cache_key key = { .name_hash = expected_hash,
-                                 .qtype = DNS_TYPE_A,
-                                 .qclass = DNS_CLASS_IN,
-                                 ._pad = 0 };
+        struct cache_key key = { CACHE_KEY_CORE_INIT(expected_hash, DNS_TYPE_A, DNS_CLASS_IN) };
         struct cache_value val;
         int err = bpf_map_lookup_elem(test_ctx.cache_map_fd, &key, &val);
         TEST_ASSERT(err == 0, "test_min_ttl_selection: cache entry found in map");
@@ -333,10 +332,7 @@ static void test_cache_key_construction() {
     if (has_bpf) {
         uint32_t expected_hash = 0;
         calculate_hash_strict_impl(b.buf, sizeof(struct dns_hdr), b.len, &expected_hash);
-        struct cache_key key = { .name_hash = expected_hash,
-                                 .qtype = DNS_TYPE_A,
-                                 .qclass = DNS_CLASS_IN,
-                                 ._pad = 0 };
+        struct cache_key key = { CACHE_KEY_CORE_INIT(expected_hash, DNS_TYPE_A, DNS_CLASS_IN) };
         struct cache_value val;
         int err = bpf_map_lookup_elem(test_ctx.cache_map_fd, &key, &val);
         TEST_ASSERT(err == 0, "test_cache_key_construction: exact cache key matched");
@@ -441,12 +437,7 @@ static void test_negative_cache_nxdomain_with_soa() {
     if (has_bpf) {
         uint32_t expected_hash = 0;
         calculate_hash_strict_impl(b.buf, sizeof(struct dns_hdr), b.len, &expected_hash);
-        struct cache_key key = {
-            .name_hash = expected_hash,
-            .qtype = DNS_TYPE_A,
-            .qclass = DNS_CLASS_IN,
-            ._pad = 0,
-        };
+        struct cache_key key = { CACHE_KEY_CORE_INIT(expected_hash, DNS_TYPE_A, DNS_CLASS_IN) };
         struct cache_value val;
         int err = bpf_map_lookup_elem(test_ctx.cache_map_fd, &key, &val);
         TEST_ASSERT(err == 0, "test_negative_cache_nxdomain_with_soa: cache key exists");
@@ -474,12 +465,7 @@ static void test_negative_cache_nodata_with_soa() {
     if (has_bpf) {
         uint32_t expected_hash = 0;
         calculate_hash_strict_impl(b.buf, sizeof(struct dns_hdr), b.len, &expected_hash);
-        struct cache_key key = {
-            .name_hash = expected_hash,
-            .qtype = DNS_TYPE_A,
-            .qclass = DNS_CLASS_IN,
-            ._pad = 0,
-        };
+        struct cache_key key = { CACHE_KEY_CORE_INIT(expected_hash, DNS_TYPE_A, DNS_CLASS_IN) };
         struct cache_value val;
         int err = bpf_map_lookup_elem(test_ctx.cache_map_fd, &key, &val);
         TEST_ASSERT(err == 0, "test_negative_cache_nodata_with_soa: cache key exists");
@@ -529,12 +515,7 @@ static void test_negative_cache_ttl_uses_min_soa_and_ttl() {
     if (has_bpf) {
         uint32_t expected_hash = 0;
         calculate_hash_strict_impl(b.buf, sizeof(struct dns_hdr), b.len, &expected_hash);
-        struct cache_key key = {
-            .name_hash = expected_hash,
-            .qtype = DNS_TYPE_A,
-            .qclass = DNS_CLASS_IN,
-            ._pad = 0,
-        };
+        struct cache_key key = { CACHE_KEY_CORE_INIT(expected_hash, DNS_TYPE_A, DNS_CLASS_IN) };
         struct cache_value val;
         int err = bpf_map_lookup_elem(test_ctx.cache_map_fd, &key, &val);
         TEST_ASSERT(err == 0, "test_negative_cache_ttl_uses_min_soa_and_ttl: cache key exists");
@@ -647,12 +628,7 @@ static void test_cname_with_a_record() {
         TEST_ASSERT(test_next_idx == 1, "test_cname_with_a_record: next_idx incremented");
         uint32_t expected_hash = 0;
         calculate_hash_strict_impl(b.buf, sizeof(struct dns_hdr), b.len, &expected_hash);
-        struct cache_key key = {
-            .name_hash = expected_hash,
-            .qtype = DNS_TYPE_A,
-            .qclass = DNS_CLASS_IN,
-            ._pad = 0,
-        };
+        struct cache_key key = { CACHE_KEY_CORE_INIT(expected_hash, DNS_TYPE_A, DNS_CLASS_IN) };
         struct cache_value val;
         int err = bpf_map_lookup_elem(test_ctx.cache_map_fd, &key, &val);
         TEST_ASSERT(err == 0, "test_cname_with_a_record: cache key exists");
@@ -700,12 +676,7 @@ static void test_cname_chain_with_terminal_a() {
         TEST_ASSERT(test_next_idx == 1, "test_cname_chain_with_terminal_a: next_idx incremented");
         uint32_t expected_hash = 0;
         calculate_hash_strict_impl(b.buf, sizeof(struct dns_hdr), b.len, &expected_hash);
-        struct cache_key key = {
-            .name_hash = expected_hash,
-            .qtype = DNS_TYPE_A,
-            .qclass = DNS_CLASS_IN,
-            ._pad = 0,
-        };
+        struct cache_key key = { CACHE_KEY_CORE_INIT(expected_hash, DNS_TYPE_A, DNS_CLASS_IN) };
         struct cache_value val;
         int err = bpf_map_lookup_elem(test_ctx.cache_map_fd, &key, &val);
         TEST_ASSERT(err == 0, "test_cname_chain_with_terminal_a: cache key exists");
@@ -779,6 +750,7 @@ static void test_reject_cname_with_only_aaaa_terminal_for_a_query() {
 }
 
 static void test_ecs_scope_zero_cached_with_partition_key() {
+#if SHINKU_ECS_ENABLED
     setup_test();
 
     struct dns_builder b;
@@ -795,9 +767,11 @@ static void test_ecs_scope_zero_cached_with_partition_key() {
         test_next_idx == 1,
         "test_ecs_scope_zero_cached_with_partition_key: next_idx incremented"
     );
+#endif
 }
 
 static void test_ecs_scope_nonzero_cached_with_partition_key() {
+#if SHINKU_ECS_ENABLED
     setup_test();
 
     struct dns_builder b;
@@ -820,22 +794,23 @@ static void test_ecs_scope_nonzero_cached_with_partition_key() {
         );
         uint32_t expected_hash = 0;
         calculate_hash_strict_impl(b.buf, sizeof(struct dns_hdr), b.len, &expected_hash);
-        struct cache_key key = {
-            .name_hash = expected_hash,
-            .qtype = DNS_TYPE_A,
-            .qclass = DNS_CLASS_IN,
-            .ecs_addr_v4 = htonl(0xcb007100u),
-            .ecs_prefix = 24,
-            .ecs_family = 1,
-            ._pad = 0,
-        };
+        struct cache_key key = { CACHE_KEY_CORE_AND_ECS_INIT_DESIG(
+            expected_hash,
+            DNS_TYPE_A,
+            DNS_CLASS_IN,
+            htonl(0xcb007100u),
+            24,
+            1
+        ) };
         struct cache_value val;
         int err = bpf_map_lookup_elem(test_ctx.cache_map_fd, &key, &val);
         TEST_ASSERT(err == 0, "test_ecs_scope_nonzero_cached_with_partition_key: cache key exists");
     }
+#endif
 }
 
 static void test_reject_bad_ecs_family() {
+#if SHINKU_ECS_ENABLED
     setup_test();
 
     struct dns_builder b;
@@ -848,9 +823,11 @@ static void test_reject_bad_ecs_family() {
     int ret = call_handle_packet(&test_ctx, b.buf, b.len);
     TEST_ASSERT(ret == 0, "test_reject_bad_ecs_family: handle_packet returns 0");
     TEST_ASSERT(test_next_idx == 0, "test_reject_bad_ecs_family: next_idx unchanged");
+#endif
 }
 
 static void test_reject_bad_ecs_prefix() {
+#if SHINKU_ECS_ENABLED
     setup_test();
 
     struct dns_builder b;
@@ -863,6 +840,7 @@ static void test_reject_bad_ecs_prefix() {
     int ret = call_handle_packet(&test_ctx, b.buf, b.len);
     TEST_ASSERT(ret == 0, "test_reject_bad_ecs_prefix: handle_packet returns 0");
     TEST_ASSERT(test_next_idx == 0, "test_reject_bad_ecs_prefix: next_idx unchanged");
+#endif
 }
 
 /* --- Edge Cases --- */

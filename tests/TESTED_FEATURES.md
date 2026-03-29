@@ -50,6 +50,7 @@ This document lists all features covered by the test suite.
 - Accept ECS scope=0 responses and cache as global (`/0`) when key partition is zeroed
 - Cache ECS scope>0 responses with ECS subnet-partitioned key
 - Reject invalid ECS family/prefix in response OPT records
+- ECS test group is profile-gated and runs only when build/profile enables ECS
 
 **Edge Cases:**
 - Oversized packet handling (>512 bytes flat length)

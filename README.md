@@ -12,7 +12,7 @@ An eBPF-based DNS caching proxy that serves cached responses at the XDP layer fo
 *   BPF Arena memory: Shared memory between XDP programs and userspace, requiring Linux 6.9 or newer.
 *   Transparent proxy: Operates in front of any DNS server without requiring configuration changes.
 *   VLAN support: Capable of parsing Q-in-Q (802.1Q and 802.1AD) tags.
-*   EDNS Client Subnet (ECS) aware: Implements a scope-zero strategy for global caching efficiency.
+*   Optional EDNS Client Subnet (ECS): Compile-time gated (`-Decs=true`), disabled by default for lean hot path.
 *   Zero-copy arena reads: Uses 8-byte wide copies from arena memory within the XDP hot path.
 *   Conditional BPF logging: Includes a compile-time flag to remove logging overhead in production environments.
 

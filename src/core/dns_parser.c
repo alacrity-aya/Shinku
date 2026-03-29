@@ -225,6 +225,7 @@ struct ecs_parse_result {
     uint32_t addr_v4;
 };
 
+#if SHINKU_ECS_ENABLED
 static int parse_ecs_option_ipv4(
     const uint8_t* pkt,
     int offset,
@@ -234,8 +235,6 @@ static int parse_ecs_option_ipv4(
 ) {
     if (!out)
         return -1;
-
-    memset(out, 0, sizeof(*out));
 
     int end = offset + rdlen;
     if (end < offset || end > max_len)
@@ -288,6 +287,26 @@ static int parse_ecs_option_ipv4(
 
     return 0;
 }
+
+#else
+
+static inline int parse_ecs_option_ipv4(
+    const uint8_t* pkt,
+    int offset,
+    int max_len,
+    int rdlen,
+    struct ecs_parse_result* out
+) {
+    (void)pkt;
+    (void)offset;
+    (void)max_len;
+    (void)rdlen;
+    if (out)
+        memset(out, 0, sizeof(*out));
+    return 0;
+}
+
+#endif
 
 /**
  * @brief Store a DNS response in the cache (wrapper without flags).
@@ -940,15 +959,14 @@ int dns_parser_handle_event(void* ctx, void* data, [[maybe_unused]] size_t len) 
         return 0;
     }
 
-    struct cache_key key = {
-        .name_hash = name_hash,
-        .qtype = qtype,
-        .qclass = qclass,
-        .ecs_addr_v4 = ecs_scope > 0 ? ecs.addr_v4 : 0,
-        .ecs_prefix = ecs_scope > 0 ? ecs.source_prefix : 0,
-        .ecs_family = ecs_scope > 0 ? ecs.family : 0,
-        ._pad = 0,
-    };
+    struct cache_key key = { CACHE_KEY_CORE_AND_ECS_INIT_DESIG(
+        name_hash,
+        qtype,
+        qclass,
+        (ecs_scope > 0 ? ecs.addr_v4 : 0),
+        (ecs_scope > 0 ? ecs.source_prefix : 0),
+        (ecs_scope > 0 ? ecs.family : 0)
+    ) };
 
     if (neg_info.valid) {
         obs_metrics_count_negative_accept(
@@ -976,22 +994,6 @@ int dns_parser_handle_event(void* ctx, void* data, [[maybe_unused]] size_t len) 
     }
 
     return 0;
-}
-
-int handle_packet(void* ctx, void* data, size_t len) {
-    return dns_parser_handle_event(ctx, data, len);
-}
-
-int cleanup_expired_entries(struct cache_context* cache_ctx) {
-    return dns_parser_cleanup_expired_entries(cache_ctx);
-}
-
-int cache_handle_event(void* ctx, void* data, size_t len) {
-    return dns_parser_handle_event(ctx, data, len);
-}
-
-int cache_cleanup_expired_entries(struct cache_context* cache_ctx) {
-    return dns_parser_cleanup_expired_entries(cache_ctx);
 }
 
 int calculate_hash_strict_impl(const uint8_t* packet, int offset, int max_len, uint32_t* out_hash) {

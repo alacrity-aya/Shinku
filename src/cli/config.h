@@ -42,13 +42,3 @@ struct env {
  * structure with defaults for unspecified options.
  */
 int config_parse_args(int argc, char** argv, struct env* env);
-
-/**
- * @brief Legacy alias for config_parse_args.
- * @param argc Argument count.
- * @param argv Argument vector.
- * @param env Output configuration.
- * @return 0 on success, negative on error.
- * @deprecated Use config_parse_args() instead.
- */
-int parse_args(int argc, char** argv, struct env* env);
