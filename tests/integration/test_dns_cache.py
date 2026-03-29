@@ -484,7 +484,7 @@ class TestInfrastructure(unittest.TestCase):
             )
         except subprocess.TimeoutExpired:
             proc.kill()
-            proc.wait()
+            proc.communicate()
 
     def test_binary_invalid_interface(self):
         """Start with non-existent interface, verify it exits with error."""
@@ -504,7 +504,7 @@ class TestInfrastructure(unittest.TestCase):
             )
         except subprocess.TimeoutExpired:
             proc.kill()
-            proc.wait()
+            proc.communicate()
             self.fail("Binary hung instead of failing on invalid interface")
 
     def test_xdp_attach_verify(self):
@@ -533,10 +533,10 @@ class TestInfrastructure(unittest.TestCase):
         finally:
             proc.send_signal(signal.SIGINT)
             try:
-                proc.wait(timeout=5)
+                proc.communicate(timeout=5)
             except subprocess.TimeoutExpired:
                 proc.kill()
-                proc.wait()
+                proc.communicate()
 
     def test_packet_passthrough(self):
         """Setup topology, start shinku, ping from netns to host."""
@@ -572,10 +572,10 @@ class TestInfrastructure(unittest.TestCase):
         finally:
             proc.send_signal(signal.SIGINT)
             try:
-                proc.wait(timeout=5)
+                proc.communicate(timeout=5)
             except subprocess.TimeoutExpired:
                 proc.kill()
-                proc.wait()
+                proc.communicate()
 
 
 # ---------------------------------------------------------------------------
@@ -627,10 +627,10 @@ class TestDNSCache(unittest.TestCase):
         if proc and proc.poll() is None:
             proc.send_signal(signal.SIGINT)
             try:
-                proc.wait(timeout=5)
+                proc.communicate(timeout=5)
             except subprocess.TimeoutExpired:
                 proc.kill()
-                proc.wait()
+                proc.communicate()
         server = getattr(self, "server", None)
         if server:
             server.stop()
