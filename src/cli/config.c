@@ -27,6 +27,33 @@ static const struct argp_option opts[] = {
       0,
       "BPF sample mask: count when (bpf_get_prandom_u32() & MASK)==0 (default: 0xff)",
       0 },
+    { "admission", 1001, "0|1", 0, "Enable cache admission policies (default: 1)", 0 },
+    { "pressure-mode",
+      1002,
+      "0|1",
+      0,
+      "Enable frequency-based pressure rejection (default: 1)",
+      0 },
+    { "admission-min-ttl", 1003, "SECS", 0, "Minimum TTL to admit cache entry (default: 0)", 0 },
+    { "admission-dampen-ms",
+      1004,
+      "MSECS",
+      0,
+      "Reject duplicate inserts in dampening window (default: 2000)",
+      0 },
+    { "hot-threshold",
+      1005,
+      "COUNT",
+      0,
+      "Frequency threshold to classify victim as hot (default: 3)",
+      0 },
+    { "freq-width",
+      1006,
+      "WIDTH",
+      0,
+      "Count-min sketch width, power of two preferred (default: 4096)",
+      0 },
+    { "freq-epoch-ops", 1007, "OPS", 0, "Sketch decay period in updates (default: 10*entries)", 0 },
     { NULL, 0, NULL, 0, NULL, 0 }
 };
 
@@ -133,6 +160,55 @@ static error_t parse_opt(int key, char* arg, struct argp_state* state) {
             env->obs_bpf_sample_mask = (uint32_t)mask;
             break;
         }
+        case 1001: {
+            unsigned long enabled = strtoul(arg, NULL, 0);
+            if (enabled > 1)
+                argp_error(state, "Invalid admission: '%s' (must be 0 or 1)", arg);
+            env->admission_enabled = (uint32_t)enabled;
+            break;
+        }
+        case 1002: {
+            unsigned long enabled = strtoul(arg, NULL, 0);
+            if (enabled > 1)
+                argp_error(state, "Invalid pressure-mode: '%s' (must be 0 or 1)", arg);
+            env->pressure_mode = (uint32_t)enabled;
+            break;
+        }
+        case 1003: {
+            unsigned long v = strtoul(arg, NULL, 0);
+            if (v > 86400)
+                argp_error(state, "Invalid admission-min-ttl: '%s' (0-86400)", arg);
+            env->admission_min_ttl = (uint32_t)v;
+            break;
+        }
+        case 1004: {
+            unsigned long v = strtoul(arg, NULL, 0);
+            if (v > 600000)
+                argp_error(state, "Invalid admission-dampen-ms: '%s' (0-600000)", arg);
+            env->admission_dampen_window_ms = (uint32_t)v;
+            break;
+        }
+        case 1005: {
+            unsigned long v = strtoul(arg, NULL, 0);
+            if (v > 65535)
+                argp_error(state, "Invalid hot-threshold: '%s'", arg);
+            env->hot_threshold = (uint32_t)v;
+            break;
+        }
+        case 1006: {
+            unsigned long v = strtoul(arg, NULL, 0);
+            if (v == 0 || v > (1UL << 20))
+                argp_error(state, "Invalid freq-width: '%s'", arg);
+            env->freq_width = (uint32_t)v;
+            break;
+        }
+        case 1007: {
+            unsigned long v = strtoul(arg, NULL, 0);
+            if (v == 0 || v > (1UL << 30))
+                argp_error(state, "Invalid freq-epoch-ops: '%s'", arg);
+            env->freq_epoch_ops = (uint32_t)v;
+            break;
+        }
         case ARGP_KEY_ARG:
             argp_usage(state); // NOLINT(concurrency-mt-unsafe)
             break;
@@ -158,5 +234,12 @@ int config_parse_args(int argc, char** argv, struct env* env) {
     env->obs_enabled = 1;
     env->obs_bpf_enabled = 0;
     env->obs_bpf_sample_mask = 0xff;
+    env->admission_enabled = 1;
+    env->pressure_mode = 1;
+    env->admission_min_ttl = 0;
+    env->admission_dampen_window_ms = 2000;
+    env->hot_threshold = 3;
+    env->freq_width = 4096;
+    env->freq_epoch_ops = CACHE_MAP_MAX_ENTRIES * 10;
     return argp_parse(&argp, argc, argv, 0, NULL, env); // NOLINT(concurrency-mt-unsafe)
 }

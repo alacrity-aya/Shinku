@@ -38,6 +38,7 @@ struct cache_context {
      */
     struct cache_key* slot_owners;
     pthread_mutex_t* slot_owners_lock;
+    struct obs_metrics* metrics;
 
     /**
      * @brief Monotonically increasing generation counter.
@@ -47,6 +48,25 @@ struct cache_context {
      * to detect slot reuse between cache_map lookup and arena read.
      */
     uint32_t next_gen;
+
+    uint64_t admission_dampen_window_ns;
+    uint32_t admission_min_ttl;
+    uint8_t admission_enabled;
+    uint8_t pressure_mode;
+
+    struct cache_key* recent_insert_keys;
+    uint64_t* recent_insert_ns;
+    uint32_t recent_insert_cap;
+    uint32_t recent_insert_next;
+
+    uint32_t hot_threshold;
+    uint32_t* slot_hit_count;
+    uint8_t* slot_hot;
+
+    uint16_t* freq_rows[4];
+    uint32_t freq_width;
+    uint32_t freq_epoch_ops;
+    uint32_t freq_ops;
 };
 
 /**

@@ -141,6 +141,17 @@ These counters are sampled in the XDP/TC hot path using `bpf_get_prandom_u32() &
 | `shinku_parser_reject_total` | counter | Total DNS parser rejections |
 | `shinku_cache_insert_total` | counter | Successful cache inserts |
 | `shinku_cache_insert_fail_total` | counter | Failed cache inserts |
+| `shinku_cache_admission_attempt_total` | counter | Admission policy decisions attempted |
+| `shinku_cache_admission_accept_total` | counter | Admissions accepted |
+| `shinku_cache_admission_reject_total` | counter | Admissions rejected |
+| `shinku_cache_admission_reject_recent_total` | counter | Rejected by recent-insert dampening |
+| `shinku_cache_admission_reject_ttl_total` | counter | Rejected by minimum TTL policy |
+| `shinku_cache_admission_reject_freq_total` | counter | Rejected by frequency pressure compare |
+| `shinku_cache_eviction_total` | counter | Total evictions caused by slot reuse |
+| `shinku_cache_eviction_hot_total` | counter | Evicted entries previously marked hot |
+| `shinku_cache_eviction_cold_total` | counter | Evicted entries from cold segment |
+| `shinku_cache_hot_segment_size` | gauge | Current count of hot entries |
+| `shinku_cache_cold_segment_size` | gauge | Current count of cold entries |
 | `shinku_cache_cleanup_removed_total` | counter | Expired entries removed by cleanup thread |
 | `shinku_rb_pkt_poll_error_total` | counter | Packet ring buffer poll errors |
 
@@ -172,6 +183,13 @@ The `shinku_parser_reject_reason_total` counter provides detailed breakdown by r
 -p, --obs-bpf         Enable BPF observability sampling (default: 0)
 -k, --obs-bpf-mask    BPF sampling mask (default: 0xff)
 -m, --metrics-port    HTTP metrics port (default: 9095)
+--admission           Enable cache admission policies (default: 1)
+--pressure-mode       Enable frequency pressure rejection (default: 1)
+--admission-min-ttl   Minimum TTL for positive cache admission (default: 0)
+--admission-dampen-ms Duplicate insert dampening window in ms (default: 2000)
+--hot-threshold       Frequency threshold for hot classification (default: 3)
+--freq-width          Count-min sketch width (default: 4096)
+--freq-epoch-ops      Sketch decay period in updates (default: 10*entries)
 ```
 
 ### Compile-Time Control

@@ -20,6 +20,7 @@
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
@@ -594,6 +595,233 @@ static void test_slot_owners_tracking(int cache_map_fd) {
     );
 }
 
+static void test_admission_min_ttl_reject(int cache_map_fd, int has_real_bpf_map) {
+    printf("\n--- Test: Admission Min TTL Reject ---\n");
+
+    if (!has_real_bpf_map) {
+        printf("  [SKIP] Requires BPF map (need root)\n");
+        return;
+    }
+
+    struct cache_entry entries[4];
+    struct cache_key slot_owners[4];
+    struct cache_key recent_keys[4];
+    uint64_t recent_ns[4];
+    uint16_t row0[64] = { 0 }, row1[64] = { 0 }, row2[64] = { 0 }, row3[64] = { 0 };
+    uint32_t next_idx = 0;
+    memset(entries, 0, sizeof(entries));
+    memset(slot_owners, 0, sizeof(slot_owners));
+    memset(recent_keys, 0, sizeof(recent_keys));
+    memset(recent_ns, 0, sizeof(recent_ns));
+
+    struct cache_context ctx = {
+        .entries = entries,
+        .next_idx = &next_idx,
+        .max_entries = 4,
+        .cache_map_fd = cache_map_fd,
+        .slot_owners = slot_owners,
+        .next_gen = 0,
+        .admission_enabled = 1,
+        .admission_min_ttl = 10,
+        .recent_insert_keys = recent_keys,
+        .recent_insert_ns = recent_ns,
+        .recent_insert_cap = 4,
+        .freq_width = 64,
+        .freq_epoch_ops = 128,
+        .freq_rows = { row0, row1, row2, row3 },
+    };
+
+    struct dns_builder b;
+    uint8_t ip[4] = { 5, 5, 5, 5 };
+    builder_init(&b, 0x4001, 0x8180, 1, 1, 0, 0);
+    builder_add_question(&b, "short-admit.com", DNS_TYPE_A, DNS_CLASS_IN);
+    builder_add_answer(&b, "short-admit.com", DNS_TYPE_A, DNS_CLASS_IN, 3, 4, ip);
+    call_handle_packet(&ctx, b.buf, b.len);
+
+    TEST_ASSERT(next_idx == 0, "min TTL reject should not allocate arena slot");
+
+    uint32_t hash = 0;
+    calculate_hash_strict_impl(b.buf, sizeof(struct dns_hdr), b.len, &hash);
+    struct cache_key key = { .name_hash = hash, .qtype = DNS_TYPE_A, .qclass = DNS_CLASS_IN };
+    struct cache_value val;
+    int err = bpf_map_lookup_elem(cache_map_fd, &key, &val);
+    TEST_ASSERT(err != 0, "min TTL reject should not insert cache map entry");
+}
+
+static void test_admission_recent_dampen_reject(int cache_map_fd, int has_real_bpf_map) {
+    printf("\n--- Test: Admission Recent Dampening Reject ---\n");
+
+    if (!has_real_bpf_map) {
+        printf("  [SKIP] Requires BPF map (need root)\n");
+        return;
+    }
+
+    struct cache_entry entries[4];
+    struct cache_key slot_owners[4];
+    struct cache_key recent_keys[8];
+    uint64_t recent_ns[8];
+    uint16_t row0[64] = { 0 }, row1[64] = { 0 }, row2[64] = { 0 }, row3[64] = { 0 };
+    uint32_t next_idx = 0;
+    memset(entries, 0, sizeof(entries));
+    memset(slot_owners, 0, sizeof(slot_owners));
+    memset(recent_keys, 0, sizeof(recent_keys));
+    memset(recent_ns, 0, sizeof(recent_ns));
+
+    struct cache_context ctx = {
+        .entries = entries,
+        .next_idx = &next_idx,
+        .max_entries = 4,
+        .cache_map_fd = cache_map_fd,
+        .slot_owners = slot_owners,
+        .next_gen = 0,
+        .admission_enabled = 1,
+        .admission_min_ttl = 1,
+        .admission_dampen_window_ns = 10ULL * 1000000000ULL,
+        .recent_insert_keys = recent_keys,
+        .recent_insert_ns = recent_ns,
+        .recent_insert_cap = 8,
+        .freq_width = 64,
+        .freq_epoch_ops = 128,
+        .freq_rows = { row0, row1, row2, row3 },
+    };
+
+    struct dns_builder b;
+    uint8_t ip[4] = { 6, 6, 6, 6 };
+    builder_init(&b, 0x4002, 0x8180, 1, 1, 0, 0);
+    builder_add_question(&b, "dampen.com", DNS_TYPE_A, DNS_CLASS_IN);
+    builder_add_answer(&b, "dampen.com", DNS_TYPE_A, DNS_CLASS_IN, 120, 4, ip);
+
+    call_handle_packet(&ctx, b.buf, b.len);
+    call_handle_packet(&ctx, b.buf, b.len);
+
+    TEST_ASSERT(next_idx == 1, "recent dampening should reject immediate duplicate insertion");
+}
+
+static void test_admission_freq_reject_cold_candidate(int cache_map_fd, int has_real_bpf_map) {
+    printf("\n--- Test: Admission Frequency Reject Cold Candidate ---\n");
+
+    if (!has_real_bpf_map) {
+        printf("  [SKIP] Requires BPF map (need root)\n");
+        return;
+    }
+
+    struct cache_entry entries[1];
+    struct cache_key slot_owners[1];
+    struct cache_key recent_keys[8];
+    uint64_t recent_ns[8];
+    uint8_t slot_hot[1] = { 0 };
+    uint32_t slot_hits[1] = { 0 };
+    uint16_t row0[64] = { 0 }, row1[64] = { 0 }, row2[64] = { 0 }, row3[64] = { 0 };
+    uint32_t next_idx = 0;
+    memset(entries, 0, sizeof(entries));
+    memset(slot_owners, 0, sizeof(slot_owners));
+    memset(recent_keys, 0, sizeof(recent_keys));
+    memset(recent_ns, 0, sizeof(recent_ns));
+
+    struct cache_context ctx = {
+        .entries = entries,
+        .next_idx = &next_idx,
+        .max_entries = 1,
+        .cache_map_fd = cache_map_fd,
+        .slot_owners = slot_owners,
+        .next_gen = 0,
+        .admission_enabled = 1,
+        .admission_min_ttl = 1,
+        .pressure_mode = 1,
+        .hot_threshold = 2,
+        .recent_insert_keys = recent_keys,
+        .recent_insert_ns = recent_ns,
+        .recent_insert_cap = 8,
+        .slot_hot = slot_hot,
+        .slot_hit_count = slot_hits,
+        .freq_width = 64,
+        .freq_epoch_ops = 128,
+        .freq_rows = { row0, row1, row2, row3 },
+    };
+
+    struct dns_builder hot;
+    uint8_t hot_ip[4] = { 7, 7, 7, 7 };
+    builder_init(&hot, 0x4101, 0x8180, 1, 1, 0, 0);
+    builder_add_question(&hot, "hot.com", DNS_TYPE_A, DNS_CLASS_IN);
+    builder_add_answer(&hot, "hot.com", DNS_TYPE_A, DNS_CLASS_IN, 120, 4, hot_ip);
+
+    call_handle_packet(&ctx, hot.buf, hot.len);
+    call_handle_packet(&ctx, hot.buf, hot.len);
+    call_handle_packet(&ctx, hot.buf, hot.len);
+
+    struct dns_builder cold;
+    uint8_t cold_ip[4] = { 8, 8, 8, 8 };
+    builder_init(&cold, 0x4102, 0x8180, 1, 1, 0, 0);
+    builder_add_question(&cold, "cold.com", DNS_TYPE_A, DNS_CLASS_IN);
+    builder_add_answer(&cold, "cold.com", DNS_TYPE_A, DNS_CLASS_IN, 120, 4, cold_ip);
+    call_handle_packet(&ctx, cold.buf, cold.len);
+
+    uint32_t hot_hash = 0;
+    calculate_hash_strict_impl(hot.buf, sizeof(struct dns_hdr), hot.len, &hot_hash);
+    struct cache_key hot_key = { .name_hash = hot_hash,
+                                 .qtype = DNS_TYPE_A,
+                                 .qclass = DNS_CLASS_IN };
+    struct cache_value val;
+    int err = bpf_map_lookup_elem(cache_map_fd, &hot_key, &val);
+    TEST_ASSERT(err == 0, "hot key should survive cold candidate under pressure mode");
+}
+
+static void test_hot_promotion_on_rehit(int cache_map_fd, int has_real_bpf_map) {
+    printf("\n--- Test: Hot Promotion On Re-hit ---\n");
+
+    if (!has_real_bpf_map) {
+        printf("  [SKIP] Requires BPF map (need root)\n");
+        return;
+    }
+
+    struct cache_entry entries[1];
+    struct cache_key slot_owners[1];
+    struct cache_key recent_keys[8];
+    uint64_t recent_ns[8];
+    uint8_t slot_hot[1] = { 0 };
+    uint32_t slot_hits[1] = { 0 };
+    uint16_t row0[64] = { 0 }, row1[64] = { 0 }, row2[64] = { 0 }, row3[64] = { 0 };
+    uint32_t next_idx = 0;
+
+    memset(entries, 0, sizeof(entries));
+    memset(slot_owners, 0, sizeof(slot_owners));
+    memset(recent_keys, 0, sizeof(recent_keys));
+    memset(recent_ns, 0, sizeof(recent_ns));
+
+    struct cache_context ctx = {
+        .entries = entries,
+        .next_idx = &next_idx,
+        .max_entries = 1,
+        .cache_map_fd = cache_map_fd,
+        .slot_owners = slot_owners,
+        .next_gen = 0,
+        .admission_enabled = 1,
+        .admission_min_ttl = 1,
+        .pressure_mode = 0,
+        .hot_threshold = 100,
+        .recent_insert_keys = recent_keys,
+        .recent_insert_ns = recent_ns,
+        .recent_insert_cap = 8,
+        .slot_hot = slot_hot,
+        .slot_hit_count = slot_hits,
+        .freq_width = 64,
+        .freq_epoch_ops = 128,
+        .freq_rows = { row0, row1, row2, row3 },
+    };
+
+    struct dns_builder b;
+    uint8_t ip[4] = { 9, 9, 9, 9 };
+    builder_init(&b, 0x4201, 0x8180, 1, 1, 0, 0);
+    builder_add_question(&b, "rehit.com", DNS_TYPE_A, DNS_CLASS_IN);
+    builder_add_answer(&b, "rehit.com", DNS_TYPE_A, DNS_CLASS_IN, 120, 4, ip);
+
+    call_handle_packet(&ctx, b.buf, b.len);
+    TEST_ASSERT(slot_hot[0] == 0, "first insert remains cold");
+
+    call_handle_packet(&ctx, b.buf, b.len);
+    TEST_ASSERT(slot_hot[0] == 1, "same-key re-hit promotes slot to hot");
+}
+
 int main(void) {
     printf("================================================================\n");
     printf("Arena Cache Storage Correctness Tests (Post-Fix)\n");
@@ -625,6 +853,10 @@ int main(void) {
     test_seqlock_torn_read_detection();
     test_ttl_cleanup(map_fd, has_real_bpf_map);
     test_slot_owners_tracking(map_fd);
+    test_admission_min_ttl_reject(map_fd, has_real_bpf_map);
+    test_admission_recent_dampen_reject(map_fd, has_real_bpf_map);
+    test_admission_freq_reject_cold_candidate(map_fd, has_real_bpf_map);
+    test_hot_promotion_on_rehit(map_fd, has_real_bpf_map);
 
     if (map_fd >= 0)
         close(map_fd);

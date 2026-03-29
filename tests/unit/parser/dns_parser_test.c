@@ -56,6 +56,7 @@ static int has_bpf = 0;
 
 static void setup_test() {
     test_next_idx = 0;
+    memset(&test_ctx, 0, sizeof(test_ctx));
     memset(test_entries, 0, sizeof(test_entries));
     static struct cache_key slot_owners[10];
     memset(slot_owners, 0, sizeof(slot_owners));
@@ -63,6 +64,7 @@ static void setup_test() {
     test_ctx.next_idx = &test_next_idx;
     test_ctx.max_entries = 10;
     test_ctx.slot_owners = slot_owners;
+    test_ctx.admission_enabled = 0;
 }
 
 struct dns_builder {

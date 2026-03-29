@@ -27,6 +27,22 @@
 
 #define OBS_HTTP_BUF_SIZE 8192
 
+static int send_all(int fd, const char* buf, size_t len) {
+    size_t sent = 0;
+    while (sent < len) {
+        ssize_t n = send(fd, buf + sent, len - sent, 0);
+        if (n < 0) {
+            if (errno == EINTR)
+                continue;
+            return -1;
+        }
+        if (n == 0)
+            return -1;
+        sent += (size_t)n;
+    }
+    return 0;
+}
+
 /**
  * @brief Write an HTTP response to a socket.
  * @param fd Socket file descriptor.
@@ -50,8 +66,8 @@ static void write_response(int fd, const char* status, const char* content_type,
         body_len
     );
     if (hdr_len > 0)
-        send(fd, header, (size_t)hdr_len, 0);
-    send(fd, body, body_len, 0);
+        send_all(fd, header, (size_t)hdr_len);
+    send_all(fd, body, body_len);
 }
 
 static void
@@ -219,6 +235,72 @@ render_metrics(char* out, size_t out_size, struct obs_metrics* m, struct degrade
         PRIu64
     );
     COUNTER(
+        "shinku_cache_admission_attempt_total",
+        "Cache admission attempts",
+        LOAD(m->cache_admission_attempt_total.value),
+        PRIu64
+    );
+    COUNTER(
+        "shinku_cache_admission_accept_total",
+        "Accepted cache admission decisions",
+        LOAD(m->cache_admission_accept_total.value),
+        PRIu64
+    );
+    COUNTER(
+        "shinku_cache_admission_reject_total",
+        "Rejected cache admission decisions",
+        LOAD(m->cache_admission_reject_total.value),
+        PRIu64
+    );
+    COUNTER(
+        "shinku_cache_admission_reject_recent_total",
+        "Rejected by recent-insert dampening",
+        LOAD(m->cache_admission_reject_recent_total.value),
+        PRIu64
+    );
+    COUNTER(
+        "shinku_cache_admission_reject_ttl_total",
+        "Rejected by minimum TTL policy",
+        LOAD(m->cache_admission_reject_ttl_total.value),
+        PRIu64
+    );
+    COUNTER(
+        "shinku_cache_admission_reject_freq_total",
+        "Rejected by frequency compare policy",
+        LOAD(m->cache_admission_reject_freq_total.value),
+        PRIu64
+    );
+    COUNTER(
+        "shinku_cache_eviction_total",
+        "Total evictions caused by slot reuse",
+        LOAD(m->cache_eviction_total.value),
+        PRIu64
+    );
+    COUNTER(
+        "shinku_cache_eviction_hot_total",
+        "Evictions where victim slot was hot",
+        LOAD(m->cache_eviction_hot_total.value),
+        PRIu64
+    );
+    COUNTER(
+        "shinku_cache_eviction_cold_total",
+        "Evictions where victim slot was cold",
+        LOAD(m->cache_eviction_cold_total.value),
+        PRIu64
+    );
+    GAUGE(
+        "shinku_cache_hot_segment_size",
+        "Current number of hot segment entries",
+        LOAD(m->cache_hot_segment_size.value),
+        PRIu64
+    );
+    GAUGE(
+        "shinku_cache_cold_segment_size",
+        "Current number of cold segment entries",
+        LOAD(m->cache_cold_segment_size.value),
+        PRIu64
+    );
+    COUNTER(
         "shinku_negative_cache_accept_total",
         "Accepted negative cache inserts (all types)",
         LOAD(m->negative_cache_accept_total[OBS_NEGATIVE_NXDOMAIN].value)
@@ -343,7 +425,11 @@ static void handle_client(int client_fd, struct obs_http_server* srv) {
 static void* obs_http_thread(void* arg) {
     struct obs_http_server* srv = arg;
     while (atomic_load_explicit(&srv->running, memory_order_acquire)) {
-        int client_fd = accept(srv->listen_fd, NULL, NULL);
+        int listen_fd = atomic_load_explicit(&srv->listen_fd, memory_order_acquire);
+        if (listen_fd < 0)
+            break;
+
+        int client_fd = accept(listen_fd, NULL, NULL);
         if (client_fd < 0) {
             if (errno == EINTR)
                 continue;
@@ -371,6 +457,7 @@ int obs_http_start(
     srv->metrics = metrics;
     srv->degraded = degraded;
     srv->bpf_ready = bpf_ready;
+    atomic_store_explicit(&srv->listen_fd, -1, memory_order_relaxed);
 
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0)
@@ -390,18 +477,26 @@ int obs_http_start(
         return -1;
     }
 
+    if (port == 0) {
+        struct sockaddr_in bound_addr;
+        socklen_t bound_len = sizeof(bound_addr);
+        memset(&bound_addr, 0, sizeof(bound_addr));
+        if (getsockname(fd, (struct sockaddr*)&bound_addr, &bound_len) == 0)
+            srv->port = ntohs(bound_addr.sin_port);
+    }
+
     if (listen(fd, 16) < 0) {
         close(fd);
         return -1;
     }
 
-    srv->listen_fd = fd;
+    atomic_store_explicit(&srv->listen_fd, fd, memory_order_release);
     atomic_store_explicit(&srv->running, true, memory_order_release);
 
     int err = pthread_create(&srv->thread, NULL, obs_http_thread, srv);
     if (err != 0) {
         close(fd);
-        srv->listen_fd = -1;
+        atomic_store_explicit(&srv->listen_fd, -1, memory_order_release);
         atomic_store_explicit(&srv->running, false, memory_order_release);
         return -1;
     }
@@ -414,9 +509,11 @@ void obs_http_stop(struct obs_http_server* srv) {
         return;
 
     atomic_store_explicit(&srv->running, false, memory_order_release);
-    shutdown(srv->listen_fd, SHUT_RDWR);
-    close(srv->listen_fd);
-    srv->listen_fd = -1;
+    int listen_fd = atomic_exchange_explicit(&srv->listen_fd, -1, memory_order_acq_rel);
+    if (listen_fd >= 0) {
+        shutdown(listen_fd, SHUT_RDWR);
+        close(listen_fd);
+    }
 
     pthread_join(srv->thread, NULL);
 }

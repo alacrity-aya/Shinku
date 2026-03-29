@@ -115,6 +115,15 @@ int main(void) {
     obs_metrics_count_negative_accept(&metrics, OBS_NEGATIVE_NXDOMAIN);
     obs_metrics_count_negative_accept(&metrics, OBS_NEGATIVE_NXDOMAIN);
     obs_metrics_count_negative_reject(&metrics, OBS_NEGATIVE_NODATA);
+    obs_metrics_count_cache_admission_attempt(&metrics);
+    obs_metrics_count_cache_admission_accept(&metrics);
+    obs_metrics_count_cache_admission_reject(&metrics);
+    obs_metrics_count_cache_admission_reject_recent(&metrics);
+    obs_metrics_count_cache_admission_reject_ttl(&metrics);
+    obs_metrics_count_cache_admission_reject_freq(&metrics);
+    obs_metrics_count_cache_eviction(&metrics, 1);
+    obs_metrics_count_cache_eviction(&metrics, 0);
+    obs_metrics_set_cache_segment_sizes(&metrics, 4, 9);
     obs_metrics_count_parser_reject(&metrics, OBS_REJECT_IPV6_IGNORED);
     obs_metrics_count_parser_reject(&metrics, OBS_REJECT_CNAME_NO_TERMINAL_A);
     obs_metrics_count_parser_reject(&metrics, OBS_REJECT_CNAME_IPV6_ONLY_TERMINAL);
@@ -187,6 +196,26 @@ int main(void) {
     TEST_ASSERT(
         strstr(resp, "shinku_cache_insert_fail_total 1") != NULL,
         "/metrics includes cache insert fail counter"
+    );
+    TEST_ASSERT(
+        strstr(resp, "shinku_cache_admission_attempt_total 1") != NULL,
+        "/metrics includes admission attempt counter"
+    );
+    TEST_ASSERT(
+        strstr(resp, "shinku_cache_admission_reject_freq_total 1") != NULL,
+        "/metrics includes admission reject freq counter"
+    );
+    TEST_ASSERT(
+        strstr(resp, "shinku_cache_eviction_hot_total 1") != NULL,
+        "/metrics includes hot eviction counter"
+    );
+    TEST_ASSERT(
+        strstr(resp, "shinku_cache_hot_segment_size 4") != NULL,
+        "/metrics includes hot segment gauge"
+    );
+    TEST_ASSERT(
+        strstr(resp, "shinku_cache_cold_segment_size 9") != NULL,
+        "/metrics includes cold segment gauge"
     );
     TEST_ASSERT(
         strstr(resp, "shinku_negative_cache_accept_total 2") != NULL,

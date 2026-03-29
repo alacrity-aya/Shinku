@@ -29,6 +29,13 @@ struct env {
     uint32_t obs_enabled; /**< Userspace observability switch (0=disabled) */
     uint32_t obs_bpf_enabled; /**< BPF counter collection switch (0=disabled) */
     uint32_t obs_bpf_sample_mask; /**< BPF sampling mask: rand32 & mask == 0 */
+    uint32_t admission_enabled;
+    uint32_t pressure_mode;
+    uint32_t admission_min_ttl;
+    uint32_t admission_dampen_window_ms;
+    uint32_t hot_threshold;
+    uint32_t freq_width;
+    uint32_t freq_epoch_ops;
 };
 
 /**

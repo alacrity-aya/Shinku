@@ -26,16 +26,26 @@
 #include <time.h>
 #include <unistd.h>
 
-/** @defgroup loader_errors Internal error codes for loader_setup_bpf */
-#define ERR_SKEL_LOAD -1     /**< Skeleton load failed */
-#define ERR_RB_CREATE -2     /**< Ring buffer creation failed */
-#define ERR_INVALID_IFACE -3 /**< Invalid network interface */
-#define ERR_XDP_ATTACH -4    /**< XDP attach failed */
-#define ERR_TC_ATTACH -5     /**< TC attach failed */
+static uint32_t floor_power_of_two(uint32_t value) {
+    if (value == 0)
+        return 0;
 
-#define ATTACH_RETRY_MAX 5       /**< Maximum attachment retry attempts */
-#define ATTACH_RETRY_BASE_MS 50  /**< Base retry delay (ms) */
-#define ATTACH_RETRY_MAX_MS 800  /**< Maximum retry delay (ms) */
+    uint32_t p = 1;
+    while ((p << 1) != 0 && (p << 1) <= value)
+        p <<= 1;
+    return p;
+}
+
+/** @defgroup loader_errors Internal error codes for loader_setup_bpf */
+#define ERR_SKEL_LOAD -1 /**< Skeleton load failed */
+#define ERR_RB_CREATE -2 /**< Ring buffer creation failed */
+#define ERR_INVALID_IFACE -3 /**< Invalid network interface */
+#define ERR_XDP_ATTACH -4 /**< XDP attach failed */
+#define ERR_TC_ATTACH -5 /**< TC attach failed */
+
+#define ATTACH_RETRY_MAX 5 /**< Maximum attachment retry attempts */
+#define ATTACH_RETRY_BASE_MS 50 /**< Base retry delay (ms) */
+#define ATTACH_RETRY_MAX_MS 800 /**< Maximum retry delay (ms) */
 
 /**
  * @brief Check if error indicates TCX is not supported.
@@ -298,6 +308,29 @@ int loader_setup_bpf(struct bpf_ctx* ctx, const struct env* env) {
     ctx->cache_context.max_entries = CACHE_MAP_MAX_ENTRIES;
     ctx->cache_context.cache_map_fd = bpf_map__fd(ctx->skel->maps.cache_map);
     ctx->cache_context.next_gen = 0;
+    ctx->cache_context.admission_enabled = env->admission_enabled ? 1 : 0;
+    ctx->cache_context.pressure_mode = env->pressure_mode ? 1 : 0;
+    ctx->cache_context.admission_min_ttl = env->admission_min_ttl;
+    ctx->cache_context.admission_dampen_window_ns =
+        ((uint64_t)env->admission_dampen_window_ms) * 1000000ULL;
+    ctx->cache_context.hot_threshold = env->hot_threshold;
+    ctx->cache_context.freq_width = env->freq_width;
+    ctx->cache_context.freq_epoch_ops = env->freq_epoch_ops;
+    ctx->cache_context.freq_ops = 0;
+    ctx->cache_context.metrics = &ctx->metrics;
+
+    uint32_t normalized_freq_width = floor_power_of_two(ctx->cache_context.freq_width);
+    if (normalized_freq_width == 0)
+        normalized_freq_width = 1;
+    if (normalized_freq_width != ctx->cache_context.freq_width) {
+        fprintf(
+            stderr,
+            "[Config] freq_width=%u adjusted to power-of-two=%u for sketch indexing\n",
+            ctx->cache_context.freq_width,
+            normalized_freq_width
+        );
+        ctx->cache_context.freq_width = normalized_freq_width;
+    }
     ctx->parser_runtime.obs = &ctx->obs_ctx;
     ctx->parser_runtime.degraded = &ctx->degraded;
     ctx->parser_context.cache = &ctx->cache_context;
@@ -305,6 +338,55 @@ int loader_setup_bpf(struct bpf_ctx* ctx, const struct env* env) {
     ctx->cache_context.slot_owners = calloc(CACHE_MAP_MAX_ENTRIES, sizeof(struct cache_key));
     if (!ctx->cache_context.slot_owners) {
         fprintf(stderr, "Failed to allocate slot_owners array, continuing in degraded mode\n");
+        obs_metrics_mark_degraded(&ctx->metrics, OBS_DEGRADED_CACHE_MAP_UPDATE_FAIL);
+    }
+
+    ctx->cache_context.recent_insert_cap = CACHE_MAP_MAX_ENTRIES;
+    ctx->cache_context.recent_insert_keys =
+        calloc(ctx->cache_context.recent_insert_cap, sizeof(struct cache_key));
+    ctx->cache_context.recent_insert_ns =
+        calloc(ctx->cache_context.recent_insert_cap, sizeof(uint64_t));
+    ctx->cache_context.slot_hit_count = calloc(CACHE_MAP_MAX_ENTRIES, sizeof(uint32_t));
+    ctx->cache_context.slot_hot = calloc(CACHE_MAP_MAX_ENTRIES, sizeof(uint8_t));
+
+    int admission_meta_ok = 1;
+    if (!ctx->cache_context.recent_insert_keys || !ctx->cache_context.recent_insert_ns
+        || !ctx->cache_context.slot_hit_count || !ctx->cache_context.slot_hot)
+    {
+        admission_meta_ok = 0;
+    }
+
+    for (int i = 0; i < 4; i++) {
+        ctx->cache_context.freq_rows[i] = calloc(ctx->cache_context.freq_width, sizeof(uint16_t));
+        if (!ctx->cache_context.freq_rows[i])
+            admission_meta_ok = 0;
+    }
+
+    if (!admission_meta_ok) {
+        fprintf(
+            stderr,
+            "[Cache] Admission metadata allocation failed, disabling admission/pressure mode\n"
+        );
+
+        free(ctx->cache_context.recent_insert_keys);
+        ctx->cache_context.recent_insert_keys = NULL;
+        free(ctx->cache_context.recent_insert_ns);
+        ctx->cache_context.recent_insert_ns = NULL;
+        free(ctx->cache_context.slot_hit_count);
+        ctx->cache_context.slot_hit_count = NULL;
+        free(ctx->cache_context.slot_hot);
+        ctx->cache_context.slot_hot = NULL;
+        for (int i = 0; i < 4; i++) {
+            free(ctx->cache_context.freq_rows[i]);
+            ctx->cache_context.freq_rows[i] = NULL;
+        }
+
+        ctx->cache_context.recent_insert_cap = 0;
+        ctx->cache_context.recent_insert_next = 0;
+        ctx->cache_context.freq_width = 0;
+        ctx->cache_context.freq_ops = 0;
+        ctx->cache_context.admission_enabled = 0;
+        ctx->cache_context.pressure_mode = 0;
         obs_metrics_mark_degraded(&ctx->metrics, OBS_DEGRADED_CACHE_MAP_UPDATE_FAIL);
     }
 
@@ -520,6 +602,18 @@ void loader_cleanup_bpf(struct bpf_ctx* ctx) {
 
     free(ctx->cache_context.slot_owners);
     ctx->cache_context.slot_owners = NULL;
+    free(ctx->cache_context.recent_insert_keys);
+    ctx->cache_context.recent_insert_keys = NULL;
+    free(ctx->cache_context.recent_insert_ns);
+    ctx->cache_context.recent_insert_ns = NULL;
+    free(ctx->cache_context.slot_hit_count);
+    ctx->cache_context.slot_hit_count = NULL;
+    free(ctx->cache_context.slot_hot);
+    ctx->cache_context.slot_hot = NULL;
+    for (int i = 0; i < 4; i++) {
+        free(ctx->cache_context.freq_rows[i]);
+        ctx->cache_context.freq_rows[i] = NULL;
+    }
 
     free(ctx->obs_percpu_vals);
     ctx->obs_percpu_vals = NULL;

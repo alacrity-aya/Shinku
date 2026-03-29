@@ -68,6 +68,93 @@ void obs_metrics_count_cache_insert(struct obs_metrics* metrics, int success) {
         atomic_fetch_add_explicit(&metrics->cache_insert_fail_total.value, 1, memory_order_relaxed);
 }
 
+void obs_metrics_count_cache_admission_attempt(struct obs_metrics* metrics) {
+    if (!metrics || !metrics->cfg.enabled)
+        return;
+    atomic_fetch_add_explicit(
+        &metrics->cache_admission_attempt_total.value,
+        1,
+        memory_order_relaxed
+    );
+}
+
+void obs_metrics_count_cache_admission_accept(struct obs_metrics* metrics) {
+    if (!metrics || !metrics->cfg.enabled)
+        return;
+    atomic_fetch_add_explicit(
+        &metrics->cache_admission_accept_total.value,
+        1,
+        memory_order_relaxed
+    );
+}
+
+void obs_metrics_count_cache_admission_reject(struct obs_metrics* metrics) {
+    if (!metrics || !metrics->cfg.enabled)
+        return;
+    atomic_fetch_add_explicit(
+        &metrics->cache_admission_reject_total.value,
+        1,
+        memory_order_relaxed
+    );
+}
+
+void obs_metrics_count_cache_admission_reject_recent(struct obs_metrics* metrics) {
+    if (!metrics || !metrics->cfg.enabled)
+        return;
+    atomic_fetch_add_explicit(
+        &metrics->cache_admission_reject_recent_total.value,
+        1,
+        memory_order_relaxed
+    );
+}
+
+void obs_metrics_count_cache_admission_reject_ttl(struct obs_metrics* metrics) {
+    if (!metrics || !metrics->cfg.enabled)
+        return;
+    atomic_fetch_add_explicit(
+        &metrics->cache_admission_reject_ttl_total.value,
+        1,
+        memory_order_relaxed
+    );
+}
+
+void obs_metrics_count_cache_admission_reject_freq(struct obs_metrics* metrics) {
+    if (!metrics || !metrics->cfg.enabled)
+        return;
+    atomic_fetch_add_explicit(
+        &metrics->cache_admission_reject_freq_total.value,
+        1,
+        memory_order_relaxed
+    );
+}
+
+void obs_metrics_count_cache_eviction(struct obs_metrics* metrics, int was_hot) {
+    if (!metrics || !metrics->cfg.enabled)
+        return;
+
+    atomic_fetch_add_explicit(&metrics->cache_eviction_total.value, 1, memory_order_relaxed);
+    if (was_hot)
+        atomic_fetch_add_explicit(
+            &metrics->cache_eviction_hot_total.value,
+            1,
+            memory_order_relaxed
+        );
+    else
+        atomic_fetch_add_explicit(
+            &metrics->cache_eviction_cold_total.value,
+            1,
+            memory_order_relaxed
+        );
+}
+
+void obs_metrics_set_cache_segment_sizes(struct obs_metrics* metrics, uint32_t hot, uint32_t cold) {
+    if (!metrics || !metrics->cfg.enabled)
+        return;
+
+    atomic_store_explicit(&metrics->cache_hot_segment_size.value, hot, memory_order_relaxed);
+    atomic_store_explicit(&metrics->cache_cold_segment_size.value, cold, memory_order_relaxed);
+}
+
 void obs_metrics_count_negative_accept(struct obs_metrics* metrics, enum obs_negative_type type) {
     if (!metrics || !metrics->cfg.enabled)
         return;

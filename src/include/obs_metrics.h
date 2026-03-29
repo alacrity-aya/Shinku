@@ -117,6 +117,17 @@ struct obs_metrics {
     struct obs_aligned_counter parser_reject_by_reason[OBS_REJECT_MAX]; /**< Rejections by reason */
     struct obs_aligned_counter cache_insert_total; /**< Total cache insert attempts */
     struct obs_aligned_counter cache_insert_fail_total; /**< Failed cache inserts */
+    struct obs_aligned_counter cache_admission_attempt_total;
+    struct obs_aligned_counter cache_admission_accept_total;
+    struct obs_aligned_counter cache_admission_reject_total;
+    struct obs_aligned_counter cache_admission_reject_recent_total;
+    struct obs_aligned_counter cache_admission_reject_ttl_total;
+    struct obs_aligned_counter cache_admission_reject_freq_total;
+    struct obs_aligned_counter cache_eviction_total;
+    struct obs_aligned_counter cache_eviction_hot_total;
+    struct obs_aligned_counter cache_eviction_cold_total;
+    struct obs_aligned_counter cache_hot_segment_size;
+    struct obs_aligned_counter cache_cold_segment_size;
     struct obs_aligned_counter
         negative_cache_accept_total[OBS_NEGATIVE_MAX]; /**< Negative cache accepts */
     struct obs_aligned_counter
@@ -168,6 +179,15 @@ void obs_metrics_count_parser_reject(
  * @param success Non-zero if insert succeeded, zero if failed.
  */
 void obs_metrics_count_cache_insert(struct obs_metrics* metrics, int success);
+
+void obs_metrics_count_cache_admission_attempt(struct obs_metrics* metrics);
+void obs_metrics_count_cache_admission_accept(struct obs_metrics* metrics);
+void obs_metrics_count_cache_admission_reject(struct obs_metrics* metrics);
+void obs_metrics_count_cache_admission_reject_recent(struct obs_metrics* metrics);
+void obs_metrics_count_cache_admission_reject_ttl(struct obs_metrics* metrics);
+void obs_metrics_count_cache_admission_reject_freq(struct obs_metrics* metrics);
+void obs_metrics_count_cache_eviction(struct obs_metrics* metrics, int was_hot);
+void obs_metrics_set_cache_segment_sizes(struct obs_metrics* metrics, uint32_t hot, uint32_t cold);
 
 /**
  * @brief Count an accepted negative cache entry.
