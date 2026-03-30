@@ -27,6 +27,16 @@
 
 #define OBS_HTTP_BUF_SIZE 8192
 
+/**
+ * @brief Send all data on a socket, handling partial writes.
+ * @param fd Socket file descriptor.
+ * @param buf Data to send.
+ * @param len Length of data.
+ * @return 0 on success, -1 on error.
+ *
+ * Loops until all bytes are sent or an error occurs.
+ * Handles EINTR by retrying.
+ */
 static int send_all(int fd, const char* buf, size_t len) {
     size_t sent = 0;
     while (sent < len) {
@@ -70,8 +80,17 @@ static void write_response(int fd, const char* status, const char* content_type,
     send_all(fd, body, body_len);
 }
 
-static void
-render_metrics(char* out, size_t out_size, struct obs_metrics* m, struct degraded_state* degraded) {
+/**
+ * @brief Render Prometheus metrics to a string buffer.
+ * @param out Output buffer.
+ * @param out_size Size of output buffer.
+ * @param m Metrics structure to render.
+ * @param degraded Degraded state for health status.
+ *
+ * Formats all metrics in Prometheus text exposition format.
+ * Sets truncated flag if output exceeds buffer size.
+ */
+static void render_metrics(char* out, size_t out_size, struct obs_metrics* m, struct degraded_state* degraded) {
     size_t remaining = out_size;
     int truncated = 0;
 
@@ -93,28 +112,19 @@ render_metrics(char* out, size_t out_size, struct obs_metrics* m, struct degrade
 
 #define LOAD(field) atomic_load_explicit(&(field), memory_order_relaxed)
 
-#define GAUGE(name, help, val, fmt) \
-    APPEND("# HELP " name " " help "\n# TYPE " name " gauge\n" name " %" fmt "\n", val)
+#define GAUGE(name, help, val, fmt) APPEND("# HELP " name " " help "\n# TYPE " name " gauge\n" name " %" fmt "\n", val)
 
 #define COUNTER(name, help, val, fmt) \
     APPEND("# HELP " name " " help "\n# TYPE " name " counter\n" name " %" fmt "\n", val)
 
     uint32_t flags = degraded ? degraded_get_reason_flags(degraded) : 0;
 
-    GAUGE(
-        "shinku_degraded_mode",
-        "1 if any degraded mode reason is active",
-        flags ? 1u : 0u,
-        PRIu32
-    );
+    GAUGE("shinku_degraded_mode", "1 if any degraded mode reason is active", flags ? 1u : 0u, PRIu32);
 
     APPEND("# HELP shinku_degraded_reason_active Active degraded reasons by type\n");
     APPEND("# TYPE shinku_degraded_reason_active gauge\n");
 #define DEGRADED_ACTIVE(reason_str, flag) \
-    APPEND( \
-        "shinku_degraded_reason_active{reason=\"" reason_str "\"} %u\n", \
-        (flags & (flag)) ? 1u : 0u \
-    )
+    APPEND("shinku_degraded_reason_active{reason=\"" reason_str "\"} %u\n", (flags & (flag)) ? 1u : 0u)
 
     DEGRADED_ACTIVE("userspace_lag", DEGRADED_REASON_USERSPACE_LAG);
     DEGRADED_ACTIVE("cleanup_failure", DEGRADED_REASON_CLEANUP_FAILURE);
@@ -129,9 +139,7 @@ render_metrics(char* out, size_t out_size, struct obs_metrics* m, struct degrade
         PRIu64
     );
 
-    APPEND(
-        "# HELP shinku_degraded_reason_set_total Number of times each degraded reason became active\n"
-    );
+    APPEND("# HELP shinku_degraded_reason_set_total Number of times each degraded reason became active\n");
     APPEND("# TYPE shinku_degraded_reason_set_total counter\n");
 #define DEGRADED_SET(reason_str, idx) \
     APPEND( \
@@ -152,15 +160,10 @@ render_metrics(char* out, size_t out_size, struct obs_metrics* m, struct degrade
         PRIu32
     );
 
-#define BPF_COUNTER(metric, help, enum_val) \
-    COUNTER(metric, help, LOAD(m->bpf_counters[enum_val].value), PRIu64)
+#define BPF_COUNTER(metric, help, enum_val) COUNTER(metric, help, LOAD(m->bpf_counters[enum_val].value), PRIu64)
 
     BPF_COUNTER("shinku_cache_hit_total", "Number of sampled XDP cache hits", OBS_BPF_CACHE_HIT);
-    BPF_COUNTER(
-        "shinku_cache_miss_total",
-        "Number of sampled XDP cache misses",
-        OBS_BPF_CACHE_MISS
-    );
+    BPF_COUNTER("shinku_cache_miss_total", "Number of sampled XDP cache misses", OBS_BPF_CACHE_MISS);
     BPF_COUNTER(
         "shinku_cache_expired_hit_total",
         "Number of sampled expired cache entries encountered in XDP",
@@ -171,17 +174,9 @@ render_metrics(char* out, size_t out_size, struct obs_metrics* m, struct degrade
         "Number of sampled generation mismatches",
         OBS_BPF_CACHE_GEN_MISMATCH
     );
-    BPF_COUNTER(
-        "shinku_cache_seq_conflict_total",
-        "Number of sampled seqlock conflicts",
-        OBS_BPF_CACHE_SEQ_CONFLICT
-    );
+    BPF_COUNTER("shinku_cache_seq_conflict_total", "Number of sampled seqlock conflicts", OBS_BPF_CACHE_SEQ_CONFLICT);
     BPF_COUNTER("shinku_xdp_tx_total", "Number of sampled XDP_TX responses", OBS_BPF_XDP_TX);
-    BPF_COUNTER(
-        "shinku_tc_capture_total",
-        "Number of sampled TC-captured DNS responses",
-        OBS_BPF_TC_CAPTURE
-    );
+    BPF_COUNTER("shinku_tc_capture_total", "Number of sampled TC-captured DNS responses", OBS_BPF_TC_CAPTURE);
     BPF_COUNTER(
         "shinku_tc_ringbuf_drop_total",
         "Number of sampled TC ringbuf reservation drops",
@@ -189,12 +184,7 @@ render_metrics(char* out, size_t out_size, struct obs_metrics* m, struct degrade
     );
 #undef BPF_COUNTER
 
-    COUNTER(
-        "shinku_parser_reject_total",
-        "Number of parser rejections",
-        LOAD(m->parser_reject_total.value),
-        PRIu64
-    );
+    COUNTER("shinku_parser_reject_total", "Number of parser rejections", LOAD(m->parser_reject_total.value), PRIu64);
 
     APPEND("# HELP shinku_parser_reject_reason_total Parser reject counters by reason\n");
     APPEND("# TYPE shinku_parser_reject_reason_total counter\n");
@@ -222,18 +212,8 @@ render_metrics(char* out, size_t out_size, struct obs_metrics* m, struct degrade
     REJECT_REASON("negative_bad_policy", OBS_REJECT_NEGATIVE_BAD_POLICY);
 #undef REJECT_REASON
 
-    COUNTER(
-        "shinku_cache_insert_total",
-        "Successful cache inserts",
-        LOAD(m->cache_insert_total.value),
-        PRIu64
-    );
-    COUNTER(
-        "shinku_cache_insert_fail_total",
-        "Failed cache inserts",
-        LOAD(m->cache_insert_fail_total.value),
-        PRIu64
-    );
+    COUNTER("shinku_cache_insert_total", "Successful cache inserts", LOAD(m->cache_insert_total.value), PRIu64);
+    COUNTER("shinku_cache_insert_fail_total", "Failed cache inserts", LOAD(m->cache_insert_fail_total.value), PRIu64);
     COUNTER(
         "shinku_cache_admission_attempt_total",
         "Cache admission attempts",
@@ -307,9 +287,7 @@ render_metrics(char* out, size_t out_size, struct obs_metrics* m, struct degrade
             + LOAD(m->negative_cache_accept_total[OBS_NEGATIVE_NODATA].value),
         PRIu64
     );
-    APPEND(
-        "# HELP shinku_negative_cache_accept_by_type_total Accepted negative cache inserts by type\n"
-    );
+    APPEND("# HELP shinku_negative_cache_accept_by_type_total Accepted negative cache inserts by type\n");
     APPEND("# TYPE shinku_negative_cache_accept_by_type_total counter\n");
     APPEND(
         "shinku_negative_cache_accept_by_type_total{type=\"nxdomain\"} %" PRIu64 "\n",
@@ -327,9 +305,7 @@ render_metrics(char* out, size_t out_size, struct obs_metrics* m, struct degrade
             + LOAD(m->negative_cache_reject_total[OBS_NEGATIVE_NODATA].value),
         PRIu64
     );
-    APPEND(
-        "# HELP shinku_negative_cache_reject_by_type_total Rejected negative cache inserts by type\n"
-    );
+    APPEND("# HELP shinku_negative_cache_reject_by_type_total Rejected negative cache inserts by type\n");
     APPEND("# TYPE shinku_negative_cache_reject_by_type_total counter\n");
     APPEND(
         "shinku_negative_cache_reject_by_type_total{type=\"nxdomain\"} %" PRIu64 "\n",
@@ -395,12 +371,7 @@ static void handle_client(int client_fd, struct obs_http_server* srv) {
         if (srv->bpf_ready && atomic_load_explicit(srv->bpf_ready, memory_order_acquire))
             write_response(client_fd, "200 OK", "text/plain; charset=utf-8", "ready\n");
         else
-            write_response(
-                client_fd,
-                "503 Service Unavailable",
-                "text/plain; charset=utf-8",
-                "not_ready\n"
-            );
+            write_response(client_fd, "503 Service Unavailable", "text/plain; charset=utf-8", "not_ready\n");
         return;
     }
 

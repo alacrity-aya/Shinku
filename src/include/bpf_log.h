@@ -13,7 +13,7 @@
  */
 
 #ifndef SHINKU_BPF_LOG_ENABLED
-#define SHINKU_BPF_LOG_ENABLED 0
+    #define SHINKU_BPF_LOG_ENABLED 0
 #endif
 
 /**
@@ -32,8 +32,8 @@ enum log_level {
  * @brief Log event structure sent from BPF to userspace.
  */
 struct log_event {
-    int level;       /**< Log level (from enum log_level) */
-    char msg[128];   /**< Formatted log message */
+    int level;     /**< Log level (from enum log_level) */
+    char msg[128]; /**< Formatted log message */
 };
 
 /* ============================================================================
@@ -50,7 +50,7 @@ struct {
     __uint(max_entries, 256 * 1024);
 } _rb_log SEC(".maps");
 
-/**
+    /**
  * @brief Internal: Reserve ring buffer and format log message.
  * @param lvl Log level.
  * @param fmt Printf-style format string.
@@ -63,13 +63,7 @@ struct {
                 if (__e) { \
                     __e->level = lvl; \
                     __u64 __args[] = { 0, ##__VA_ARGS__, 0 }; \
-                    bpf_snprintf( \
-                        __e->msg, \
-                        sizeof(__e->msg), \
-                        fmt, \
-                        &__args[1], \
-                        sizeof(__args) - sizeof(__u64) \
-                    ); \
+                    bpf_snprintf(__e->msg, sizeof(__e->msg), fmt, &__args[1], sizeof(__args) - sizeof(__u64)); \
                     bpf_ringbuf_submit(__e, 0); \
                 } \
             })
@@ -103,17 +97,17 @@ struct {
  * @brief Configuration options for log output in userspace.
  */
 struct log_options {
-    enum log_level min_level;  /**< Minimum level to display */
-    bool show_timestamp;       /**< Include timestamp in output */
-    bool use_color;            /**< Use ANSI color codes */
+    enum log_level min_level; /**< Minimum level to display */
+    bool show_timestamp;      /**< Include timestamp in output */
+    bool use_color;           /**< Use ANSI color codes */
 };
 
-/* ANSI color codes for log output */
-#define COL_RESET "\033[0m"      /**< Reset color */
-#define COL_RED "\033[1;31m"     /**< Red (error) */
-#define COL_YELLOW "\033[1;33m"  /**< Yellow (warning) */
-#define COL_GREEN "\033[1;32m"   /**< Green (info) */
-#define COL_GRAY "\033[1;30m"    /**< Gray (debug) */
+    /* ANSI color codes for log output */
+    #define COL_RESET "\033[0m"     /**< Reset color */
+    #define COL_RED "\033[1;31m"    /**< Red (error) */
+    #define COL_YELLOW "\033[1;33m" /**< Yellow (warning) */
+    #define COL_GREEN "\033[1;32m"  /**< Green (info) */
+    #define COL_GRAY "\033[1;30m"   /**< Gray (debug) */
 
 /**
  * @brief Print a BPF log event to stdout.
@@ -195,10 +189,10 @@ static inline int print_bpf_log(void* ctx, void* data, [[maybe_unused]] size_t l
     return 0;
 }
 
-/* Make clangd happy: define empty macros for userspace */
-#define bpf_debug(fmt, ...)
-#define bpf_info(fmt, ...)
-#define bpf_warn(fmt, ...)
-#define bpf_err(fmt, ...)
+    /* Make clangd happy: define empty macros for userspace */
+    #define bpf_debug(fmt, ...)
+    #define bpf_info(fmt, ...)
+    #define bpf_warn(fmt, ...)
+    #define bpf_err(fmt, ...)
 
 #endif

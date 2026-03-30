@@ -26,10 +26,7 @@
 /** @brief Cache line size for alignment (x86_64) */
 #define OBS_CACHELINE_SIZE 64
 
-static_assert(
-    sizeof(atomic_uint_fast64_t) <= OBS_CACHELINE_SIZE,
-    "atomic counter larger than cache line"
-);
+static_assert(sizeof(atomic_uint_fast64_t) <= OBS_CACHELINE_SIZE, "atomic counter larger than cache line");
 
 /**
  * @struct obs_aligned_counter
@@ -39,7 +36,7 @@ static_assert(
  * to different counters do not cause cache line bouncing between cores.
  */
 struct obs_aligned_counter {
-    alignas(OBS_CACHELINE_SIZE) atomic_uint_fast64_t value; /**< Atomic counter value */
+    alignas(OBS_CACHELINE_SIZE) atomic_uint_fast64_t value;         /**< Atomic counter value */
     uint8_t pad[OBS_CACHELINE_SIZE - sizeof(atomic_uint_fast64_t)]; /**< Padding */
 };
 
@@ -48,8 +45,8 @@ struct obs_aligned_counter {
  * @brief Configuration for metrics collection.
  */
 struct obs_metrics_config {
-    uint8_t enabled; /**< Master enable switch */
-    uint8_t bpf_enabled; /**< Enable BPF-side metric collection */
+    uint8_t enabled;          /**< Master enable switch */
+    uint8_t bpf_enabled;      /**< Enable BPF-side metric collection */
     uint32_t bpf_sample_mask; /**< Sampling mask for BPF metrics (1=sample every packet) */
 };
 
@@ -58,24 +55,23 @@ struct obs_metrics_config {
  * @brief Reasons for rejecting DNS responses during parsing.
  */
 enum obs_parser_reject_reason {
-    OBS_REJECT_NOT_RESPONSE = 0, /**< Packet is not a DNS response (QR=0) */
-    OBS_REJECT_BAD_QDCOUNT = 1, /**< Invalid question count (QDCOUNT != 1) */
-    OBS_REJECT_TC = 2, /**< Truncated response (TC=1) */
-    OBS_REJECT_RCODE = 3, /**< Non-zero RCODE (error response) */
-    OBS_REJECT_NO_ANSWER = 4, /**< No answer records (ANCOUNT=0) */
-    OBS_REJECT_MALFORMED_NAME = 5, /**< Malformed DNS name in packet */
-    OBS_REJECT_MALFORMED_QUESTION = 6, /**< Malformed question section */
-    OBS_REJECT_MALFORMED_RR = 7, /**< Malformed resource record */
-    OBS_REJECT_UNSUPPORTED_RTYPE = 8, /**< Unsupported record type */
-    OBS_REJECT_IPV6_IGNORED = 9, /**< IPv6 query/record ignored by policy */
-    OBS_REJECT_CNAME_NO_TERMINAL_A = 10, /**< CNAME chain for A query without terminal A */
-    OBS_REJECT_CNAME_IPV6_ONLY_TERMINAL =
-        11, /**< CNAME chain ends only in AAAA under IPv6-ignore policy */
-    OBS_REJECT_BAD_ECS = 12, /**< Invalid EDNS Client Subnet option */
-    OBS_REJECT_BAD_TTL = 13, /**< Invalid TTL value */
-    OBS_REJECT_NEGATIVE_NO_SOA = 14, /**< Negative response without SOA */
-    OBS_REJECT_NEGATIVE_BAD_POLICY = 15, /**< Negative response with invalid TTL */
-    OBS_REJECT_MAX = 16, /**< Sentinel: number of reject reasons */
+    OBS_REJECT_NOT_RESPONSE = 0,              /**< Packet is not a DNS response (QR=0) */
+    OBS_REJECT_BAD_QDCOUNT = 1,               /**< Invalid question count (QDCOUNT != 1) */
+    OBS_REJECT_TC = 2,                        /**< Truncated response (TC=1) */
+    OBS_REJECT_RCODE = 3,                     /**< Non-zero RCODE (error response) */
+    OBS_REJECT_NO_ANSWER = 4,                 /**< No answer records (ANCOUNT=0) */
+    OBS_REJECT_MALFORMED_NAME = 5,            /**< Malformed DNS name in packet */
+    OBS_REJECT_MALFORMED_QUESTION = 6,        /**< Malformed question section */
+    OBS_REJECT_MALFORMED_RR = 7,              /**< Malformed resource record */
+    OBS_REJECT_UNSUPPORTED_RTYPE = 8,         /**< Unsupported record type */
+    OBS_REJECT_IPV6_IGNORED = 9,              /**< IPv6 query/record ignored by policy */
+    OBS_REJECT_CNAME_NO_TERMINAL_A = 10,      /**< CNAME chain for A query without terminal A */
+    OBS_REJECT_CNAME_IPV6_ONLY_TERMINAL = 11, /**< CNAME chain ends only in AAAA under IPv6-ignore policy */
+    OBS_REJECT_BAD_ECS = 12,                  /**< Invalid EDNS Client Subnet option */
+    OBS_REJECT_BAD_TTL = 13,                  /**< Invalid TTL value */
+    OBS_REJECT_NEGATIVE_NO_SOA = 14,          /**< Negative response without SOA */
+    OBS_REJECT_NEGATIVE_BAD_POLICY = 15,      /**< Negative response with invalid TTL */
+    OBS_REJECT_MAX = 16,                      /**< Sentinel: number of reject reasons */
 };
 
 /**
@@ -84,8 +80,8 @@ enum obs_parser_reject_reason {
  */
 enum obs_negative_type {
     OBS_NEGATIVE_NXDOMAIN = 0, /**< Domain does not exist (RCODE=3) */
-    OBS_NEGATIVE_NODATA = 1, /**< Domain exists but no requested type (ANCOUNT=0) */
-    OBS_NEGATIVE_MAX = 2, /**< Sentinel: number of negative types */
+    OBS_NEGATIVE_NODATA = 1,   /**< Domain exists but no requested type (ANCOUNT=0) */
+    OBS_NEGATIVE_MAX = 2,      /**< Sentinel: number of negative types */
 };
 
 /**
@@ -93,16 +89,16 @@ enum obs_negative_type {
  * @brief Reasons for degraded mode activation.
  */
 enum obs_degraded_reason {
-    OBS_DEGRADED_STARTUP_ATTACH_RETRY = 0, /**< XDP/TC attach required retries */
+    OBS_DEGRADED_STARTUP_ATTACH_RETRY = 0,  /**< XDP/TC attach required retries */
     OBS_DEGRADED_STARTUP_ATTACH_FAILED = 1, /**< XDP/TC attach failed after retries */
-    OBS_DEGRADED_TCX_ATTACH_FAILED = 2, /**< TCX attach failed, fell back to TC */
-    OBS_DEGRADED_CLEANUP_THREAD_DOWN = 3, /**< Cleanup thread stopped */
-    OBS_DEGRADED_PKT_POLL_ERRORS = 4, /**< Ring buffer poll errors */
-    OBS_DEGRADED_RING_BACKLOG = 5, /**< Ring buffer backlog (userspace lag) */
-    OBS_DEGRADED_OBS_HTTP_DOWN = 6, /**< Observability HTTP server down */
+    OBS_DEGRADED_TCX_ATTACH_FAILED = 2,     /**< TCX attach failed, fell back to TC */
+    OBS_DEGRADED_CLEANUP_THREAD_DOWN = 3,   /**< Cleanup thread stopped */
+    OBS_DEGRADED_PKT_POLL_ERRORS = 4,       /**< Ring buffer poll errors */
+    OBS_DEGRADED_RING_BACKLOG = 5,          /**< Ring buffer backlog (userspace lag) */
+    OBS_DEGRADED_OBS_HTTP_DOWN = 6,         /**< Observability HTTP server down */
     OBS_DEGRADED_BPF_METRICS_SYNC_FAIL = 7, /**< BPF metrics sync failed */
     OBS_DEGRADED_CACHE_MAP_UPDATE_FAIL = 8, /**< Cache map update failures */
-    OBS_DEGRADED_MAX = 9, /**< Sentinel: number of degraded reasons */
+    OBS_DEGRADED_MAX = 9,                   /**< Sentinel: number of degraded reasons */
 };
 
 /**
@@ -112,34 +108,36 @@ enum obs_degraded_reason {
  * All counters are cache-line aligned for optimal concurrent access.
  */
 struct obs_metrics {
-    struct obs_metrics_config cfg; /**< Configuration */
-    struct obs_aligned_counter parser_reject_total; /**< Total parser rejections */
-    struct obs_aligned_counter parser_reject_by_reason[OBS_REJECT_MAX]; /**< Rejections by reason */
-    struct obs_aligned_counter cache_insert_total; /**< Total cache insert attempts */
-    struct obs_aligned_counter cache_insert_fail_total; /**< Failed cache inserts */
-    struct obs_aligned_counter cache_admission_attempt_total;
-    struct obs_aligned_counter cache_admission_accept_total;
-    struct obs_aligned_counter cache_admission_reject_total;
-    struct obs_aligned_counter cache_admission_reject_recent_total;
-    struct obs_aligned_counter cache_admission_reject_ttl_total;
-    struct obs_aligned_counter cache_admission_reject_freq_total;
-    struct obs_aligned_counter cache_eviction_total;
-    struct obs_aligned_counter cache_eviction_hot_total;
-    struct obs_aligned_counter cache_eviction_cold_total;
-    struct obs_aligned_counter cache_hot_segment_size;
-    struct obs_aligned_counter cache_cold_segment_size;
-    struct obs_aligned_counter
-        negative_cache_accept_total[OBS_NEGATIVE_MAX]; /**< Negative cache accepts */
-    struct obs_aligned_counter
-        negative_cache_reject_total[OBS_NEGATIVE_MAX]; /**< Negative cache rejects */
-    struct obs_aligned_counter cleanup_removed_total; /**< Expired entries removed */
-    struct obs_aligned_counter rb_pkt_poll_error_total; /**< Ring buffer poll errors */
-    struct obs_aligned_counter degraded_mode; /**< Current degraded mode state (0/1) */
-    struct obs_aligned_counter degraded_transition_total; /**< Total degraded mode transitions */
-    struct obs_aligned_counter
-        degraded_reason_total[OBS_DEGRADED_MAX]; /**< Reason activation counts */
-    struct obs_aligned_counter bpf_counters[OBS_BPF_METRIC_MAX]; /**< BPF-side counters */
-    struct obs_aligned_counter metrics_truncated_total;
+    struct obs_metrics_config cfg;                  /**< Metric collection configuration (sampling, enabled status) */
+    struct obs_aligned_counter parser_reject_total; /**< Total number of DNS packets rejected during parsing */
+    struct obs_aligned_counter parser_reject_by_reason[OBS_REJECT_MAX]; /**< Parser rejections categorized by specific
+                                                                           reason */
+    struct obs_aligned_counter cache_insert_total;                      /**< Total successful cache insertions */
+    struct obs_aligned_counter cache_insert_fail_total; /**< Total failed cache insertions (e.g., BPF update error) */
+    struct obs_aligned_counter cache_admission_attempt_total; /**< Total attempts made to admit an entry into cache */
+    struct obs_aligned_counter cache_admission_accept_total;  /**< Count of entries accepted by admission policy */
+    struct obs_aligned_counter cache_admission_reject_total;  /**< Count of entries rejected by admission policy */
+    struct obs_aligned_counter cache_admission_reject_recent_total; /**< Rejections due to recent-insert dampening */
+    struct obs_aligned_counter cache_admission_reject_ttl_total; /**< Rejections due to TTL below admission threshold */
+    struct obs_aligned_counter cache_admission_reject_freq_total; /**< Rejections due to low Count-Min Sketch frequency
+                                                                     estimate */
+    struct obs_aligned_counter cache_eviction_total;              /**< Total cache evictions caused by slot reuse */
+    struct obs_aligned_counter cache_eviction_hot_total;  /**< Evictions where the victim slot was marked as Hot */
+    struct obs_aligned_counter cache_eviction_cold_total; /**< Evictions where the victim slot was marked as Cold */
+    struct obs_aligned_counter cache_hot_segment_size;    /**< Current number of entries in the Hot segment */
+    struct obs_aligned_counter cache_cold_segment_size;   /**< Current number of entries in the Cold segment */
+    struct obs_aligned_counter negative_cache_accept_total[OBS_NEGATIVE_MAX]; /**< Accepted negative cache entries
+                                                                                 (NXDOMAIN/NODATA) */
+    struct obs_aligned_counter negative_cache_reject_total[OBS_NEGATIVE_MAX]; /**< Rejected negative cache entries
+                                                                                 (e.g., missing SOA) */
+    struct obs_aligned_counter cleanup_removed_total;     /**< Total expired entries removed by the cleanup thread */
+    struct obs_aligned_counter rb_pkt_poll_error_total;   /**< Errors encountered during BPF ring buffer polling */
+    struct obs_aligned_counter degraded_mode;             /**< Current system state: 1 if degraded, 0 otherwise */
+    struct obs_aligned_counter degraded_transition_total; /**< Number of times the system entered degraded mode */
+    struct obs_aligned_counter degraded_reason_total[OBS_DEGRADED_MAX]; /**< Counter for each specific reason triggering
+                                                                           degradation */
+    struct obs_aligned_counter bpf_counters[OBS_BPF_METRIC_MAX]; /**< Counters synchronized from the BPF kernel-side */
+    struct obs_aligned_counter metrics_truncated_total; /**< Number of times metric output exceeded HTTP buffer */
 };
 
 /**
@@ -168,10 +166,7 @@ void obs_metrics_init(struct obs_metrics* metrics, const struct obs_metrics_conf
  * @param reason Reason for rejection.
  * @note Increments both parser_reject_total and parser_reject_by_reason[reason].
  */
-void obs_metrics_count_parser_reject(
-    struct obs_metrics* metrics,
-    enum obs_parser_reject_reason reason
-);
+void obs_metrics_count_parser_reject(struct obs_metrics* metrics, enum obs_parser_reject_reason reason);
 
 /**
  * @brief Count a cache insert attempt.
@@ -180,13 +175,37 @@ void obs_metrics_count_parser_reject(
  */
 void obs_metrics_count_cache_insert(struct obs_metrics* metrics, int success);
 
+/** @brief Count a cache admission attempt. */
 void obs_metrics_count_cache_admission_attempt(struct obs_metrics* metrics);
+
+/** @brief Count an accepted cache admission. */
 void obs_metrics_count_cache_admission_accept(struct obs_metrics* metrics);
+
+/** @brief Count a rejected cache admission. */
 void obs_metrics_count_cache_admission_reject(struct obs_metrics* metrics);
+
+/** @brief Count a cache admission rejection due to recent insert. */
 void obs_metrics_count_cache_admission_reject_recent(struct obs_metrics* metrics);
+
+/** @brief Count a cache admission rejection due to low TTL. */
 void obs_metrics_count_cache_admission_reject_ttl(struct obs_metrics* metrics);
+
+/** @brief Count a cache admission rejection due to frequency pressure. */
 void obs_metrics_count_cache_admission_reject_freq(struct obs_metrics* metrics);
+
+/**
+ * @brief Count a cache eviction.
+ * @param metrics Metrics structure (may be NULL).
+ * @param was_hot Non-zero if evicted entry was hot, zero if cold.
+ */
 void obs_metrics_count_cache_eviction(struct obs_metrics* metrics, int was_hot);
+
+/**
+ * @brief Set hot/cold segment size gauges.
+ * @param metrics Metrics structure (may be NULL).
+ * @param hot Number of hot entries.
+ * @param cold Number of cold entries.
+ */
 void obs_metrics_set_cache_segment_sizes(struct obs_metrics* metrics, uint32_t hot, uint32_t cold);
 
 /**
@@ -224,10 +243,15 @@ void obs_metrics_count_rb_poll_error(struct obs_metrics* metrics);
  */
 void obs_metrics_mark_degraded(struct obs_metrics* metrics, enum obs_degraded_reason reason);
 
-void obs_metrics_handle_degraded_event(
-    enum shinku_event_type type,
-    const void* payload,
-    void* user_ctx
-);
+/**
+ * @brief Event handler for degraded state changes.
+ * @param type Event type (SHINKU_EVENT_DEGRADED_REASON_SET/CLEAR).
+ * @param payload Event payload (shinku_event_degraded_payload).
+ * @param user_ctx User context (obs_metrics pointer).
+ *
+ * Subscribed to degraded mode events to update metrics gauges.
+ */
+void obs_metrics_handle_degraded_event(enum shinku_event_type type, const void* payload, void* user_ctx);
 
+/** @brief Count a metrics buffer truncation event. */
 void obs_metrics_count_metrics_truncated(struct obs_metrics* metrics);

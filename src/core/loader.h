@@ -42,7 +42,7 @@ struct cleanup_config {
  * thread management.
  */
 struct bpf_ctx {
-    struct cache_bpf* skel; /**< BPF skeleton for program management */
+    struct cache_bpf* skel;     /**< BPF skeleton for program management */
     struct ring_buffer* rb_log; /**< Ring buffer for BPF logs */
     struct ring_buffer* rb_pkt; /**< Ring buffer for DNS packets */
     struct log_options log_opt; /**< Log output configuration */
@@ -52,22 +52,22 @@ struct bpf_ctx {
     struct dns_parser_runtime parser_runtime;
     struct dns_parser_context parser_context;
 
-    struct obs_metrics metrics; /**< Observability metrics */
-    struct obs_context obs_ctx; /**< Observability context */
-    struct degraded_state degraded; /**< Degraded mode state machine */
-    struct shinku_event_bus events; /**< Internal event bus for component decoupling */
+    struct obs_metrics metrics;      /**< Observability metrics */
+    struct obs_context obs_ctx;      /**< Observability context */
+    struct degraded_state degraded;  /**< Degraded mode state machine */
+    struct shinku_event_bus events;  /**< Internal event bus for component decoupling */
     struct obs_http_server obs_http; /**< HTTP server for metrics */
-    atomic_bool bpf_ready; /**< BPF programs ready flag */
+    atomic_bool bpf_ready;           /**< BPF programs ready flag */
 
-    int obs_ncpu; /**< Number of CPUs for per-CPU metrics */
-    uint64_t* obs_percpu_vals; /**< Buffer for per-CPU metric reads */
+    int obs_ncpu;                 /**< Number of CPUs for per-CPU metrics */
+    uint64_t* obs_percpu_vals;    /**< Buffer for per-CPU metric reads */
     uint32_t pkt_poll_err_streak; /**< Consecutive poll errors */
-    uint32_t rb_backlog_streak; /**< Consecutive high-load polls */
+    uint32_t rb_backlog_streak;   /**< Consecutive high-load polls */
 
     /* Cleanup thread */
-    pthread_t cleanup_thread; /**< Cleanup thread handle */
+    pthread_t cleanup_thread;          /**< Cleanup thread handle */
     struct cleanup_config cleanup_cfg; /**< Cleanup configuration */
-    atomic_bool cleanup_running; /**< Cleanup thread running flag */
+    atomic_bool cleanup_running;       /**< Cleanup thread running flag */
     pthread_mutex_t cleanup_wait_lock;
     pthread_cond_t cleanup_wait_cond;
     bool cleanup_wait_sync_initialized;

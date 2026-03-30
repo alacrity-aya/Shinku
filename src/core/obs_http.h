@@ -22,13 +22,13 @@
  * @brief HTTP server state for observability metrics.
  */
 struct obs_http_server {
-    pthread_t thread; /**< Server thread handle */
-    atomic_bool running; /**< Server running flag */
-    atomic_int listen_fd; /**< Listening socket file descriptor */
-    uint16_t port; /**< Listening port */
-    struct obs_metrics* metrics; /**< Pointer to metrics to export */
+    pthread_t thread;                /**< Server thread handle */
+    atomic_bool running;             /**< Server running flag */
+    atomic_int listen_fd;            /**< Listening socket file descriptor */
+    uint16_t port;                   /**< Listening port */
+    struct obs_metrics* metrics;     /**< Pointer to metrics to export */
     struct degraded_state* degraded; /**< Pointer to degraded state */
-    atomic_bool* bpf_ready; /**< Pointer to BPF ready flag */
+    atomic_bool* bpf_ready;          /**< Pointer to BPF ready flag */
 };
 
 /**

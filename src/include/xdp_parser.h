@@ -18,7 +18,7 @@
  */
 
 struct shinku_vlan_hdr {
-    __be16 h_vlan_TCI; /**< VLAN TCI (tag control info) */
+    __be16 h_vlan_TCI;                /**< VLAN TCI (tag control info) */
     __be16 h_vlan_encapsulated_proto; /**< Encapsulated protocol */
 };
 
@@ -66,8 +66,7 @@ static __always_inline void skip_vlan_tags(__u16* proto, void** next_hdr, void* 
  * @note Only supports IPv4. IPv6 support is not implemented.
  * @note Only processes packets destined to DNS port (53).
  */
-static __always_inline struct dns_hdr*
-parse_dns_header(struct xdp_md* ctx, void** cursor, void* data_end) {
+static __always_inline struct dns_hdr* parse_dns_header(struct xdp_md* ctx, void** cursor, void* data_end) {
     void* data = (void*)(long)ctx->data;
 
     /* 1. Ethernet Header */

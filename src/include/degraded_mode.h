@@ -42,14 +42,8 @@ struct shinku_event_bus;
 /** @brief Cache line size for alignment */
 #define DEGRADED_CACHELINE_SIZE 64
 
-static_assert(
-    sizeof(atomic_uint_fast64_t) <= DEGRADED_CACHELINE_SIZE,
-    "degraded u64 atomic larger than cache line"
-);
-static_assert(
-    sizeof(atomic_uint) <= DEGRADED_CACHELINE_SIZE,
-    "degraded uint atomic larger than cache line"
-);
+static_assert(sizeof(atomic_uint_fast64_t) <= DEGRADED_CACHELINE_SIZE, "degraded u64 atomic larger than cache line");
+static_assert(sizeof(atomic_uint) <= DEGRADED_CACHELINE_SIZE, "degraded uint atomic larger than cache line");
 
 /* ============================================================================
  * Aligned Counter Types
@@ -60,7 +54,7 @@ static_assert(
  * @brief Cache-line aligned 64-bit atomic counter.
  */
 struct degraded_aligned_u64_counter {
-    alignas(DEGRADED_CACHELINE_SIZE) atomic_uint_fast64_t value; /**< Counter value */
+    alignas(DEGRADED_CACHELINE_SIZE) atomic_uint_fast64_t value;         /**< Counter value */
     uint8_t pad[DEGRADED_CACHELINE_SIZE - sizeof(atomic_uint_fast64_t)]; /**< Padding */
 };
 
@@ -69,7 +63,7 @@ struct degraded_aligned_u64_counter {
  * @brief Cache-line aligned 32-bit atomic counter.
  */
 struct degraded_aligned_uint_counter {
-    alignas(DEGRADED_CACHELINE_SIZE) atomic_uint value; /**< Counter value */
+    alignas(DEGRADED_CACHELINE_SIZE) atomic_uint value;         /**< Counter value */
     uint8_t pad[DEGRADED_CACHELINE_SIZE - sizeof(atomic_uint)]; /**< Padding */
 };
 
@@ -84,9 +78,9 @@ struct degraded_aligned_uint_counter {
  * Multiple reasons can be active simultaneously (bitwise OR).
  */
 enum degraded_reason_flag {
-    DEGRADED_REASON_USERSPACE_LAG = 1u << 0, /**< Userspace poll lag */
-    DEGRADED_REASON_CLEANUP_FAILURE = 1u << 1, /**< Cleanup thread failures */
-    DEGRADED_REASON_STARTUP_ATTACH_RETRY = 1u << 2, /**< XDP/TC attach retries */
+    DEGRADED_REASON_USERSPACE_LAG = 1u << 0,            /**< Userspace poll lag */
+    DEGRADED_REASON_CLEANUP_FAILURE = 1u << 1,          /**< Cleanup thread failures */
+    DEGRADED_REASON_STARTUP_ATTACH_RETRY = 1u << 2,     /**< XDP/TC attach retries */
     DEGRADED_REASON_CACHE_MAP_UPDATE_FAILURE = 1u << 3, /**< Cache map update failures */
 };
 
@@ -102,13 +96,13 @@ enum degraded_reason_flag {
  * concurrent updates from multiple threads.
  */
 struct degraded_state {
-    struct degraded_aligned_uint_counter reason_flags; /**< Active reason flags (bitmask) */
-    struct degraded_aligned_u64_counter transitions_total; /**< Total state transitions */
+    struct degraded_aligned_uint_counter reason_flags;       /**< Active reason flags (bitmask) */
+    struct degraded_aligned_u64_counter transitions_total;   /**< Total state transitions */
     struct degraded_aligned_u64_counter reason_set_total[4]; /**< Per-reason activation counts */
 
-    struct degraded_aligned_uint_counter userspace_lag_streak; /**< Consecutive high-load polls */
+    struct degraded_aligned_uint_counter userspace_lag_streak;  /**< Consecutive high-load polls */
     struct degraded_aligned_uint_counter cache_map_fail_streak; /**< Consecutive update failures */
-    struct degraded_aligned_uint_counter cleanup_fail_streak; /**< Consecutive cleanup failures */
+    struct degraded_aligned_uint_counter cleanup_fail_streak;   /**< Consecutive cleanup failures */
     struct shinku_event_bus* events;
 };
 
@@ -123,6 +117,14 @@ struct degraded_state {
  */
 void degraded_state_init(struct degraded_state* state);
 
+/**
+ * @brief Bind event bus for degraded state change notifications.
+ * @param state Degraded state structure.
+ * @param events Event bus to publish degradation events to.
+ *
+ * When bound, DEGRADED_REASON_SET and DEGRADED_REASON_CLEAR events
+ * are published on state transitions.
+ */
 void degraded_bind_event_bus(struct degraded_state* state, struct shinku_event_bus* events);
 
 /**

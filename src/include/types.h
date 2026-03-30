@@ -38,8 +38,8 @@
  * @endcode
  */
 struct dns_hdr {
-    __be16 id; /**< Transaction ID */
-    __be16 flags; /**< DNS Flags (QR, Opcode, AA, TC, RD, RA, Z, RCODE) */
+    __be16 id;      /**< Transaction ID */
+    __be16 flags;   /**< DNS Flags (QR, Opcode, AA, TC, RD, RA, Z, RCODE) */
     __be16 qdcount; /**< Question Count */
     __be16 ancount; /**< Answer Record Count */
     __be16 nscount; /**< Authority Record Count */
@@ -77,8 +77,8 @@ struct dns_hdr {
 
 struct cache_key {
     __u32 name_hash; /**< FNV-1a hash of DNS question name */
-    __u16 qtype; /**< Query type (A=1, AAAA=28, etc.) */
-    __u16 qclass; /**< Query class (IN=1) */
+    __u16 qtype;     /**< Query type (A=1, AAAA=28, etc.) */
+    __u16 qclass;    /**< Query class (IN=1) */
     CACHE_KEY_ECS_FIELDS;
 };
 
@@ -98,8 +98,8 @@ struct cache_key {
  *   - Reader (XDP): read seq1, check even, verify gen, copy pkt, read seq2, check seq1==seq2
  */
 struct cache_entry {
-    __u32 seq; /**< Seqlock counter (even=stable, odd=write-in-progress) */
-    __u32 gen; /**< Generation counter (must match cache_value.gen) */
+    __u32 seq;                  /**< Seqlock counter (even=stable, odd=write-in-progress) */
+    __u32 gen;                  /**< Generation counter (must match cache_value.gen) */
     __u8 pkt[ARENA_ENTRY_SIZE]; /**< Flat DNS packet (512 bytes max) */
 };
 
@@ -112,12 +112,12 @@ struct cache_entry {
  */
 struct cache_value {
     __u32 arena_idx; /**< Index into cache_entries arena array */
-    __u16 pkt_len; /**< Length of cached packet in bytes */
-    __u8 scope; /**< ECS scope prefix length (0 if no ECS) */
-    __u8 flags; /**< Entry flags (negative cache, nxdomain, etc.) */
+    __u16 pkt_len;   /**< Length of cached packet in bytes */
+    __u8 scope;      /**< ECS scope prefix length (0 if no ECS) */
+    __u8 flags;      /**< Entry flags (negative cache, nxdomain, etc.) */
     __u64 expire_ts; /**< Expiration timestamp in nanoseconds (MONOTONIC) */
-    __u32 gen; /**< Generation counter (must match cache_entries[arena_idx].gen) */
-    __u32 _pad2; /**< Padding for alignment */
+    __u32 gen;       /**< Generation counter (must match cache_entries[arena_idx].gen) */
+    __u32 _pad2;     /**< Padding for alignment */
 };
 
 /** @brief Cache entry is a negative cache response (NXDOMAIN or NODATA) */
@@ -134,6 +134,6 @@ struct cache_value {
  */
 struct dns_event {
     __u64 timestamp; /**< Capture timestamp (nanoseconds) */
-    __u32 len; /**< Payload length in bytes */
-    __u8 payload[]; /**< Flexible array: DNS packet data */
+    __u32 len;       /**< Payload length in bytes */
+    __u8 payload[];  /**< Flexible array: DNS packet data */
 };

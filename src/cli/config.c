@@ -14,12 +14,7 @@ static const struct argp_option opts[] = {
     { "arena-pages", 'a', "PAGES", 0, "Arena size in pages (default: 1024 = 4MB)", 0 },
     { "cleanup-interval", 'c', "SECS", 0, "Cache cleanup interval in seconds (default: 10)", 0 },
     { "metrics-port", 'm', "PORT", 0, "Observability HTTP port on localhost (default: 9095)", 0 },
-    { "obs",
-      'o',
-      "0|1",
-      0,
-      "Enable userspace observability counters + HTTP endpoints (default: 1)",
-      0 },
+    { "obs", 'o', "0|1", 0, "Enable userspace observability counters + HTTP endpoints (default: 1)", 0 },
     { "obs-bpf", 'p', "0|1", 0, "Enable BPF-side counter sampling (default: 0)", 0 },
     { "obs-bpf-mask",
       'k',
@@ -28,35 +23,20 @@ static const struct argp_option opts[] = {
       "BPF sample mask: count when (bpf_get_prandom_u32() & MASK)==0 (default: 0xff)",
       0 },
     { "admission", 1001, "0|1", 0, "Enable cache admission policies (default: 1)", 0 },
-    { "pressure-mode",
-      1002,
-      "0|1",
-      0,
-      "Enable frequency-based pressure rejection (default: 1)",
-      0 },
+    { "pressure-mode", 1002, "0|1", 0, "Enable frequency-based pressure rejection (default: 1)", 0 },
     { "admission-min-ttl", 1003, "SECS", 0, "Minimum TTL to admit cache entry (default: 0)", 0 },
-    { "admission-dampen-ms",
-      1004,
-      "MSECS",
-      0,
-      "Reject duplicate inserts in dampening window (default: 2000)",
-      0 },
-    { "hot-threshold",
-      1005,
-      "COUNT",
-      0,
-      "Frequency threshold to classify victim as hot (default: 3)",
-      0 },
-    { "freq-width",
-      1006,
-      "WIDTH",
-      0,
-      "Count-min sketch width, power of two preferred (default: 4096)",
-      0 },
+    { "admission-dampen-ms", 1004, "MSECS", 0, "Reject duplicate inserts in dampening window (default: 2000)", 0 },
+    { "hot-threshold", 1005, "COUNT", 0, "Frequency threshold to classify victim as hot (default: 3)", 0 },
+    { "freq-width", 1006, "WIDTH", 0, "Count-min sketch width, power of two preferred (default: 4096)", 0 },
     { "freq-epoch-ops", 1007, "OPS", 0, "Sketch decay period in updates (default: 10*entries)", 0 },
     { NULL, 0, NULL, 0, NULL, 0 }
 };
 
+/**
+ * @brief Parse log level string to enum value.
+ * @param str Log level string (debug, info, warn, error).
+ * @return Log level enum value, or -1 if invalid.
+ */
 static int parse_log_level_str(const char* str) {
     if (strcasecmp(str, "debug") == 0)
         return LOG_DEBUG;
@@ -69,6 +49,16 @@ static int parse_log_level_str(const char* str) {
     return -1;
 }
 
+/**
+ * @brief Argp option parser callback.
+ * @param key Option key (character or ARGP_KEY_* constant).
+ * @param arg Option argument string (may be NULL).
+ * @param state Argp parser state.
+ * @return 0 on success, ARGP_ERR_UNKNOWN for unknown options.
+ *
+ * Handles all CLI options defined in opts[] array and populates
+ * the env structure with parsed values.
+ */
 static error_t parse_opt(int key, char* arg, struct argp_state* state) {
     struct env* env = state->input;
 

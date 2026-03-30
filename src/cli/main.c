@@ -7,12 +7,32 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+/**
+ * @file main.c
+ * @brief Main entry point for the Shinku DNS cache daemon.
+ */
+
 static volatile bool exiting = false;
 
+/**
+ * @brief Signal handler for graceful shutdown.
+ * @param sig Signal number (SIGINT or SIGTERM).
+ *
+ * Sets the exiting flag to trigger clean shutdown.
+ */
 static void sig_handler([[maybe_unused]] int sig) {
     exiting = true;
 }
 
+/**
+ * @brief Main entry point for the DNS cache daemon.
+ * @param argc Argument count.
+ * @param argv Argument vector.
+ * @return 0 on success, positive error code on failure.
+ *
+ * Initializes BPF programs, starts the cleanup thread, and enters
+ * the main event loop to process DNS packets and logs.
+ */
 int main(int argc, char** argv) {
     if (geteuid() != 0) {
         fprintf(stderr, "This program must be run as root.\n");

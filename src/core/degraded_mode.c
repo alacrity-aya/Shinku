@@ -49,8 +49,7 @@ bool degraded_set_reason(struct degraded_state* state, uint32_t reason_flag) {
     if (!state)
         return false;
 
-    uint32_t prev =
-        atomic_fetch_or_explicit(&state->reason_flags.value, reason_flag, memory_order_relaxed);
+    uint32_t prev = atomic_fetch_or_explicit(&state->reason_flags.value, reason_flag, memory_order_relaxed);
     if ((prev & reason_flag) == 0) {
         int idx = reason_index(reason_flag);
         uint32_t flags_after = prev | reason_flag;
@@ -76,8 +75,7 @@ bool degraded_clear_reason(struct degraded_state* state, uint32_t reason_flag) {
     if (!state)
         return false;
 
-    uint32_t prev =
-        atomic_fetch_and_explicit(&state->reason_flags.value, ~reason_flag, memory_order_relaxed);
+    uint32_t prev = atomic_fetch_and_explicit(&state->reason_flags.value, ~reason_flag, memory_order_relaxed);
     if (prev & reason_flag) {
         atomic_fetch_add_explicit(&state->transitions_total.value, 1, memory_order_relaxed);
 
@@ -111,8 +109,7 @@ void degraded_note_poll_load(struct degraded_state* state, int poll_events) {
 
     if (poll_events >= SHINKU_LAG_POLL_HIGH_WATERMARK) {
         unsigned int streak =
-            atomic_fetch_add_explicit(&state->userspace_lag_streak.value, 1, memory_order_relaxed)
-            + 1;
+            atomic_fetch_add_explicit(&state->userspace_lag_streak.value, 1, memory_order_relaxed) + 1;
         if (streak >= SHINKU_LAG_STREAK_THRESHOLD) {
             degraded_set_reason(state, DEGRADED_REASON_USERSPACE_LAG);
         }
@@ -129,8 +126,7 @@ void degraded_note_cache_map_update(struct degraded_state* state, int update_ok)
 
     if (!update_ok) {
         unsigned int streak =
-            atomic_fetch_add_explicit(&state->cache_map_fail_streak.value, 1, memory_order_relaxed)
-            + 1;
+            atomic_fetch_add_explicit(&state->cache_map_fail_streak.value, 1, memory_order_relaxed) + 1;
         if (streak >= SHINKU_CACHE_MAP_FAIL_STREAK_THRESHOLD) {
             degraded_set_reason(state, DEGRADED_REASON_CACHE_MAP_UPDATE_FAILURE);
         }
@@ -146,9 +142,7 @@ void degraded_note_cleanup_result(struct degraded_state* state, int cleanup_resu
         return;
 
     if (cleanup_result < 0) {
-        unsigned int streak =
-            atomic_fetch_add_explicit(&state->cleanup_fail_streak.value, 1, memory_order_relaxed)
-            + 1;
+        unsigned int streak = atomic_fetch_add_explicit(&state->cleanup_fail_streak.value, 1, memory_order_relaxed) + 1;
         if (streak >= SHINKU_CLEANUP_FAIL_STREAK_THRESHOLD) {
             degraded_set_reason(state, DEGRADED_REASON_CLEANUP_FAILURE);
         }

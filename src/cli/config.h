@@ -21,21 +21,21 @@
  * arena memory sizing, and observability settings.
  */
 struct env {
-    const char* interface; /**< Network interface to attach XDP program */
-    enum log_level log_level; /**< Minimum log level for output */
-    uint32_t arena_pages; /**< Number of pages for BPF arena memory */
-    uint32_t cleanup_interval; /**< Cache cleanup interval in seconds */
-    uint32_t metrics_port; /**< Prometheus/health HTTP port (localhost only) */
-    uint32_t obs_enabled; /**< Userspace observability switch (0=disabled) */
-    uint32_t obs_bpf_enabled; /**< BPF counter collection switch (0=disabled) */
-    uint32_t obs_bpf_sample_mask; /**< BPF sampling mask: rand32 & mask == 0 */
-    uint32_t admission_enabled;
-    uint32_t pressure_mode;
-    uint32_t admission_min_ttl;
-    uint32_t admission_dampen_window_ms;
-    uint32_t hot_threshold;
-    uint32_t freq_width;
-    uint32_t freq_epoch_ops;
+    const char* interface;               /**< Network interface to attach XDP program */
+    enum log_level log_level;            /**< Minimum log level for output */
+    uint32_t arena_pages;                /**< Number of pages for BPF arena memory */
+    uint32_t cleanup_interval;           /**< Cache cleanup interval in seconds */
+    uint32_t metrics_port;               /**< Prometheus/health HTTP port (localhost only) */
+    uint32_t obs_enabled;                /**< Userspace observability switch (0=disabled) */
+    uint32_t obs_bpf_enabled;            /**< BPF counter collection switch (0=disabled) */
+    uint32_t obs_bpf_sample_mask;        /**< BPF sampling mask: rand32 & mask == 0 */
+    uint32_t admission_enabled;          /**< Global switch for cache admission policy (0=disabled) */
+    uint32_t pressure_mode;              /**< Enable frequency-based admission under cache pressure */
+    uint32_t admission_min_ttl;          /**< Minimum TTL required for an entry to be admitted to cache */
+    uint32_t admission_dampen_window_ms; /**< Time window in ms to suppress redundant insertions */
+    uint32_t hot_threshold;              /**< Frequency threshold to promote entry to Hot segment */
+    uint32_t freq_width;                 /**< Width of the Count-Min Sketch frequency rows */
+    uint32_t freq_epoch_ops;             /**< Number of operations before decaying frequency sketch */
 };
 
 /**
