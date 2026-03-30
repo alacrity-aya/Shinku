@@ -1,10 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-only OR Apache-2.0
 #pragma once
 
-#include "degraded_mode.h"
-#include "obs_metrics.h"
-#include "types.h"
-#include <pthread.h>
+#include "cache_types.h"
+#include "parser_runtime.h"
 #include <stddef.h>
 #include <stdint.h>
 
@@ -16,79 +14,6 @@
  * expiration. It processes DNS packets captured by BPF and stores valid
  * responses in the shared arena cache for XDP-level serving.
  */
-
-/**
- * @struct cache_context
- * @brief Context for cache operations shared between BPF and userspace.
- *
- * This structure holds all state needed for cache management including
- * the arena memory region, BPF map file descriptor, and metadata tracking.
- */
-struct cache_context {
-    struct cache_entry* entries; /**< Arena array of cache entries (mmap'd from BPF) */
-    uint32_t* next_idx; /**< Next arena slot index (mmap'd from BPF) */
-    uint32_t max_entries; /**< Maximum entries (CACHE_MAP_MAX_ENTRIES) */
-    int cache_map_fd; /**< BPF hashmap file descriptor for cache lookups */
-
-    /**
-     * @brief Reverse mapping: slot_owners[arena_idx] = cache_key.
-     *
-     * Used during eviction to delete stale cache_map entries when a slot
-     * is recycled. Maintains O(1) reverse lookup for cleanup.
-     */
-    struct cache_key* slot_owners;
-    pthread_mutex_t* slot_owners_lock;
-    struct obs_metrics* metrics;
-
-    /**
-     * @brief Monotonically increasing generation counter.
-     *
-     * Each store_to_cache() gets a unique gen written to both
-     * cache_entry.gen and cache_value.gen. XDP verifies they match
-     * to detect slot reuse between cache_map lookup and arena read.
-     */
-    uint32_t next_gen;
-
-    uint64_t admission_dampen_window_ns;
-    uint32_t admission_min_ttl;
-    uint8_t admission_enabled;
-    uint8_t pressure_mode;
-
-    struct cache_key* recent_insert_keys;
-    uint64_t* recent_insert_ns;
-    uint32_t recent_insert_cap;
-    uint32_t recent_insert_next;
-
-    uint32_t hot_threshold;
-    uint32_t* slot_hit_count;
-    uint8_t* slot_hot;
-
-    uint16_t* freq_rows[4];
-    uint32_t freq_width;
-    uint32_t freq_epoch_ops;
-    uint32_t freq_ops;
-};
-
-/**
- * @struct dns_parser_runtime
- * @brief Runtime dependencies for parser side-effects.
- *
- * Separates parser/cache data-plane state (cache_context) from
- * cross-cutting runtime services (metrics + degraded mode).
- */
-struct dns_parser_runtime {
-    struct obs_context* obs; /**< Observability context for metrics */
-    struct degraded_state* degraded; /**< Degraded mode state machine */
-};
-
-/**
- * @struct dns_parser_context
- * @brief Full parser callback context for ring-buffer event handling.
- */
-struct dns_parser_context {
-    struct cache_context* cache; /**< Cache storage context */
-    struct dns_parser_runtime* runtime; /**< Runtime service dependencies */
-};
 
 /**
  * @brief Handle a DNS packet event from BPF ring buffer.
@@ -118,6 +43,27 @@ int dns_parser_handle_event(void* ctx, void* data, size_t len);
 int dns_parser_cleanup_expired_entries(struct cache_context* cache_ctx);
 
 /**
+ * @brief Parse DNS name once and optionally return hash/flat/consumed outputs.
+ * @param packet DNS packet data.
+ * @param offset Offset to start of DNS name.
+ * @param max_len Maximum bytes to read.
+ * @param out_hash Optional output hash (FNV-1a, case-insensitive labels).
+ * @param dest Optional output flattened name buffer.
+ * @param dest_max Size of flattened output buffer.
+ * @param out_consumed Optional output for wire bytes consumed at original offset.
+ * @return Flattened name length, or negative on error.
+ */
+int dns_parser_parse_name_impl(
+    const uint8_t* packet,
+    int offset,
+    int max_len,
+    uint32_t* out_hash,
+    uint8_t* dest,
+    int dest_max,
+    int* out_consumed
+);
+
+/**
  * @brief Calculate FNV-1a hash of DNS name (strict mode, no compression).
  * @param packet DNS packet data.
  * @param offset Offset to start of DNS name.
@@ -128,12 +74,7 @@ int dns_parser_cleanup_expired_entries(struct cache_context* cache_ctx);
  * Used in XDP path where compression pointers are rejected for safety.
  * Case-insensitive (lowercases all bytes before hashing).
  */
-int dns_parser_calculate_hash_strict_impl(
-    const uint8_t* packet,
-    int offset,
-    int max_len,
-    uint32_t* out_hash
-);
+int dns_parser_calculate_hash_strict_impl(const uint8_t* packet, int offset, int max_len, uint32_t* out_hash);
 
 /**
  * @brief Compatibility alias for dns_parser_calculate_hash_strict_impl.
@@ -154,13 +95,7 @@ int calculate_hash_strict_impl(const uint8_t* packet, int offset, int max_len, u
  * uncompressed DNS name. Used in userspace path where compression
  * is allowed.
  */
-int dns_parser_flatten_name_impl(
-    const uint8_t* packet,
-    int offset,
-    int max_len,
-    uint8_t* dest,
-    int dest_max
-);
+int dns_parser_flatten_name_impl(const uint8_t* packet, int offset, int max_len, uint8_t* dest, int dest_max);
 
 /**
  * @brief Compatibility alias for dns_parser_flatten_name_impl.

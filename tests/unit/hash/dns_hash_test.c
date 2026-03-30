@@ -42,6 +42,15 @@ static int pass_count = 0;
 int hash_calculate_dns_name_hash_test(void** cursor, void* data_end, __u32* hash_out);
 int calculate_hash_strict_impl(const __u8* packet, int offset, int max_len, uint32_t* out_hash);
 int flatten_name_impl(const __u8* packet, int offset, int max_len, __u8* dest, int dest_max);
+int dns_parser_parse_name_impl(
+    const uint8_t* packet,
+    int offset,
+    int max_len,
+    uint32_t* out_hash,
+    uint8_t* dest,
+    int dest_max,
+    int* out_consumed
+);
 
 // For compatibility, define the function used in tests
 static int calculate_dns_name_hash_xdp(void** cursor, void* data_end, __u32* hash_out) {
@@ -56,8 +65,7 @@ static void test_xdp_basic_names(void) {
     printf("\n[TEST] XDP Hash - Basic Names (No Compression)\n");
 
     // Test: www.example.com
-    __u8 pkt1[] = { 0x03, 'w', 'w', 'w',  0x07, 'e', 'x', 'a', 'm',
-                    'p',  'l', 'e', 0x03, 'c',  'o', 'm', 0x00 };
+    __u8 pkt1[] = { 0x03, 'w', 'w', 'w', 0x07, 'e', 'x', 'a', 'm', 'p', 'l', 'e', 0x03, 'c', 'o', 'm', 0x00 };
     void* cursor = pkt1;
     __u32 hash = 0;
     int ret = calculate_dns_name_hash_xdp(&cursor, pkt1 + sizeof(pkt1), &hash);
@@ -96,11 +104,9 @@ static void test_xdp_case_normalization(void) {
     printf("\n[TEST] XDP Hash - Case Normalization\n");
 
     // WWW.EXAMPLE.COM (uppercase)
-    __u8 pkt_upper[] = { 0x03, 'W', 'W', 'W',  0x07, 'E', 'X', 'A', 'M',
-                         'P',  'L', 'E', 0x03, 'C',  'O', 'M', 0x00 };
+    __u8 pkt_upper[] = { 0x03, 'W', 'W', 'W', 0x07, 'E', 'X', 'A', 'M', 'P', 'L', 'E', 0x03, 'C', 'O', 'M', 0x00 };
     // www.example.com (lowercase)
-    __u8 pkt_lower[] = { 0x03, 'w', 'w', 'w',  0x07, 'e', 'x', 'a', 'm',
-                         'p',  'l', 'e', 0x03, 'c',  'o', 'm', 0x00 };
+    __u8 pkt_lower[] = { 0x03, 'w', 'w', 'w', 0x07, 'e', 'x', 'a', 'm', 'p', 'l', 'e', 0x03, 'c', 'o', 'm', 0x00 };
 
     void* cursor = pkt_upper;
     __u32 hash_upper = 0;
@@ -110,12 +116,7 @@ static void test_xdp_case_normalization(void) {
     __u32 hash_lower = 0;
     calculate_dns_name_hash_xdp(&cursor, pkt_lower + sizeof(pkt_lower), &hash_lower);
 
-    TEST_ASSERT(
-        hash_upper == hash_lower,
-        "case insensitive: upper=0x%08X == lower=0x%08X",
-        hash_upper,
-        hash_lower
-    );
+    TEST_ASSERT(hash_upper == hash_lower, "case insensitive: upper=0x%08X == lower=0x%08X", hash_upper, hash_lower);
 }
 
 static void test_xdp_bounds_check(void) {
@@ -151,8 +152,7 @@ static void test_user_space_compression(void) {
     TEST_ASSERT(hash != 0, "compressed name hash=0x%08X", hash);
 
     // Compare with flattened version: mail.google.com
-    __u8 flat[] = { 0x04, 'm', 'a', 'i',  'l', 0x06, 'g', 'o', 'o',
-                    'g',  'l', 'e', 0x03, 'c', 'o',  'm', 0x00 };
+    __u8 flat[] = { 0x04, 'm', 'a', 'i', 'l', 0x06, 'g', 'o', 'o', 'g', 'l', 'e', 0x03, 'c', 'o', 'm', 0x00 };
     uint32_t hash_flat = 0;
     calculate_hash_strict_impl(flat, 0, sizeof(flat), &hash_flat);
     TEST_ASSERT(hash == hash_flat, "compressed vs flat hash match: 0x%08X", hash);
@@ -180,14 +180,8 @@ static void test_flatten_name(void) {
 
     if (len > 0) {
         // Expected: mail.google.com
-        __u8 expected[] = { 0x04, 'm', 'a', 'i',  'l', 0x06, 'g', 'o', 'o',
-                            'g',  'l', 'e', 0x03, 'c', 'o',  'm', 0x00 };
-        TEST_ASSERT(
-            len == (int)sizeof(expected),
-            "flattened length correct: %d (expected %zu)",
-            len,
-            sizeof(expected)
-        );
+        __u8 expected[] = { 0x04, 'm', 'a', 'i', 'l', 0x06, 'g', 'o', 'o', 'g', 'l', 'e', 0x03, 'c', 'o', 'm', 0x00 };
+        TEST_ASSERT(len == (int)sizeof(expected), "flattened length correct: %d (expected %zu)", len, sizeof(expected));
         TEST_ASSERT(memcmp(dest, expected, len) == 0, "flattened content correct");
     }
 }
@@ -202,23 +196,7 @@ static void test_consistency_xdp_vs_user(void) {
         size_t len;
     } test_cases[] = {
         { "www.example.com",
-          { 0x03,
-            'w',
-            'w',
-            'w',
-            0x07,
-            'e',
-            'x',
-            'a',
-            'm',
-            'p',
-            'l',
-            'e',
-            0x03,
-            'c',
-            'o',
-            'm',
-            0x00 },
+          { 0x03, 'w', 'w', 'w', 0x07, 'e', 'x', 'a', 'm', 'p', 'l', 'e', 0x03, 'c', 'o', 'm', 0x00 },
           17 },
         { "google.com", { 0x06, 'g', 'o', 'o', 'g', 'l', 'e', 0x03, 'c', 'o', 'm', 0x00 }, 12 },
         { "example", { 0x07, 'e', 'x', 'a', 'm', 'p', 'l', 'e', 0x00 }, 9 },
@@ -229,22 +207,14 @@ static void test_consistency_xdp_vs_user(void) {
         // XDP hash
         void* cursor = (void*)test_cases[i].data;
         __u32 hash_xdp = 0;
-        int ret_xdp =
-            calculate_dns_name_hash_xdp(&cursor, test_cases[i].data + test_cases[i].len, &hash_xdp);
+        int ret_xdp = calculate_dns_name_hash_xdp(&cursor, test_cases[i].data + test_cases[i].len, &hash_xdp);
 
         // User space hash
         uint32_t hash_user = 0;
-        int ret_user =
-            calculate_hash_strict_impl(test_cases[i].data, 0, test_cases[i].len, &hash_user);
+        int ret_user = calculate_hash_strict_impl(test_cases[i].data, 0, test_cases[i].len, &hash_user);
 
         TEST_ASSERT(ret_xdp == 0 && ret_user > 0, "%s: both succeeded", test_cases[i].name);
-        TEST_ASSERT(
-            hash_xdp == hash_user,
-            "%s: XDP=0x%08X == User=0x%08X",
-            test_cases[i].name,
-            hash_xdp,
-            hash_user
-        );
+        TEST_ASSERT(hash_xdp == hash_user, "%s: XDP=0x%08X == User=0x%08X", test_cases[i].name, hash_xdp, hash_user);
     }
 }
 
@@ -273,6 +243,49 @@ static void test_edge_cases(void) {
     TEST_ASSERT(len == 5, "flatten measure only: len=%d (expected 5)", len);
 }
 
+static void test_parse_name_combo_consistency(void) {
+    printf("\n[TEST] Parse Name Combo Consistency\n");
+
+    __u8 pkt[100] = { 0 };
+    __u8 google_com[] = { 0x06, 'g', 'o', 'o', 'g', 'l', 'e', 0x03, 'c', 'o', 'm', 0x00 };
+    memcpy(&pkt[10], google_com, sizeof(google_com));
+
+    pkt[30] = 0x04;
+    memcpy(&pkt[31], "mail", 4);
+    pkt[35] = 0xC0;
+    pkt[36] = 0x0A;
+
+    uint32_t legacy_hash = 0;
+    uint32_t combo_hash = 0;
+    int legacy_consumed = calculate_hash_strict_impl(pkt, 30, sizeof(pkt), &legacy_hash);
+    int combo_consumed = 0;
+
+    __u8 legacy_flat[64] = { 0 };
+    __u8 combo_flat[64] = { 0 };
+    int legacy_flat_len = flatten_name_impl(pkt, 30, sizeof(pkt), legacy_flat, sizeof(legacy_flat));
+    int combo_flat_len =
+        dns_parser_parse_name_impl(pkt, 30, sizeof(pkt), &combo_hash, combo_flat, sizeof(combo_flat), &combo_consumed);
+
+    TEST_ASSERT(legacy_consumed > 0, "legacy consumed=%d", legacy_consumed);
+    TEST_ASSERT(legacy_flat_len > 0, "legacy flat len=%d", legacy_flat_len);
+    TEST_ASSERT(combo_flat_len > 0, "combo flat len=%d", combo_flat_len);
+    TEST_ASSERT(combo_consumed > 0, "combo consumed=%d", combo_consumed);
+    TEST_ASSERT(legacy_hash == combo_hash, "hash match legacy=0x%08X combo=0x%08X", legacy_hash, combo_hash);
+    TEST_ASSERT(
+        legacy_consumed == combo_consumed,
+        "consumed match legacy=%d combo=%d",
+        legacy_consumed,
+        combo_consumed
+    );
+    TEST_ASSERT(
+        legacy_flat_len == combo_flat_len,
+        "flat len match legacy=%d combo=%d",
+        legacy_flat_len,
+        combo_flat_len
+    );
+    TEST_ASSERT(memcmp(legacy_flat, combo_flat, legacy_flat_len) == 0, "flat content match");
+}
+
 int main(void) {
     printf("========================================\n");
     printf("DNS Hash & Flatten Test Suite\n");
@@ -286,6 +299,7 @@ int main(void) {
     test_flatten_name();
     test_consistency_xdp_vs_user();
     test_edge_cases();
+    test_parse_name_combo_consistency();
 
     printf("\n========================================\n");
     printf("Results: %d/%d tests passed\n", pass_count, test_count);

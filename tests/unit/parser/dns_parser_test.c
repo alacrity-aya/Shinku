@@ -22,6 +22,7 @@ typedef uint16_t __be16;
 #endif
 
 #include "../../src/core/dns_parser.h"
+#include "../../src/core/parser_runtime.h"
 #include "../../src/include/constants.h"
 
 static int test_count = 0;
@@ -64,7 +65,7 @@ static void setup_test() {
     test_ctx.next_idx = &test_next_idx;
     test_ctx.max_entries = 10;
     test_ctx.slot_owners = slot_owners;
-    test_ctx.admission_enabled = 0;
+    test_ctx.admission.enabled = 0;
 }
 
 struct dns_builder {
@@ -72,15 +73,8 @@ struct dns_builder {
     uint32_t len;
 };
 
-static void builder_init(
-    struct dns_builder* b,
-    uint16_t id,
-    uint16_t flags,
-    uint16_t qd,
-    uint16_t an,
-    uint16_t ns,
-    uint16_t ar
-) {
+static void
+builder_init(struct dns_builder* b, uint16_t id, uint16_t flags, uint16_t qd, uint16_t an, uint16_t ns, uint16_t ar) {
     memset(b, 0, sizeof(*b));
     struct dns_hdr* hdr = (struct dns_hdr*)b->buf;
     hdr->id = htons(id);
@@ -111,8 +105,7 @@ static void builder_add_name(struct dns_builder* b, const char* name) {
     b->buf[b->len++] = 0;
 }
 
-static void
-builder_add_question(struct dns_builder* b, const char* name, uint16_t qtype, uint16_t qclass) {
+static void builder_add_question(struct dns_builder* b, const char* name, uint16_t qtype, uint16_t qclass) {
     builder_add_name(b, name);
     uint16_t* ptr = (uint16_t*)(b->buf + b->len);
     ptr[0] = htons(qtype);
@@ -144,12 +137,7 @@ static void builder_add_answer(
     b->len += rdlen;
 }
 
-static void builder_add_soa_answer(
-    struct dns_builder* b,
-    const char* owner,
-    uint32_t ttl,
-    uint32_t minimum_ttl
-) {
+static void builder_add_soa_answer(struct dns_builder* b, const char* owner, uint32_t ttl, uint32_t minimum_ttl) {
     uint8_t rdata[256];
     uint32_t pos = 0;
 
@@ -363,10 +351,7 @@ static void test_sequential_stores() {
     int ret1 = call_handle_packet(&test_ctx, b1.buf, b1.len);
     int ret2 = call_handle_packet(&test_ctx, b2.buf, b2.len);
     int ret3 = call_handle_packet(&test_ctx, b3.buf, b3.len);
-    TEST_ASSERT(
-        ret1 == 0 && ret2 == 0 && ret3 == 0,
-        "test_sequential_stores: handle_packet returns 0"
-    );
+    TEST_ASSERT(ret1 == 0 && ret2 == 0 && ret3 == 0, "test_sequential_stores: handle_packet returns 0");
 
     if (has_bpf) {
         TEST_ASSERT(test_next_idx == 3, "test_sequential_stores: next_idx is 3");
@@ -436,10 +421,7 @@ static void test_negative_cache_nxdomain_with_soa() {
     int ret = call_handle_packet(&test_ctx, b.buf, b.len);
     TEST_ASSERT(ret == 0, "test_negative_cache_nxdomain_with_soa: handle_packet returns 0");
     if (has_bpf) {
-        TEST_ASSERT(
-            test_next_idx == 1,
-            "test_negative_cache_nxdomain_with_soa: cache insert attempted"
-        );
+        TEST_ASSERT(test_next_idx == 1, "test_negative_cache_nxdomain_with_soa: cache insert attempted");
     } else {
         printf("  [SKIP] nxdomain-with-soa cache insert check (no BPF map)\n");
     }
@@ -464,10 +446,7 @@ static void test_negative_cache_nodata_with_soa() {
     int ret = call_handle_packet(&test_ctx, b.buf, b.len);
     TEST_ASSERT(ret == 0, "test_negative_cache_nodata_with_soa: handle_packet returns 0");
     if (has_bpf) {
-        TEST_ASSERT(
-            test_next_idx == 1,
-            "test_negative_cache_nodata_with_soa: cache insert attempted"
-        );
+        TEST_ASSERT(test_next_idx == 1, "test_negative_cache_nodata_with_soa: cache insert attempted");
     } else {
         printf("  [SKIP] nodata-with-soa cache insert check (no BPF map)\n");
     }
@@ -514,10 +493,7 @@ static void test_negative_cache_ttl_uses_min_soa_and_ttl() {
     int ret = call_handle_packet(&test_ctx, b.buf, b.len);
     TEST_ASSERT(ret == 0, "test_negative_cache_ttl_uses_min_soa_and_ttl: handle_packet returns 0");
     if (has_bpf) {
-        TEST_ASSERT(
-            test_next_idx == 1,
-            "test_negative_cache_ttl_uses_min_soa_and_ttl: cache insert attempted"
-        );
+        TEST_ASSERT(test_next_idx == 1, "test_negative_cache_ttl_uses_min_soa_and_ttl: cache insert attempted");
     } else {
         printf("  [SKIP] negative TTL cache insert check (no BPF map)\n");
     }
@@ -595,15 +571,7 @@ static void test_reject_unsupported_rtype() {
     builder_init(&b, 0x1234, 0x8180, 1, 1, 0, 0);
     builder_add_question(&b, "www.example.com", DNS_TYPE_A, DNS_CLASS_IN);
     uint8_t mx_rdata[] = { 0x00, 0x0a, 4, 'm', 'a', 'i', 'l', 3, 'c', 'o', 'm', 0 };
-    builder_add_answer(
-        &b,
-        "www.example.com",
-        DNS_TYPE_MX,
-        DNS_CLASS_IN,
-        300,
-        sizeof(mx_rdata),
-        mx_rdata
-    );
+    builder_add_answer(&b, "www.example.com", DNS_TYPE_MX, DNS_CLASS_IN, 300, sizeof(mx_rdata), mx_rdata);
 
     call_handle_packet(&test_ctx, b.buf, b.len);
     TEST_ASSERT(test_next_idx == 0, "test_reject_unsupported_rtype: next_idx unchanged");
@@ -617,17 +585,8 @@ static void test_cname_with_a_record() {
     builder_init(&b, 0x1234, 0x8180, 1, 2, 0, 0);
     builder_add_question(&b, "www.example.com", DNS_TYPE_A, DNS_CLASS_IN);
 
-    uint8_t cname_rdata[] = { 3,   'c', 'd', 'n', 7,   'e', 'x', 'a', 'm',
-                              'p', 'l', 'e', 3,   'c', 'o', 'm', 0 };
-    builder_add_answer(
-        &b,
-        "www.example.com",
-        DNS_TYPE_CNAME,
-        DNS_CLASS_IN,
-        300,
-        sizeof(cname_rdata),
-        cname_rdata
-    );
+    uint8_t cname_rdata[] = { 3, 'c', 'd', 'n', 7, 'e', 'x', 'a', 'm', 'p', 'l', 'e', 3, 'c', 'o', 'm', 0 };
+    builder_add_answer(&b, "www.example.com", DNS_TYPE_CNAME, DNS_CLASS_IN, 300, sizeof(cname_rdata), cname_rdata);
 
     uint8_t a_rdata[4] = { 1, 2, 3, 4 };
     builder_add_answer(&b, "cdn.example.com", DNS_TYPE_A, DNS_CLASS_IN, 120, 4, a_rdata);
@@ -653,29 +612,11 @@ static void test_cname_chain_with_terminal_a() {
     builder_init(&b, 0x4321, 0x8180, 1, 3, 0, 0);
     builder_add_question(&b, "www.example.com", DNS_TYPE_A, DNS_CLASS_IN);
 
-    uint8_t cname1[] = { 3,   'c', 'd', 'n', 1, '1', 7,   'e', 'x', 'a',
-                         'm', 'p', 'l', 'e', 3, 'c', 'o', 'm', 0 };
-    builder_add_answer(
-        &b,
-        "www.example.com",
-        DNS_TYPE_CNAME,
-        DNS_CLASS_IN,
-        300,
-        sizeof(cname1),
-        cname1
-    );
+    uint8_t cname1[] = { 3, 'c', 'd', 'n', 1, '1', 7, 'e', 'x', 'a', 'm', 'p', 'l', 'e', 3, 'c', 'o', 'm', 0 };
+    builder_add_answer(&b, "www.example.com", DNS_TYPE_CNAME, DNS_CLASS_IN, 300, sizeof(cname1), cname1);
 
-    uint8_t cname2[] = { 6,   'o', 'r', 'i', 'g', 'i', 'n', 7,   'e', 'x',
-                         'a', 'm', 'p', 'l', 'e', 3,   'c', 'o', 'm', 0 };
-    builder_add_answer(
-        &b,
-        "cdn.1.example.com",
-        DNS_TYPE_CNAME,
-        DNS_CLASS_IN,
-        200,
-        sizeof(cname2),
-        cname2
-    );
+    uint8_t cname2[] = { 6, 'o', 'r', 'i', 'g', 'i', 'n', 7, 'e', 'x', 'a', 'm', 'p', 'l', 'e', 3, 'c', 'o', 'm', 0 };
+    builder_add_answer(&b, "cdn.1.example.com", DNS_TYPE_CNAME, DNS_CLASS_IN, 200, sizeof(cname2), cname2);
 
     uint8_t a_rdata[4] = { 8, 8, 4, 4 };
     builder_add_answer(&b, "origin.example.com", DNS_TYPE_A, DNS_CLASS_IN, 60, 4, a_rdata);
@@ -701,17 +642,8 @@ static void test_reject_cname_only_without_terminal() {
     builder_init(&b, 0x7777, 0x8180, 1, 1, 0, 0);
     builder_add_question(&b, "www.example.com", DNS_TYPE_A, DNS_CLASS_IN);
 
-    uint8_t cname_rdata[] = { 3,   'c', 'd', 'n', 7,   'e', 'x', 'a', 'm',
-                              'p', 'l', 'e', 3,   'c', 'o', 'm', 0 };
-    builder_add_answer(
-        &b,
-        "www.example.com",
-        DNS_TYPE_CNAME,
-        DNS_CLASS_IN,
-        300,
-        sizeof(cname_rdata),
-        cname_rdata
-    );
+    uint8_t cname_rdata[] = { 3, 'c', 'd', 'n', 7, 'e', 'x', 'a', 'm', 'p', 'l', 'e', 3, 'c', 'o', 'm', 0 };
+    builder_add_answer(&b, "www.example.com", DNS_TYPE_CNAME, DNS_CLASS_IN, 300, sizeof(cname_rdata), cname_rdata);
 
     int ret = call_handle_packet(&test_ctx, b.buf, b.len);
     TEST_ASSERT(ret == 0, "test_reject_cname_only_without_terminal: handle_packet returns 0");
@@ -725,38 +657,15 @@ static void test_reject_cname_with_only_aaaa_terminal_for_a_query() {
     builder_init(&b, 0x8888, 0x8180, 1, 2, 0, 0);
     builder_add_question(&b, "www.example.com", DNS_TYPE_A, DNS_CLASS_IN);
 
-    uint8_t cname_rdata[] = { 3,   'c', 'd', 'n', 7,   'e', 'x', 'a', 'm',
-                              'p', 'l', 'e', 3,   'c', 'o', 'm', 0 };
-    builder_add_answer(
-        &b,
-        "www.example.com",
-        DNS_TYPE_CNAME,
-        DNS_CLASS_IN,
-        300,
-        sizeof(cname_rdata),
-        cname_rdata
-    );
+    uint8_t cname_rdata[] = { 3, 'c', 'd', 'n', 7, 'e', 'x', 'a', 'm', 'p', 'l', 'e', 3, 'c', 'o', 'm', 0 };
+    builder_add_answer(&b, "www.example.com", DNS_TYPE_CNAME, DNS_CLASS_IN, 300, sizeof(cname_rdata), cname_rdata);
 
     uint8_t aaaa_rdata[16] = { 0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1 };
-    builder_add_answer(
-        &b,
-        "cdn.example.com",
-        DNS_TYPE_AAAA,
-        DNS_CLASS_IN,
-        300,
-        sizeof(aaaa_rdata),
-        aaaa_rdata
-    );
+    builder_add_answer(&b, "cdn.example.com", DNS_TYPE_AAAA, DNS_CLASS_IN, 300, sizeof(aaaa_rdata), aaaa_rdata);
 
     int ret = call_handle_packet(&test_ctx, b.buf, b.len);
-    TEST_ASSERT(
-        ret == 0,
-        "test_reject_cname_with_only_aaaa_terminal_for_a_query: handle_packet returns 0"
-    );
-    TEST_ASSERT(
-        test_next_idx == 0,
-        "test_reject_cname_with_only_aaaa_terminal_for_a_query: next_idx unchanged"
-    );
+    TEST_ASSERT(ret == 0, "test_reject_cname_with_only_aaaa_terminal_for_a_query: handle_packet returns 0");
+    TEST_ASSERT(test_next_idx == 0, "test_reject_cname_with_only_aaaa_terminal_for_a_query: next_idx unchanged");
 }
 
 static void test_ecs_scope_zero_cached_with_partition_key() {
@@ -773,10 +682,7 @@ static void test_ecs_scope_zero_cached_with_partition_key() {
     int ret = call_handle_packet(&test_ctx, b.buf, b.len);
     TEST_ASSERT(ret == 0, "test_ecs_scope_zero_cached_with_partition_key: handle_packet returns 0");
 
-    TEST_ASSERT(
-        test_next_idx == 1,
-        "test_ecs_scope_zero_cached_with_partition_key: next_idx incremented"
-    );
+    TEST_ASSERT(test_next_idx == 1, "test_ecs_scope_zero_cached_with_partition_key: next_idx incremented");
 #endif
 }
 
@@ -792,26 +698,15 @@ static void test_ecs_scope_nonzero_cached_with_partition_key() {
     builder_add_opt_ecs(&b, 1232, 1, 24, 24, htonl(0xcb007100u));
 
     int ret = call_handle_packet(&test_ctx, b.buf, b.len);
-    TEST_ASSERT(
-        ret == 0,
-        "test_ecs_scope_nonzero_cached_with_partition_key: handle_packet returns 0"
-    );
+    TEST_ASSERT(ret == 0, "test_ecs_scope_nonzero_cached_with_partition_key: handle_packet returns 0");
 
     if (has_bpf) {
-        TEST_ASSERT(
-            test_next_idx == 1,
-            "test_ecs_scope_nonzero_cached_with_partition_key: next_idx incremented"
-        );
+        TEST_ASSERT(test_next_idx == 1, "test_ecs_scope_nonzero_cached_with_partition_key: next_idx incremented");
         uint32_t expected_hash = 0;
         calculate_hash_strict_impl(b.buf, sizeof(struct dns_hdr), b.len, &expected_hash);
-        struct cache_key key = { CACHE_KEY_CORE_AND_ECS_INIT_DESIG(
-            expected_hash,
-            DNS_TYPE_A,
-            DNS_CLASS_IN,
-            htonl(0xcb007100u),
-            24,
-            1
-        ) };
+        struct cache_key key = {
+            CACHE_KEY_CORE_AND_ECS_INIT_DESIG(expected_hash, DNS_TYPE_A, DNS_CLASS_IN, htonl(0xcb007100u), 24, 1)
+        };
         struct cache_value val;
         int err = bpf_map_lookup_elem(test_ctx.cache_map_fd, &key, &val);
         TEST_ASSERT(err == 0, "test_ecs_scope_nonzero_cached_with_partition_key: cache key exists");
@@ -967,11 +862,6 @@ int main(void) {
         close(map_fd);
     }
 
-    printf(
-        "\nTotal: %d, Passed: %d, Failed: %d\n",
-        test_count,
-        pass_count,
-        test_count - pass_count
-    );
+    printf("\nTotal: %d, Passed: %d, Failed: %d\n", test_count, pass_count, test_count - pass_count);
     return (pass_count == test_count) ? 0 : 1;
 }

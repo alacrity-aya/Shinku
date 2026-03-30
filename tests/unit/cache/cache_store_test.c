@@ -42,6 +42,7 @@ typedef uint16_t __be16;
 #endif
 
 #include "../../src/core/dns_parser.h"
+#include "../../src/core/parser_runtime.h"
 #include "../../src/include/constants.h"
 
 static int test_count = 0;
@@ -67,15 +68,8 @@ struct dns_builder {
     uint32_t len;
 };
 
-static void builder_init(
-    struct dns_builder* b,
-    uint16_t id,
-    uint16_t flags,
-    uint16_t qd,
-    uint16_t an,
-    uint16_t ns,
-    uint16_t ar
-) {
+static void
+builder_init(struct dns_builder* b, uint16_t id, uint16_t flags, uint16_t qd, uint16_t an, uint16_t ns, uint16_t ar) {
     memset(b, 0, sizeof(*b));
     struct dns_hdr* hdr = (struct dns_hdr*)b->buf;
     hdr->id = htons(id);
@@ -106,8 +100,7 @@ static void builder_add_name(struct dns_builder* b, const char* name) {
     b->buf[b->len++] = 0;
 }
 
-static void
-builder_add_question(struct dns_builder* b, const char* name, uint16_t qtype, uint16_t qclass) {
+static void builder_add_question(struct dns_builder* b, const char* name, uint16_t qtype, uint16_t qclass) {
     builder_add_name(b, name);
     uint16_t* ptr = (uint16_t*)(b->buf + b->len);
     ptr[0] = htons(qtype);
@@ -187,11 +180,7 @@ static void test_seqlock_write(int cache_map_fd) {
 
     call_handle_packet(&ctx, b.buf, b.len);
 
-    TEST_ASSERT(
-        entries[0].seq == 2,
-        "After store: seq == 2 (two increments, got %u)",
-        entries[0].seq
-    );
+    TEST_ASSERT(entries[0].seq == 2, "After store: seq == 2 (two increments, got %u)", entries[0].seq);
     TEST_ASSERT((entries[0].seq & 1) == 0, "seq is even (stable, not write-in-progress)");
 }
 
@@ -308,34 +297,16 @@ static void test_eviction_on_wraparound(int cache_map_fd, int has_real_bpf_map) 
     TEST_ASSERT(next_idx == 4, "After 4 stores, next_idx == 4 (got %u)", next_idx);
 
     uint32_t first_hash = 0;
-    calculate_hash_strict_impl(
-        builders[0].buf,
-        sizeof(struct dns_hdr),
-        builders[0].len,
-        &first_hash
-    );
-    struct cache_key first_key = { .name_hash = first_hash,
-                                   .qtype = DNS_TYPE_A,
-                                   .qclass = DNS_CLASS_IN };
+    calculate_hash_strict_impl(builders[0].buf, sizeof(struct dns_hdr), builders[0].len, &first_hash);
+    struct cache_key first_key = { .name_hash = first_hash, .qtype = DNS_TYPE_A, .qclass = DNS_CLASS_IN };
     struct cache_value first_val;
     int err = bpf_map_lookup_elem(cache_map_fd, &first_key, &first_val);
 
-    TEST_ASSERT(
-        err != 0,
-        "FIX: first.com's stale cache_map entry was evicted on wraparound (err=%d)",
-        err
-    );
+    TEST_ASSERT(err != 0, "FIX: first.com's stale cache_map entry was evicted on wraparound (err=%d)", err);
 
     uint32_t fourth_hash = 0;
-    calculate_hash_strict_impl(
-        builders[3].buf,
-        sizeof(struct dns_hdr),
-        builders[3].len,
-        &fourth_hash
-    );
-    struct cache_key fourth_key = { .name_hash = fourth_hash,
-                                    .qtype = DNS_TYPE_A,
-                                    .qclass = DNS_CLASS_IN };
+    calculate_hash_strict_impl(builders[3].buf, sizeof(struct dns_hdr), builders[3].len, &fourth_hash);
+    struct cache_key fourth_key = { .name_hash = fourth_hash, .qtype = DNS_TYPE_A, .qclass = DNS_CLASS_IN };
     struct cache_value fourth_val;
     err = bpf_map_lookup_elem(cache_map_fd, &fourth_key, &fourth_val);
 
@@ -435,9 +406,7 @@ static void test_seqlock_torn_read_detection(void) {
 
 #if defined(__has_feature)
     #if __has_feature(thread_sanitizer)
-    printf(
-        "  [SKIP] TSAN build: torn-read simulation intentionally performs unsynchronized pkt access\n"
-    );
+    printf("  [SKIP] TSAN build: torn-read simulation intentionally performs unsynchronized pkt access\n");
     return;
     #endif
 #endif
@@ -540,10 +509,7 @@ static void test_ttl_cleanup(int cache_map_fd, int has_real_bpf_map) {
     int err2 = bpf_map_lookup_elem(cache_map_fd, &key2, &val2);
     TEST_ASSERT(err2 == 0, "long-ttl.com still in cache_map after cleanup (err=%d)", err2);
 
-    TEST_ASSERT(
-        slot_owners[0].name_hash == 0,
-        "slot_owners[0] cleared after short-ttl.com cleanup"
-    );
+    TEST_ASSERT(slot_owners[0].name_hash == 0, "slot_owners[0] cleared after short-ttl.com cleanup");
 }
 
 // =====================================================================
@@ -621,14 +587,14 @@ static void test_admission_min_ttl_reject(int cache_map_fd, int has_real_bpf_map
         .cache_map_fd = cache_map_fd,
         .slot_owners = slot_owners,
         .next_gen = 0,
-        .admission_enabled = 1,
-        .admission_min_ttl = 10,
-        .recent_insert_keys = recent_keys,
-        .recent_insert_ns = recent_ns,
-        .recent_insert_cap = 4,
-        .freq_width = 64,
-        .freq_epoch_ops = 128,
-        .freq_rows = { row0, row1, row2, row3 },
+        .admission.enabled = 1,
+        .admission.min_ttl = 10,
+        .recent.keys = recent_keys,
+        .recent.ns_timestamps = recent_ns,
+        .recent.capacity = 4,
+        .sketch.width = 64,
+        .sketch.epoch_ops = 128,
+        .sketch.rows = { row0, row1, row2, row3 },
     };
 
     struct dns_builder b;
@@ -674,15 +640,15 @@ static void test_admission_recent_dampen_reject(int cache_map_fd, int has_real_b
         .cache_map_fd = cache_map_fd,
         .slot_owners = slot_owners,
         .next_gen = 0,
-        .admission_enabled = 1,
-        .admission_min_ttl = 1,
-        .admission_dampen_window_ns = 10ULL * 1000000000ULL,
-        .recent_insert_keys = recent_keys,
-        .recent_insert_ns = recent_ns,
-        .recent_insert_cap = 8,
-        .freq_width = 64,
-        .freq_epoch_ops = 128,
-        .freq_rows = { row0, row1, row2, row3 },
+        .admission.enabled = 1,
+        .admission.min_ttl = 1,
+        .admission.dampen_window_ns = 10ULL * 1000000000ULL,
+        .recent.keys = recent_keys,
+        .recent.ns_timestamps = recent_ns,
+        .recent.capacity = 8,
+        .sketch.width = 64,
+        .sketch.epoch_ops = 128,
+        .sketch.rows = { row0, row1, row2, row3 },
     };
 
     struct dns_builder b;
@@ -725,18 +691,18 @@ static void test_admission_freq_reject_cold_candidate(int cache_map_fd, int has_
         .cache_map_fd = cache_map_fd,
         .slot_owners = slot_owners,
         .next_gen = 0,
-        .admission_enabled = 1,
-        .admission_min_ttl = 1,
-        .pressure_mode = 1,
-        .hot_threshold = 2,
-        .recent_insert_keys = recent_keys,
-        .recent_insert_ns = recent_ns,
-        .recent_insert_cap = 8,
-        .slot_hot = slot_hot,
-        .slot_hit_count = slot_hits,
-        .freq_width = 64,
-        .freq_epoch_ops = 128,
-        .freq_rows = { row0, row1, row2, row3 },
+        .admission.enabled = 1,
+        .admission.min_ttl = 1,
+        .admission.pressure_mode = 1,
+        .segments.hot_threshold = 2,
+        .recent.keys = recent_keys,
+        .recent.ns_timestamps = recent_ns,
+        .recent.capacity = 8,
+        .segments.slot_hot = slot_hot,
+        .segments.slot_hit_count = slot_hits,
+        .sketch.width = 64,
+        .sketch.epoch_ops = 128,
+        .sketch.rows = { row0, row1, row2, row3 },
     };
 
     struct dns_builder hot;
@@ -758,9 +724,7 @@ static void test_admission_freq_reject_cold_candidate(int cache_map_fd, int has_
 
     uint32_t hot_hash = 0;
     calculate_hash_strict_impl(hot.buf, sizeof(struct dns_hdr), hot.len, &hot_hash);
-    struct cache_key hot_key = { .name_hash = hot_hash,
-                                 .qtype = DNS_TYPE_A,
-                                 .qclass = DNS_CLASS_IN };
+    struct cache_key hot_key = { .name_hash = hot_hash, .qtype = DNS_TYPE_A, .qclass = DNS_CLASS_IN };
     struct cache_value val;
     int err = bpf_map_lookup_elem(cache_map_fd, &hot_key, &val);
     TEST_ASSERT(err == 0, "hot key should survive cold candidate under pressure mode");
@@ -795,18 +759,18 @@ static void test_hot_promotion_on_rehit(int cache_map_fd, int has_real_bpf_map) 
         .cache_map_fd = cache_map_fd,
         .slot_owners = slot_owners,
         .next_gen = 0,
-        .admission_enabled = 1,
-        .admission_min_ttl = 1,
-        .pressure_mode = 0,
-        .hot_threshold = 100,
-        .recent_insert_keys = recent_keys,
-        .recent_insert_ns = recent_ns,
-        .recent_insert_cap = 8,
-        .slot_hot = slot_hot,
-        .slot_hit_count = slot_hits,
-        .freq_width = 64,
-        .freq_epoch_ops = 128,
-        .freq_rows = { row0, row1, row2, row3 },
+        .admission.enabled = 1,
+        .admission.min_ttl = 1,
+        .admission.pressure_mode = 0,
+        .segments.hot_threshold = 100,
+        .recent.keys = recent_keys,
+        .recent.ns_timestamps = recent_ns,
+        .recent.capacity = 8,
+        .segments.slot_hot = slot_hot,
+        .segments.slot_hit_count = slot_hits,
+        .sketch.width = 64,
+        .sketch.epoch_ops = 128,
+        .sketch.rows = { row0, row1, row2, row3 },
     };
 
     struct dns_builder b;

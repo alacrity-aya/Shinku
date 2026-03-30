@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-only OR Apache-2.0
 #pragma once
 
-#include "dns_parser.h"
+#include "cache_types.h"
+
+struct dns_parser_runtime;
 
 /**
  * @brief Store a DNS response in cache with additional flags.

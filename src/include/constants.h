@@ -138,6 +138,7 @@
 #define ARENA_ENTRY_SIZE 512        /**< Max traditional DNS UDP payload */
 #define ARENA_DEFAULT_PAGES 2112    /**< Default: 2112 pages (~8.25MB) */
 #define CACHE_MAP_MAX_ENTRIES 16384 /**< Max entries in cache_map */
+#define CACHE_FREQ_ROWS 4
 /** @} */
 
 /* ============================================================================

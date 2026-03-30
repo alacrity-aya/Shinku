@@ -2,10 +2,11 @@
 #pragma once
 
 #include "bpf_log.h"
+#include "cache_types.h"
 #include "degraded_mode.h"
-#include "dns_parser.h"
 #include "obs_http.h"
 #include "obs_metrics.h"
+#include "parser_runtime.h"
 #include "runtime/events.h"
 
 #include "cli/config.h"
