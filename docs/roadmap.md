@@ -63,7 +63,11 @@ This roadmap is based on the current repository state, not historical assumption
 
 ## 1. Industrialization Gap Analysis
 
-To be “industrial-grade,” Shinku must close six categories of gaps:
+### Architectural Scope Note
+
+Shinku is a **transparent XDP-layer DNS cache**, not a recursive resolver. It intercepts cache hits at the kernel level and passes cache misses through to the existing DNS infrastructure via `XDP_PASS`. Upstream DNS high availability (pool management, health checks, failover) is the responsibility of the upstream resolver (e.g., CoreDNS, Unbound, BIND) and is explicitly out of scope for this project. Shinku's failure mode is **fail-open**: if the daemon crashes or BPF programs detach, all traffic falls through to the upstream resolver without interruption.
+
+To be "industrial-grade," Shinku must close six categories of gaps:
 
 1. **Protocol coverage and correctness boundaries**
 2. **Cache lifecycle and capacity governance**
@@ -76,21 +80,19 @@ This plan prioritizes reliability and operability before feature breadth.
 
 ### 1.1 Real-network reasonability gaps (non-IPv6)
 
-From a real production DNS perspective, the highest remaining “unreasonable” points are:
+From a real production DNS perspective, the highest remaining "unreasonable" points are:
 
-1. **Single-upstream dependency without health-based failover policy**
-   - Current behavior assumes a single healthy upstream path; attach/degraded handling exists, but upstream pool health/routing policy is not defined.
-2. **No explicit truncation/TCP fallback strategy**
+1. **No explicit truncation/TCP fallback strategy**
    - Parser currently rejects TC responses; this is fine for strict UDP cacheability but incomplete for mixed real traffic where truncation is normal.
-3. **EDNS behavior is not fully operationalized**
+2. **EDNS behavior is not fully operationalized**
    - ECS baseline exists, but end-to-end policy for EDNS fallback/normalization (including malformed or unsupported EDNS behaviors) is not fully specified.
-4. **Capacity governance is too coarse under churn**
+3. **Capacity governance is too coarse under churn**
    - Ring-slot overwrite is efficient, but lacks policy-level admission/eviction controls for hot-key preservation and high-cardinality pressure.
-5. **No stale-serve policy during upstream instability**
+4. **No stale-serve policy during upstream instability**
    - Current TTL expiry is strict; in real outages, controlled stale serve (`stale-if-error`) is often preferable to hard miss.
-6. **Security hardening remains too abstract**
+5. **Security hardening remains too abstract**
    - Rate limiting, ACL/source policy, and anti-amplification posture are listed but not planned as concrete deliverables.
-7. **SLO-first operations are still incomplete**
+6. **SLO-first operations are still incomplete**
    - Metrics exist, but SLO targets, alert thresholds, and runbook-driven remediation paths are not yet encoded.
 
 These are prioritized below in P0/P1/P2 without introducing IPv6 scope.
@@ -194,20 +196,6 @@ These are prioritized below in P0/P1/P2 without introducing IPv6 scope.
 - Repeated UDP queries for the same large name avoid repeated upstream UDP pressure.
 
 **Status:** Baseline implemented (cached `TC=1` UDP fallback behavior + integration coverage). Remaining work is richer metrics and optional TCP retry module.
-
----
-
-### P0.6 Upstream resiliency baseline
-**Goal:** Avoid single-upstream fragility in real networks.
-
-**Implement**
-- Introduce upstream pool health checks (at least primary + backup policy).
-- Add bounded failover/failback policy with jittered probes.
-- Expose upstream health/failover counters in metrics.
-
-**Acceptance criteria**
-- Fault injection on primary upstream does not cause prolonged resolution failure.
-- Automatic recovery to primary is bounded and observable.
 
 ---
 
@@ -416,7 +404,7 @@ Planned controls:
 
 Prioritization policy:
 - Recursive/forwarder in controlled networks:
-  - keep focus on cache correctness, upstream resiliency, and abuse observability first.
+  - keep focus on cache correctness, upstream load protection, and abuse observability first.
   - treat heavy anti-DDoS features as optional add-ons.
 - Authoritative-facing or Internet-exposed resolver role:
   - prioritize water-torture controls (random-subdomain miss shaping, negative-response strategy tuning, upstream protection).
