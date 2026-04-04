@@ -15,13 +15,15 @@
  * @brief Identifiers for BPF-side performance counters.
  */
 enum obs_bpf_metric_id {
-    OBS_BPF_CACHE_HIT = 0,          /**< Cache hit: response served from XDP cache */
-    OBS_BPF_CACHE_MISS = 1,         /**< Cache miss: forwarded to upstream */
-    OBS_BPF_CACHE_EXPIRED = 2,      /**< Cache entry expired during lookup */
-    OBS_BPF_CACHE_GEN_MISMATCH = 3, /**< Generation mismatch (slot reused) */
-    OBS_BPF_CACHE_SEQ_CONFLICT = 4, /**< Seqlock conflict during read */
-    OBS_BPF_XDP_TX = 5,             /**< XDP_TX action (response transmitted) */
-    OBS_BPF_TC_RINGBUF_DROP = 6,    /**< Ring buffer submission dropped */
-    OBS_BPF_TC_CAPTURE = 7,         /**< DNS packet captured to ring buffer */
-    OBS_BPF_METRIC_MAX = 8,         /**< Sentinel: number of BPF metrics */
+    OBS_BPF_CACHE_HIT = 0,             /**< Cache hit: response served from XDP cache */
+    OBS_BPF_CACHE_MISS = 1,            /**< Cache miss: forwarded to upstream */
+    OBS_BPF_CACHE_EXPIRED = 2,         /**< Cache entry expired during lookup */
+    OBS_BPF_CACHE_GEN_MISMATCH = 3,    /**< Generation mismatch (slot reused) */
+    OBS_BPF_CACHE_SEQ_CONFLICT = 4,    /**< Seqlock conflict during read */
+    OBS_BPF_XDP_TX = 5,                /**< XDP_TX action (response transmitted) */
+    OBS_BPF_TC_RINGBUF_DROP = 6,       /**< Ring buffer submission dropped */
+    OBS_BPF_TC_CAPTURE = 7,            /**< DNS packet captured to ring buffer */
+    OBS_BPF_TC_UPSTREAM_TRUNCATED = 8, /**< Captured upstream UDP response had TC=1 */
+    OBS_BPF_TC_FALLBACK_HIT = 9,       /**< Cached TC=1 fallback served from XDP */
+    OBS_BPF_METRIC_MAX = 10,           /**< Sentinel: number of BPF metrics */
 };

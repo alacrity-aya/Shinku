@@ -12,7 +12,6 @@ An eBPF-based DNS caching proxy that serves cached responses at the XDP layer fo
 *   BPF Arena memory: Shared memory between XDP programs and userspace, requiring Linux 6.9 or newer.
 *   Transparent proxy: Operates in front of any DNS server without requiring configuration changes.
 *   VLAN support: Capable of parsing Q-in-Q (802.1Q and 802.1AD) tags.
-*   Optional EDNS Client Subnet (ECS): Compile-time gated (`-Decs=true`), disabled by default for lean hot path.
 *   Zero-copy arena reads: Uses 8-byte wide copies from arena memory within the XDP hot path.
 *   Conditional BPF logging: Includes a compile-time flag to remove logging overhead in production environments.
 
@@ -132,6 +131,8 @@ These counters are sampled in the XDP/TC hot path using `bpf_get_prandom_u32() &
 | `shinku_xdp_tx_total` | counter | Sampled XDP_TX responses sent |
 | `shinku_tc_capture_total` | counter | Sampled TC-captured DNS responses |
 | `shinku_tc_ringbuf_drop_total` | counter | Sampled TC ring buffer reservation drops |
+| `shinku_udp_truncated_responses_total` | counter | Sampled upstream UDP responses with TC=1 |
+| `shinku_tc_fallback_cache_hit_total` | counter | Sampled cached TC=1 fallback responses served from XDP |
 | `shinku_bpf_sample_mask` | gauge | Current sampling mask (events counted when `rand32 & mask == 0`) |
 
 ### Userspace Metrics
@@ -176,6 +177,28 @@ The `shinku_parser_reject_reason_total` counter provides detailed breakdown by r
 | `bad_ecs` | Invalid or unsupported EDNS Client Subnet option |
 | `bad_ttl` | TTL is 0 or invalid |
 
+### Truncation/TCP Behavior (Deterministic)
+
+Shinku's current deterministic behavior for truncated UDP responses is:
+
+1. If upstream UDP response has `TC=1`, userspace caches that truncated response as a short-lived fallback entry.
+2. Subsequent UDP queries for the same key can be served the cached `TC=1` response from XDP fast path.
+3. DNS clients should retry the same query over TCP when receiving `TC=1` (RFC 2181 / RFC 7766 behavior).
+4. Shinku does not synthesize a local TCP answer path yet; TCP retry is handled by client + upstream resolver path.
+
+Observability for this path:
+
+- `shinku_udp_truncated_responses_total`: sampled count of upstream TC=1 UDP responses observed.
+- `shinku_tc_fallback_cache_hit_total`: sampled count of cached TC=1 fallback responses served.
+
+An operator-friendly truncation ratio estimate:
+
+- `rate(shinku_udp_truncated_responses_total[5m]) / rate(shinku_tc_capture_total[5m])`
+
+Fallback efficacy estimate:
+
+- `rate(shinku_tc_fallback_cache_hit_total[5m]) / rate(shinku_udp_truncated_responses_total[5m])`
+
 ### CLI Options
 
 ```text
@@ -207,6 +230,39 @@ This removes all instrumentation code paths entirely.
 *   Unit tests: Run `meson test -C build`. This includes 48 tests covering the hash function, parser, and c-ares integration.
 *   Integration tests: Run `sudo python3 tests/integration/test_dns_cache.py -v`. This suite contains 9 tests.
 *   Benchmarks: Run `sudo bash tests/benchmark/run_benchmark.sh`.
+
+## Soak Testing (Real Upstream via Docker Unbound)
+
+Shinku includes a real-soak infrastructure path that uses:
+
+- existing netns/veth topology (`tests/integration/topology.py`),
+- real upstream DNS server in Docker (`mvance/unbound`),
+- Shinku attached on `veth-host`,
+- periodic metrics/resource snapshots under `tests/soak/results/<run-id>/`.
+
+Quick smoke run (5 minutes default):
+
+```bash
+just soak-up
+just soak-run
+```
+
+24h run:
+
+```bash
+just soak-up
+just soak-run-long
+```
+
+Or run directly with custom duration/interval:
+
+```bash
+sudo env SOAK_DURATION_SEC=7200 SAMPLE_INTERVAL_SEC=20 tests/soak/run_soak_with_unbound_docker.sh
+```
+
+Notes:
+- Requires root privileges, Docker daemon, and built `build/shinku` binary.
+- Warm-refresh is treated as advanced optional behavior; soak baseline does not assume it is enabled.
 
 ## Development
 

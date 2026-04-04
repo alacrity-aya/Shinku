@@ -1,6 +1,26 @@
 // SPDX-License-Identifier: GPL-2.0-only OR Apache-2.0
+/**
+ * @file cache_recent.c
+ * @brief Recent insert tracking for admission dampening.
+ *
+ * Tracks recently inserted cache keys to prevent redundant updates
+ * within a configurable dampening window. Uses bucket-based storage
+ * with LRU eviction within each bucket.
+ */
+
 #include "cache_ops_internal.h"
 
+/**
+ * @brief Check if a key was inserted recently (within dampen window).
+ * @param recent Recent insert tracker structure.
+ * @param dampen_window_ns Dampening window in nanoseconds.
+ * @param key Cache key to check.
+ * @param now_ns Current time in nanoseconds.
+ * @return 1 if recently inserted, 0 otherwise.
+ *
+ * Uses fingerprint-based bucket lookup for O(1) average case.
+ * Checks all slots in the bucket for matching keys within the window.
+ */
 int cache_recent_was_inserted(
     const struct cache_recent_tracker* recent,
     uint64_t dampen_window_ns,
@@ -32,6 +52,16 @@ int cache_recent_was_inserted(
     return 0;
 }
 
+/**
+ * @brief Record a recent insert in the tracking array.
+ * @param recent Recent insert tracker structure.
+ * @param key Cache key that was inserted.
+ * @param now_ns Insertion time in nanoseconds.
+ *
+ * Uses bucket-based storage with LRU eviction within each bucket.
+ * If the key already exists, updates its timestamp. Otherwise,
+ * evicts the oldest entry in the bucket.
+ */
 void cache_recent_track_insert(struct cache_recent_tracker* recent, const struct cache_key* key, uint64_t now_ns) {
     if (!recent->keys || !recent->ns_timestamps || !recent->capacity)
         return;

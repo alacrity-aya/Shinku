@@ -1,0 +1,20 @@
+groups:
+  - name: shinku-p05-truncation
+    rules:
+      - alert: ShinkuHighUdpTruncationRatio
+        expr: 100 * rate(shinku_udp_truncated_responses_total[5m]) / clamp_min(rate(shinku_tc_capture_total[5m]), 0.000001) > 5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Shinku upstream UDP truncation ratio is high"
+          description: "Truncation ratio has been above 5% for 10 minutes; clients will likely TCP retry more often."
+
+      - alert: ShinkuLowTcFallbackEfficacy
+        expr: 100 * rate(shinku_tc_fallback_cache_hit_total[5m]) / clamp_min(rate(shinku_udp_truncated_responses_total[5m]), 0.000001) < 20
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Shinku TC fallback efficacy is low"
+          description: "Fallback efficacy has been below 20% for 15 minutes; repeated TC=1 responses are not being served effectively from cache."

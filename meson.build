@@ -18,6 +18,7 @@ ecs = get_option('ecs')
 
 cares_dep = dependency('libcares', fallback : ['c-ares', 'cares_dep'])
 libbpf_dep = dependency('libbpf')
+libcap_dep = dependency('libcap', fallback : ['libcap', 'libcap_dep'])
 clang = find_program('clang')
 bpftool = find_program('bpftool')
 
@@ -101,7 +102,7 @@ executable(
   cli_src,
   core_src,          
   bpf_skel,         
-  dependencies: [libbpf_dep],
+  dependencies: [libbpf_dep, libcap_dep],
   include_directories: [inc_src, inc_runtime],
   c_args: (bpf_log ? ['-DSHINKU_BPF_LOG_ENABLED=1'] : ['-DSHINKU_BPF_LOG_ENABLED=0']) + (obs ? ['-DSHINKU_OBS_ENABLED=1'] : ['-DSHINKU_OBS_ENABLED=0']) + (ecs ? ['-DSHINKU_ECS_ENABLED=1'] : ['-DSHINKU_ECS_ENABLED=0']),
   install: true
@@ -113,7 +114,7 @@ if build_benchmark_bin
     cli_src,
     core_src,
     bpf_skel,
-    dependencies: [libbpf_dep],
+    dependencies: [libbpf_dep, libcap_dep],
     include_directories: [inc_src, inc_runtime],
     c_args: [
       '-O3',

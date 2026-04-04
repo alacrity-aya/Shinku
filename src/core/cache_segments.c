@@ -1,6 +1,23 @@
 // SPDX-License-Identifier: GPL-2.0-only OR Apache-2.0
+/**
+ * @file cache_segments.c
+ * @brief Hot/cold segment management for cache entries.
+ *
+ * Tracks hot vs cold classification of cache entries for smarter
+ * eviction decisions. Hot entries (high frequency) are preserved
+ * during eviction when possible.
+ */
+
 #include "cache_ops_internal.h"
 
+/**
+ * @brief Update hot/cold segment size metrics.
+ * @param runtime Parser runtime with observability context.
+ * @param fallback_metrics Fallback metrics pointer if runtime is NULL.
+ * @param segments Segment tracker with hot/cold counts.
+ *
+ * Publishes current segment sizes as Prometheus gauges.
+ */
 void cache_segments_update_metrics(
     struct dns_parser_runtime* runtime,
     struct obs_metrics* fallback_metrics,
@@ -14,6 +31,16 @@ void cache_segments_update_metrics(
     obs_metrics_set_cache_segment_sizes(metrics, segments->hot_count, segments->cold_count);
 }
 
+/**
+ * @brief Determine if a slot should be marked hot.
+ * @param segments Segment tracker with hot threshold config.
+ * @param rehit Nonzero if this is a cache rehit (always hot).
+ * @param cur_freq Current frequency estimate from Count-Min sketch.
+ * @return 1 if hot, 0 if cold.
+ *
+ * Rehits are always marked hot. Otherwise, compare frequency against
+ * configured threshold.
+ */
 uint8_t cache_segments_calc_slot_hot(const struct cache_segment_tracker* segments, int rehit, uint32_t cur_freq) {
     if (rehit)
         return 1;
@@ -22,6 +49,20 @@ uint8_t cache_segments_calc_slot_hot(const struct cache_segment_tracker* segment
     return 0;
 }
 
+/**
+ * @brief Adjust hot/cold segment counters during cache update.
+ * @param segments Segment tracker with counters.
+ * @param had_old Nonzero if replacing existing entry.
+ * @param old_hot Previous entry's hot status.
+ * @param new_hot New entry's hot status.
+ * @param replacing_distinct Nonzero if new key differs from old.
+ *
+ * Handles four cases:
+ * 1. New entry: increment appropriate segment counter
+ * 2. Replacing distinct key: decrement old, increment new
+ * 3. Same key with hot/cold transition: transfer between segments
+ * 4. Same key, same hot status: no change needed
+ */
 void cache_segments_adjust_counts(
     struct cache_segment_tracker* segments,
     int had_old,

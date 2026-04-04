@@ -1,484 +1,282 @@
-# Shinku Roadmap (Code-Truth Aligned)
+# Shinku Roadmap (Sidecar / Co-located Mode, Code-Truth Aligned)
 
-This roadmap is based on the current repository state, not historical assumptions.
+This roadmap is aligned with the current codebase and intended deployment mode:
 
-## 0. Current State Snapshot (What is already done)
-
-### Already implemented
-- XDP hot path cache serve with `XDP_TX` and arena-backed payload copy (`src/bpf/cache.bpf.c`).
-- Userspace ingest path with DNS validation + name flattening + cache insertion (`src/core/dns_parser.c`).
-- Ring allocator semantics for arena slot selection (`next_idx` atomic increment with modulo), not bump-only allocation.
-- Concurrency safety for shared arena entries:
-  - seqlock (`cache_entry.seq`)
-  - generation check (`cache_entry.gen` vs `cache_value.gen`)
-  - stale slot owner eviction (`slot_owners`).
-- TTL expiry cleanup loop in userspace via background cleanup thread (`start_cleanup_thread`, `cleanup_expired_entries`).
-- CNAME ingest support in parser answer loop (with terminal A/AAAA requirement for A/AAAA queries).
-- **Negative caching (P1.1 complete)**:
-  - NXDOMAIN/NODATA caching with SOA-derived TTL policy (`parse_negative_cache_info`).
-  - TTL bounds: `NEGATIVE_TTL_MIN` (5s) and `NEGATIVE_TTL_MAX` (600s) per RFC 2308.
-  - Separate flags: `CACHE_VALUE_FLAG_NEGATIVE` and `CACHE_VALUE_FLAG_NXDOMAIN`.
-  - Metrics: `shinku_negative_accept_total{type=nxdomain|nodata}`, `shinku_negative_reject_total`.
-- Unit tests for parser, cache correctness, arena list/hash table, hash consistency, integration smoke tests.
-- **Observability baseline (P0.1 complete)**:
-  - Prometheus `/metrics` endpoint with sampled BPF counters and userspace counters.
-  - `/healthz` and `/readyz` endpoints for health/readiness probes.
-  - Configurable sampling via `--obs-bpf-mask` and toggle via `--obs` / `--obs-bpf`.
-  - Performance-safe: BPF counters use percpu map with sampling; userspace counters use relaxed atomics.
-  - Test coverage: `tests/unit/obs/obs_http_test.c`.
-- **Failure-mode policy baseline (P0.2 complete)**:
-  - Bounded retry + exponential backoff in startup attach paths (XDP/TC) to prevent crash-loop behavior.
-  - Explicit degraded-mode state machine in userspace with reason flags:
-    - `userspace_lag`
-    - `cleanup_failure`
-    - `startup_attach_retry`
-    - `cache_map_update_failure`
-  - Deterministic degradation activation based on streak thresholds (lag/cleanup/cache_map update failures).
-  - Degraded mode exported via `/metrics`:
-    - `shinku_degraded_mode`
-    - `shinku_degraded_reason_active{reason=...}`
-    - `shinku_degraded_transitions_total`
-    - `shinku_degraded_reason_set_total{reason=...}`
-  - Performance-first implementation:
-    - no locking in hot path (relaxed atomics only)
-    - bounded integer threshold checks
-    - no extra allocations in fast path.
-  - Test coverage: `tests/unit/degraded/degraded_mode_test.c`.
-- **Transport fallback baseline (TC UDP cache shield)**:
-  - Truncated UDP responses (`TC=1`) are accepted into cache as UDP fallback hints.
-  - Repeated UDP clients for large answers can be served cached `TC=1` without repeatedly burdening upstream with identical UDP work.
-  - Integration coverage includes `test_dns_tc_response_cached_for_udp_clients`.
-
-### Partially implemented
-- ECS handling is now subnet-partitioned for IPv4 ECS keys (`ecs_addr_v4`, `ecs_prefix`, `ecs_family`) to prevent cross-subnet cache pollution.
-- CNAME support is ingest-level acceptance; no advanced chain policy controls (loop-depth policy, richer negative interactions).
-- TCX attach fallback exists (legacy TC), but no staged rollout/health-gated deployment flow.
-
-### Not yet implemented
-- IPv6 fast path (XDP ingress/egress mutation for IPv6) — **deferred, low priority**.
-- DNS-over-TCP capture/cache strategy.
-- CI/CD pipeline and release automation (no `.github/workflows`).
+- **Shinku is a kernel-level DNS cache proxy/sidecar**, co-located with an upstream resolver on the same node (physical or VM).
+- Primary value is **latency shielding + upstream load reduction** on hot/miss-prone traffic, not multi-upstream recursive orchestration.
 
 ---
 
-## 1. Industrialization Gap Analysis
+## 0. Current State Snapshot (Implemented vs Pending)
 
-To be “industrial-grade,” Shinku must close six categories of gaps:
+### Implemented (confirmed in code/tests)
 
-1. **Protocol coverage and correctness boundaries**
-2. **Cache lifecycle and capacity governance**
-3. **Observability and operability**
-4. **Production deployment and upgrade safety**
-5. **Failure-mode handling and security posture**
-6. **Testing matrix and release engineering**
+1. **XDP/TC cache pipeline (IPv4 path)**
+   - XDP serves hits via `XDP_TX`, miss passes through upstream path.
+   - TC captures upstream responses and userspace writes cache entries.
 
-This plan prioritizes reliability and operability before feature breadth.
+2. **Parser + cache correctness baseline**
+   - DNS answer parse + flatten + store path implemented.
+   - CNAME acceptance with terminal RR guardrails (for current policy scope).
+   - Negative caching (NXDOMAIN/NODATA + SOA-based bounded TTL).
 
-### 1.1 Real-network reasonability gaps (non-IPv6)
+3. **Cache lifecycle + safety**
+   - Ring-slot allocation, seq/generation consistency, owner tracking.
+   - Background cleanup thread for TTL-expired entry removal.
 
-From a real production DNS perspective, the highest remaining “unreasonable” points are:
+4. **Admission/eviction system (implemented, modularized)**
+   - Minimum TTL gating, recent-insert dampening, pressure-mode rejection.
+   - Count-Min sketch + hot/cold segmentation.
+   - Code split: `cache_sketch.c`, `cache_recent.c`, `cache_segments.c`.
 
-1. **Single-upstream dependency without health-based failover policy**
-   - Current behavior assumes a single healthy upstream path; attach/degraded handling exists, but upstream pool health/routing policy is not defined.
-2. **No explicit truncation/TCP fallback strategy**
-   - Parser currently rejects TC responses; this is fine for strict UDP cacheability but incomplete for mixed real traffic where truncation is normal.
-3. **EDNS behavior is not fully operationalized**
-   - ECS baseline exists, but end-to-end policy for EDNS fallback/normalization (including malformed or unsupported EDNS behaviors) is not fully specified.
-4. **Capacity governance is too coarse under churn**
-   - Ring-slot overwrite is efficient, but lacks policy-level admission/eviction controls for hot-key preservation and high-cardinality pressure.
-5. **No stale-serve policy during upstream instability**
-   - Current TTL expiry is strict; in real outages, controlled stale serve (`stale-if-error`) is often preferable to hard miss.
-6. **Security hardening remains too abstract**
-   - Rate limiting, ACL/source policy, and anti-amplification posture are listed but not planned as concrete deliverables.
-7. **SLO-first operations are still incomplete**
-   - Metrics exist, but SLO targets, alert thresholds, and runbook-driven remediation paths are not yet encoded.
+5. **Observability + degraded-mode baseline**
+   - `/metrics`, `/healthz`, `/readyz` exported.
+   - Degraded reason/state machine + counters/gauges implemented.
 
-These are prioritized below in P0/P1/P2 without introducing IPv6 scope.
+6. **Transport fallback baseline**
+   - `TC=1` UDP responses are cacheable fallback hints with integration coverage.
+
+7. **Privilege model baseline (least privilege startup)**
+   - Privilege check occurs **after CLI parsing**.
+   - Startup allowed as root or via file capabilities (`CAP_BPF`, `CAP_NET_ADMIN`, `CAP_SYS_ADMIN`).
+
+### Deferred / Not targeted now
+
+- IPv6 fast path (explicitly deferred).
+- Full DNS-over-TCP capture/cache handling.
+- CI/CD release automation pipeline.
 
 ---
 
-## 2. Prioritized Implementation Plan
+## 1. Business Scenario Fit (Why priorities changed)
+
+### Deployment model
+
+Shinku is optimized for **co-located sidecar caching** in front of a local upstream resolver on the same node/network namespace test topology.
+
+### Consequence on roadmap
+
+- The previous **P0.6 “Upstream resiliency baseline” (multi-upstream failover/failback)** is **not a must-have** for this deployment mode and is removed from P0.
+- For sidecar mode, higher-value work is:
+  1) cache-hit consistency under churn,
+  2) warm-refresh to keep both sidecar and local upstream cache hot,
+  3) operational SLO/runbook maturity,
+  4) security and abuse controls scoped to sidecar role.
+
+---
+
+## 2. Updated Priorities (Sidecar-first)
 
 ## P0 (Must-have before production rollout)
 
-### P0.1 Observability baseline (metrics + health)
-**Goal:** Make behavior measurable and debuggable in production.
-
-**Implement**
-- Add userspace metrics endpoint (Prometheus text format) with at least:
-  - `shinku_cache_hit_total`
-  - `shinku_cache_miss_total`
-  - `shinku_cache_expired_hit_total`
-  - `shinku_cache_insert_total`
-  - `shinku_cache_insert_fail_total`
-  - `shinku_cache_cleanup_removed_total`
-  - `shinku_parser_reject_total{reason=...}`
-  - `shinku_rb_pkt_drop_total`
-  - `shinku_xdp_tx_total`
-- Add `/healthz` (process live) and `/readyz` (BPF programs attached + rings initialized).
-- Preserve low overhead: use per-thread/per-CPU counters where feasible and batch export in userspace.
-
-**Acceptance criteria**
-- Metrics exposed locally and scrapeable.
-- On synthetic failures, counters move predictably.
-- No measurable regression >3% QPS in benchmark mode with metrics enabled.
-
----
+### P0.1 Observability baseline ✅
+Already implemented. Keep extending only when new features require additional metrics.
 
 ### P0.2 Failure-mode policy and graceful degradation ✅
-**Goal:** Fail safe, not fail opaque.
+Already implemented baseline with retry/backoff + degraded reasons.
 
-**Implement**
-- Define and encode explicit behavior for:
-  - userspace lag/ring backlog growth
-  - cleanup thread failure
-  - attach/reattach failure at startup
-  - cache_map update failures
-- Add bounded retry + backoff for startup attach paths.
-- Add explicit “degraded mode” state in userspace logs/metrics.
+### P0.3 IPv6 support ⏸️ Deferred
+No change.
 
-**Acceptance criteria**
-- Fault injection scenarios produce deterministic fallback behavior.
-- No crash loops under repeated attach failures.
+### P0.4 Soak + operational readiness package
+**Goal:** prove long-run stability in sidecar conditions.
 
-**Status:** Implemented in baseline form with startup retry/backoff + degraded state metrics + deterministic threshold policy.
+**Implement next:**
+- 24h/72h soak under mixed hot-key + long-tail + TTL churn traffic.
+- Output runbook: deploy/rollback/incident checklist.
 
----
+### P0.5 Truncation/TCP operational completion
+**Current:**
+- TC=1 cache fallback baseline exists.
+- Truncation and fallback efficacy observability metrics are exposed.
+- Deterministic UDP TC=1 behavior and client TCP-retry expectation are documented.
 
-### P0.3 IPv6 support (end-to-end) ⏸️ DEFERRED
-**Goal:** Remove major protocol coverage gap for dual-stack deployments.
+**Remaining (P0.5 closeout):**
+- Add dashboard panels/alerts for truncation ratio and fallback efficacy in observability stack.
 
-**Status:** Deferred to lower priority. IPv6 fast path is not currently a target for this project. Revisit if dual-stack deployments become a requirement.
+### P0.6 (Removed from P0): upstream pool failover/failback
+Reason: not aligned with co-located sidecar model where upstream resolver is local and managed as node-local dependency.
 
-**Implement** (when resumed):
-- XDP ingress parse for `ETH_P_IPV6`, extension-header policy, UDP DNS query extraction.
-- Cache hit response rewrite for IPv6 headers and mandatory UDP checksum handling.
-- TC egress capture path for IPv6 UDP/53 responses.
-- Userspace parser acceptance for IPv6-sourced packets (payload logic remains mostly shared).
+If future product mode expands to standalone recursive resolver, revisit as separate roadmap branch.
 
-**Acceptance criteria**
-- Integration tests for AAAA queries over IPv6 path.
-- No checksum errors observed in packet captures.
+### P0.8 ECS scope decision (current cycle)
+ECS support is out of current roadmap scope. Planning and validation are done under non-ECS policy to keep behavior deterministic and operational complexity bounded.
 
----
+### P0.7 Resolver security baseline (sidecar scope)
+**Goal:** improve poisoning resistance and abuse safety without role creep.
 
-### P0.4 Soak and operational readiness package
-**Goal:** Validate long-run stability and provide deployable runbook.
-
-**Implement**
-- 24h and 72h soak tests with mixed query distributions.
-- Capacity and churn tests (high eviction pressure, TTL churn, domain cardinality spikes).
-- Operational docs:
-  - deployment checklist
-  - rollback checklist
-  - incident triage quick-guide
-
-**Acceptance criteria**
-- No unbounded memory growth in userspace.
-- Stable cache hit rate envelope under repeated churn.
+**Implement next:**
+- stronger response correlation checks,
+- in-flight duplicate suppression (singleflight-style by key),
+- sidecar-focused anti-amplification metrics/limits.
 
 ---
 
-### P0.5 Transport and fallback correctness (UDP truncation/TCP strategy)
-**Goal:** Make behavior sane under real DNS response size/path constraints.
-
-**Implement**
-- Define explicit policy for `TC=1` responses:
-  - cache-and-serve truncated UDP responses as transport fallback hints,
-  - clients retry over TCP to upstream (no local TCP synthesis yet),
-  - optional userspace TCP retry module remains future work.
-- Add integration scenarios for large/TC responses and verify deterministic behavior.
-
-**Acceptance criteria**
-- No ambiguous handling of truncated responses.
-- Repeated UDP queries for the same large name avoid repeated upstream UDP pressure.
-
-**Status:** Baseline implemented (cached `TC=1` UDP fallback behavior + integration coverage). Remaining work is richer metrics and optional TCP retry module.
-
----
-
-### P0.6 Upstream resiliency baseline
-**Goal:** Avoid single-upstream fragility in real networks.
-
-**Implement**
-- Introduce upstream pool health checks (at least primary + backup policy).
-- Add bounded failover/failback policy with jittered probes.
-- Expose upstream health/failover counters in metrics.
-
-**Acceptance criteria**
-- Fault injection on primary upstream does not cause prolonged resolution failure.
-- Automatic recovery to primary is bounded and observable.
-
----
-
-### P0.7 Resolver security baseline (cache poisoning resistance)
-**Goal:** Raise spoofing/poisoning cost to production-grade baseline.
-
-**Implement**
-- Add strict response correlation policy in userspace ingest (5-tuple + DNS ID + question tuple consistency checks where applicable).
-- Add query coalescing for identical in-flight upstream lookups.
-- Define and implement entropy requirements for upstream query source port and transaction ID handling policy.
-
-**Acceptance criteria**
-- Documented threat model + mitigation checklist in docs.
-- Integration/fault-injection tests validate rejection of mismatched/spoof-like response shapes.
-
----
-
-## P1 (High-value improvements immediately after P0)
+## P1 (High-value next)
 
 ### P1.1 Negative caching ✅
-**Goal:** Cut upstream load and latency for repeated negative lookups.
+Implemented.
 
-**Status:** Implemented. NXDOMAIN/NODATA caching with SOA-derived TTL policy, bounded by `NEGATIVE_TTL_MIN`/`NEGATIVE_TTL_MAX`.
-
-**Implement**
-- Cache NXDOMAIN/NODATA with SOA-based TTL bounds.
-- Separate key semantics for negative entries where needed.
-- Add parser rejection/acceptance metrics per negative type.
-
-**Acceptance criteria**
-- Unit + integration tests for NXDOMAIN/NODATA.
-- TTL expiry behavior matches policy.
-
----
-
-### P1.2 CNAME hardening and integration coverage ✅
-**Goal:** Move from basic support to robust production semantics.
-
-**Implement**
-- Add integration tests with mock server returning:
-  - CNAME + A
-  - CNAME chain + terminal A/AAAA
-  - CNAME-only for A/AAAA query (must reject cache insert)
-- Add parser reasons metrics for CNAME reject categories.
-- Optional policy knobs: max accepted chain depth, stricter owner/target linkage checks.
-
-**Acceptance criteria**
-- Integration suite validates cache-hit behavior for CNAME-backed answers.
-- No regressions in existing parser/cache tests.
-
-**Status:** Implemented for current policy scope:
-- CNAME + terminal A and CNAME chain + terminal A cache-hit integration tests.
-- CNAME-only and AAAA-only-terminal rejection paths tested and exposed in parser reject metrics.
-
----
+### P1.2 CNAME hardening ✅ (current scope)
+Implemented for current policy boundaries.
 
 ### P1.3 Hitless update path
-**Goal:** Reduce disruption during binary/program upgrades.
-
-**Implement**
-- Introduce controlled upgrade flow for BPF programs (link update strategy).
-- Add pre-flight checks and rollback on failed update.
-
-**Acceptance criteria**
-- Upgrade test shows no sustained DNS outage window.
-
----
+Keep as high-value operational work item.
 
 ### P1.4 Native XDP validation on physical NIC
-**Goal:** Prove production performance envelope beyond veth/generic mode.
+Keep for production confidence and perf envelope.
 
-**Implement**
-- Benchmark matrix on at least one native-XDP-capable NIC.
-- Compare SKB/generic vs native mode with same workload.
-
-**Acceptance criteria**
-- Publish reproducible report with hardware/kernel details and confidence intervals.
-
----
-
-### P1.5 Upstream cache warm-refresh
-**Goal:** Maintain upstream DNS server cache efficiency by proactively refreshing before/at expiry.
-
-**Rationale:** When local cache entries expire, upstream DNS servers may also have evicted their cached responses. Proactively querying upstream before or at local expiry helps maintain warm caches upstream, reducing overall DNS latency for dependent queries.
-
-**Implement**
-- Track entries approaching TTL expiry (e.g., at 80-90% of TTL).
-- Optionally issue proactive DNS queries to upstream for soon-to-expire entries.
-- Refresh local cache with new response, resetting TTL.
-- Policy knobs:
-  - `--refresh-before-expiry` (enable/disable proactive refresh)
-  - `--refresh-threshold` (percentage of TTL before refresh, default 90%)
-  - `--refresh-jitter` (randomize refresh timing to avoid thundering herd)
-
-**Acceptance criteria**
-- Configurable refresh policy.
-- Upstream cache hit rate improves under repeated query patterns.
-- No significant additional upstream load under normal operation.
-
----
+### P1.5 Upstream Cache Warm-Refresh (detailed plan below)
+This is now the highest-value cache-lifecycle enhancement for sidecar mode.
 
 ### P1.6 EDNS behavior hardening
-**Goal:** Make EDNS/ECS behavior predictable across heterogeneous resolvers.
-
-**Implement**
-- Document and enforce EDNS normalization policy for cache keying.
-- Add explicit malformed/unsupported EDNS fallback behavior (pass-through vs reject) with reason metrics.
-- Add integration tests for mixed OPT options, unknown options, and malformed-length cases.
-
-**Acceptance criteria**
-- ECS anti-pollution guarantees remain intact under mixed EDNS option sets.
-- EDNS parse failures are observable and do not destabilize cache behavior.
-
----
+Keep.
 
 ### P1.7 SLO + runbook operationalization
-**Goal:** Convert existing metrics into actionable operations.
-
-**Implement**
-- Define SLOs for hit ratio, miss ratio, parser reject ratio, and degraded mode duration.
-- Add alert thresholds and runbook mapping per degraded reason.
-- Add benchmark-to-SLO interpretation section in docs/performance.
-
-**Acceptance criteria**
-- Oncall can detect and triage degraded states using documented thresholds.
-- SLO compliance can be evaluated directly from exported metrics.
-
----
+Keep.
 
 ### P1.8 Truncation/TCP operational path
-**Goal:** Handle large-answer realities without ambiguous behavior.
-
-**Implement**
-- Add explicit TCP retry path policy for truncated answers (initially userspace path acceptable).
-- Add metrics for truncation ratio, TCP retry success/failure, and fallback latency impact.
-
-**Acceptance criteria**
-- TC-heavy integration scenarios have deterministic behavior and observability.
-- No silent drops or indefinite retry loops.
+Keep (after P0.5 closure).
 
 ---
 
-## P2 (Strategic scope expansion)
+## P2 (Strategic expansion)
 
-### P2.1 ECS hardening follow-ups
-**Goal:** Extend ECS safety from current IPv4 partitioning baseline to broader production policies.
-
-Current baseline already implemented:
-- ECS-aware key partitioning to avoid cross-subnet reuse.
-- ECS integration tests for same-subnet hit, different-subnet miss, and `/0` global behavior.
-
-Remaining follow-ups:
-- Scope-aware key normalization policy (RFC 7871 §7.3.1 aligned) with explicit mode switch:
-  - `strict-source` (current behavior, exact source-prefix partition)
-  - `scope-aware` (normalize cache key by validated scope prefix when safe)
-  - optional guarded hybrid mode for controlled aggregation
-- Add validation guardrails for normalization:
-  - only allow normalization when `scope <= source`
-  - preserve anti-pollution invariants in cross-subnet integration tests
-  - cap normalization breadth via configurable prefix floor to avoid cache blow-up
-- Configurable ECS forwarding/normalization policy (`/24` defaults, privacy knobs).
-- No-ECS-support zone memory/aggregation policy (future security hardening).
-- Future IPv6 ECS support only if IPv6 scope is revisited.
-
-### P2.1.1 ECS feature-gating and deployment profiles ✅
-**Goal:** Make ECS optional by build/deploy profile instead of mandatory behavior.
-
-Plan:
-- Introduce compile-time flag `SHINKU_ECS_ENABLED` (userspace + BPF) with Meson option wiring.
-- Provide two first-class build profiles:
-  - `ecs=disabled` (default): strict non-ECS cache key path (lean default for private/internal recursive deployments)
-  - `ecs=enabled`: ECS parse + partition + normalization policy path (CDN/geo-sensitive deployments)
-
-Performance invariant:
-- ECS disabled profile must compile out ECS parse/key code paths with no runtime branches in hot path.
-
-Acceptance criteria:
-- `ecs=disabled` build has no ECS parsing in hot path and passes full test suite (except ECS-specific tests skipped by profile).
-- `ecs=enabled` build preserves current ECS safety tests plus normalization-mode tests.
-
-Status: Meson feature gate + compile-time macro wiring implemented; integration tests are profile-gated.
-
-### P2.2 EDNS and large-response strategy
-**Goal:** Improve behavior for >512-byte realities while preserving XDP hot-path safety.
-
-### P2.3 DNS-over-TCP handling strategy
-**Goal:** Define and implement coherent policy for truncated/large-answer flows.
-
-### P2.4 Advanced admission/eviction policy
-**Goal:** Improve hit ratio under skew/churn (e.g., admission filtering, smarter eviction).
-
-### P2.6 Stale-if-error / stale-while-revalidate policy
-**Goal:** Improve availability and tail-latency during upstream instability.
-
-### P2.7 Security execution package (non-IPv6)
-**Goal:** Convert security hardening from generic intent to concrete controls.
-
-Planned controls:
-- per-client/per-subnet QPS limits,
-- optional source ACL mode,
-- anti-amplification safeguards for suspicious query patterns,
-- auditable deny/reject metrics.
-
-### P2.8 Attack-surface expansion gate (deployment-driven)
-**Goal:** Expand to water-torture / amplification defense only when deployment role requires it.
-
-Prioritization policy:
-- Recursive/forwarder in controlled networks:
-  - keep focus on cache correctness, upstream resiliency, and abuse observability first.
-  - treat heavy anti-DDoS features as optional add-ons.
-- Authoritative-facing or Internet-exposed resolver role:
-  - prioritize water-torture controls (random-subdomain miss shaping, negative-response strategy tuning, upstream protection).
-  - prioritize amplification controls (open-resolver exposure prevention, response shaping/limiting, ACL defaults).
-
-Acceptance criteria:
-- A deployment-role matrix is documented (default profile vs exposed profile).
-- Security controls are mapped to role-specific SLO/alert thresholds and benchmark scenarios.
-
-### P2.5 Security hardening
-**Goal:** Minimize abuse/risk surface (ACLs, anti-reflection posture, least-privilege runtime).
+- Stale-if-error / stale-while-revalidate policy.
+- Sidecar security execution package (rate limiting / ACL / anti-amplification posture by deployment role).
 
 ---
 
-## 3. Engineering Program Plan (12-week concrete schedule)
+## 3. Upstream Cache Warm-Refresh — Concrete Implementation Plan (for review)
 
-### Weeks 1-2: Observability foundation
-- Implement metrics schema and exporter.
-- Add health/readiness endpoints.
-- Add parser reject reason taxonomy.
+This plan targets Shinku’s current architecture (userspace parser/cache pipeline + cleanup thread + admission metadata), and is intentionally incremental.
 
-### Weeks 3-4: Failure-mode hardening
-- Add degraded mode logic and retries/backoff.
-- Add startup/attach failure scenarios in tests.
+**Positioning rule (hard requirement):** warm-refresh is an **advanced opt-in component**, disabled by default, and should only be enabled by operators in topologies where upstream cache locality/benefit is validated.
 
-### Weeks 5-7: CNAME integration + Cache lifecycle
-- Expand integration mock server scenarios for CNAME chains.
-- Implement upstream cache warm-refresh (proactive TTL refresh).
-- Add refresh policy configuration knobs.
+### 3.1 Objectives
 
-### Weeks 8-9: Soak testing and validation
-- Execute 24h/72h soak and churn scenarios.
-- Validate cache refresh behavior under load.
+1. Reduce latency spikes near TTL expiry for frequently re-requested names.
+2. Keep local upstream resolver cache warm for high-value keys.
+3. Avoid stampede/amplification side effects.
 
-### Weeks 10-11: Native XDP + soak campaign
-- Run native NIC benchmarks.
-- Execute 24h/72h soak and churn scenarios.
+### 3.2 Scope boundaries (phase 1)
 
-### Week 12: Release packaging
-- Deployment/rollback runbooks.
-- Versioned release notes and compatibility matrix.
+- **In scope:** proactive refresh for selected **positive cache entries**.
+- **Out of scope (phase 1):** negative-entry refresh, broad predictive ML scheduling, aggressive stale serving changes.
+
+### 3.3 Eligibility rules (refresh candidate filter)
+
+A cache entry is eligible only if all are true:
+
+1. Entry is currently valid (not expired) and has positive TTL remaining.
+2. Entry observed as hot enough:
+   - `slot_hot == 1` **or** `slot_hit_count >= refresh_min_hits`.
+3. Remaining TTL below threshold:
+   - `remaining_ttl <= max(5s, original_ttl * refresh_trigger_ratio)`.
+4. Not refreshed too recently:
+   - `now - last_refresh_attempt_ns >= refresh_min_interval`.
+5. Refresh budget allows (global + per-zone/per-key limits).
+
+Recommended defaults (phase 1):
+
+- `refresh_enabled = false` (explicit opt-in)
+- `refresh_trigger_ratio = 0.10` (10% remaining)
+- `refresh_min_hits = 2`
+- `refresh_min_interval = 5s`
+- `refresh_max_qps = 50` (global)
+- `refresh_jitter_pct = 20%`
+
+### 3.4 Scheduler model
+
+Add a dedicated low-priority refresh worker thread (or periodic task in existing maintenance loop):
+
+1. Iterate bounded batch of candidate slots each cycle.
+2. For each eligible key, compute jittered execution time and enqueue.
+3. Execute refresh queries with strict rate limit/token bucket.
+4. Store returned response via existing ingest/store path (same validation/admission semantics).
+
+Important: refresh work must never block hot poll loops.
+
+### 3.5 Concurrency and anti-stampede controls
+
+1. **Singleflight per cache key**
+   - At most one in-flight refresh per key.
+2. **Global token bucket**
+   - hard ceiling on refresh QPS.
+3. **Per-zone/key cooldown**
+   - avoid repeated hammering on unstable answers.
+4. **Backoff on upstream failures**
+   - exponential backoff for failing key-zone cohorts.
+
+### 3.6 Safety guardrails
+
+1. Skip refresh for very short TTL classes unless explicitly allowed.
+2. Keep refresh disabled for negative entries in phase 1.
+3. Hard cap refresh queue size; drop low-priority candidates on overflow.
+4. Disable feature by default in distributed upstream topologies (e.g., Anycast/LB fan-out) unless explicitly validated.
+
+### 3.7 Metrics (must add with feature)
+
+- `shinku_refresh_attempt_total`
+- `shinku_refresh_success_total`
+- `shinku_refresh_skip_total{reason=...}`
+  - reasons: not_hot, ttl_not_due, cooldown, budget_exceeded, inflight_exists, queue_full
+- `shinku_refresh_fail_total{reason=...}`
+  - reasons: upstream_timeout, parse_reject, store_reject
+- `shinku_refresh_inflight`
+- `shinku_refresh_queue_depth`
+- `shinku_refresh_upstream_qps`
+
+### 3.8 Rollout plan (phased)
+
+Phase A (dark launch):
+- enable candidate evaluation + metrics only, no outbound refresh queries.
+
+Phase B (guarded refresh):
+- enable refresh for hot-positive entries with conservative budgets.
+
+Phase C (tuning):
+- tune trigger ratio / min hits / QPS with benchmark + soak evidence.
+
+### 3.9 Validation matrix
+
+1. **Hot-key latency tail test:** p95/p99 near TTL boundary improves.
+2. **Upstream load test:** refresh overhead bounded by configured QPS.
+3. **Churn/attack test:** no refresh stampede under random-subdomain pressure.
+4. **Distributed-upstream test:** in Anycast/LB mode, verify warm-refresh remains off and system behavior stays stable.
+5. **Soak test:** no queue leak / no unbounded thread/resource growth.
+
+### 3.10 Acceptance criteria for merging
+
+1. Feature is off by default and safe to deploy.
+2. All new metrics exported and documented.
+3. Unit + integration tests cover happy path and guardrails.
+4. 24h soak shows stable memory and bounded refresh QPS.
 
 ---
 
-## 4. Definition of “Industrial-Ready v1”
+## 4. Risks and explicit non-goals
 
-Shinku reaches industrial-ready v1 when all are true:
+### Key risks
 
-- P0 items complete and verified (IPv6 deferred).
-- SLO instrumentation exists with alertable metrics.
-- IPv4 fast path validated.
-- Negative caching operational with TTL policy ✅.
-- CNAME integration tests passing in CI + root integration environment.
-- Soak tests pass with no critical leaks/crashes.
-- Documented rollout and rollback procedures available.
+1. Thundering herd from synchronized TTL boundaries.
+2. Refresh traffic becoming amplification of upstream load.
+3. Distributed upstream fan-out can nullify prewarm value (refresh affects only a random backend node).
+4. Refreshing low-value short-TTL noise instead of hot keys.
+
+### Non-goals for next iteration
+
+- Building full multi-upstream recursive failover orchestration.
+- Broad predictive prefetch models before baseline guardrails/metrics are proven.
+- Re-introducing ECS-related roadmap scope in the current planning cycle.
 
 ---
 
-## 5. Notes on corrected historical assumptions
+## 5. Definition of next milestone
 
-- Arena allocation is **not** a pure bump allocator anymore; it is ring-style index progression with slot reuse handling.
-- TTL cleanup is **implemented** via background thread and periodic `cleanup_expired_entries`.
-- CNAME ingest support is **implemented** with terminal RR gating for A/AAAA query correctness.
-- Negative caching is **implemented** with SOA-derived TTL policy and bounded TTL limits.
-- Remaining work focuses on production operations maturity, broader protocol coverage, and release engineering.
+Milestone is complete when:
+
+1. Roadmap and code-truth remain aligned.
+2. P0.4/P0.5 closure has measurable artifacts (soak + fallback metrics).
+3. Warm-refresh phase A/B lands with hard guardrails and observability.
+4. Sidecar-mode security baseline progresses without role creep.

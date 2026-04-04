@@ -79,7 +79,8 @@ int dns_cache_store_raw_response(
     uint8_t* pkt_buf,
     int pkt_len,
     uint32_t min_ttl,
-    uint8_t ecs_scope
+    uint8_t ecs_scope,
+    uint8_t flags
 );
 
 /**

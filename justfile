@@ -108,3 +108,16 @@ tsan-test:
 bench-build:
     meson setup build-bench --reconfigure -Dbuildtype=release -Db_sanitize=none -Dbuild_benchmark_bin=true
     meson compile -C build-bench shinku_bench
+
+# ==========================================================================
+# Soak test infrastructure (Docker Unbound + netns/veth + Shinku)
+# ==========================================================================
+
+soak-up:
+	chmod +x tests/soak/run_soak_with_unbound_docker.sh
+
+soak-run:
+	sudo env SOAK_DURATION_SEC=300 SAMPLE_INTERVAL_SEC=30 tests/soak/run_soak_with_unbound_docker.sh
+
+soak-run-long:
+	sudo env SOAK_DURATION_SEC=86400 SAMPLE_INTERVAL_SEC=60 tests/soak/run_soak_with_unbound_docker.sh

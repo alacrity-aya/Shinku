@@ -126,6 +126,9 @@ struct cache_value {
 /** @brief Cache entry is specifically an NXDOMAIN response */
 #define CACHE_VALUE_FLAG_NXDOMAIN 0x2
 
+/** @brief Cache entry stores a truncated UDP (TC=1) fallback response */
+#define CACHE_VALUE_FLAG_TC_FALLBACK 0x4
+
 /**
  * @struct dns_event
  * @brief DNS packet event sent from BPF to userspace via ring buffer.

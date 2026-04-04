@@ -178,6 +178,16 @@ static void render_metrics(char* out, size_t out_size, struct obs_metrics* m, st
     BPF_COUNTER("shinku_xdp_tx_total", "Number of sampled XDP_TX responses", OBS_BPF_XDP_TX);
     BPF_COUNTER("shinku_tc_capture_total", "Number of sampled TC-captured DNS responses", OBS_BPF_TC_CAPTURE);
     BPF_COUNTER(
+        "shinku_udp_truncated_responses_total",
+        "Number of sampled upstream UDP responses with TC=1",
+        OBS_BPF_TC_UPSTREAM_TRUNCATED
+    );
+    BPF_COUNTER(
+        "shinku_tc_fallback_cache_hit_total",
+        "Number of sampled cached TC=1 fallback responses served from XDP",
+        OBS_BPF_TC_FALLBACK_HIT
+    );
+    BPF_COUNTER(
         "shinku_tc_ringbuf_drop_total",
         "Number of sampled TC ringbuf reservation drops",
         OBS_BPF_TC_RINGBUF_DROP

@@ -15,8 +15,12 @@ subprojects/packagecache/
 # Benchmark results (generated locally)
 tests/benchmark/results/
 
+# Soak test results
+tests/soak/results/
+
 # Temporary benchmark and analysis artifacts
 *.bench.log
 
 # Generated documentation
 docs/dns-packet-processing.md
+

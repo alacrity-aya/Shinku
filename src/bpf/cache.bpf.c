@@ -33,7 +33,9 @@
 #define OBS_BPF_XDP_TX 5
 #define OBS_BPF_TC_RINGBUF_DROP 6
 #define OBS_BPF_TC_CAPTURE 7
-#define OBS_BPF_METRIC_MAX 8
+#define OBS_BPF_TC_UPSTREAM_TRUNCATED 8
+#define OBS_BPF_TC_FALLBACK_HIT 9
+#define OBS_BPF_METRIC_MAX 10
 
 #ifndef SHINKU_OBS_BPF_ENABLED
     #define SHINKU_OBS_BPF_ENABLED 1
@@ -82,13 +84,8 @@ enum {
 };
 
 #if SHINKU_ECS_ENABLED
-static __always_inline void parse_query_ecs_v4_single_opt(
-    __u8* p,
-    __u8* data_end,
-    __u32* ecs_addr_v4,
-    __u8* ecs_prefix,
-    __u8* ecs_family
-) {
+static __always_inline void
+parse_query_ecs_v4_single_opt(__u8* p, __u8* data_end, __u32* ecs_addr_v4, __u8* ecs_prefix, __u8* ecs_family) {
     if (!p || !ecs_addr_v4 || !ecs_prefix || !ecs_family)
         return;
 
@@ -143,13 +140,8 @@ static __always_inline void parse_query_ecs_v4_single_opt(
     *ecs_family = src_prefix > 0 ? 1 : 0;
 }
 #else
-static __always_inline void parse_query_ecs_v4_single_opt(
-    __u8* p,
-    __u8* data_end,
-    __u32* ecs_addr_v4,
-    __u8* ecs_prefix,
-    __u8* ecs_family
-) {
+static __always_inline void
+parse_query_ecs_v4_single_opt(__u8* p, __u8* data_end, __u32* ecs_addr_v4, __u8* ecs_prefix, __u8* ecs_family) {
     (void)p;
     (void)data_end;
     if (ecs_addr_v4)
@@ -325,23 +317,12 @@ int xdp_rx(struct xdp_md* ctx) {
     __u8 ecs_family = 0;
     void* addl = cursor + 4;
     if (arcount == 1)
-        parse_query_ecs_v4_single_opt(
-            (__u8*)addl,
-            (__u8*)data_end,
-            &ecs_addr_v4,
-            &ecs_prefix,
-            &ecs_family
-        );
+        parse_query_ecs_v4_single_opt((__u8*)addl, (__u8*)data_end, &ecs_addr_v4, &ecs_prefix, &ecs_family);
 
     /* ── Phase 2: Cache lookup ── */
-    struct cache_key key = { CACHE_KEY_CORE_AND_ECS_INIT_DESIG(
-        name_hash,
-        qtype,
-        qclass,
-        ecs_addr_v4,
-        ecs_prefix,
-        ecs_family
-    ) };
+    struct cache_key key = {
+        CACHE_KEY_CORE_AND_ECS_INIT_DESIG(name_hash, qtype, qclass, ecs_addr_v4, ecs_prefix, ecs_family)
+    };
 
     bpf_debug("[XDP] Key: Hash=0x%x Type=%d Class=%d", key.name_hash, key.qtype, key.qclass);
 
@@ -444,7 +425,7 @@ int xdp_rx(struct xdp_md* ctx) {
 
     /* 8-byte wide copies: reduces iteration count by ~8x */
     __u32 copy_words = cached_len >> 3; /* full 8-byte chunks */
-    __u32 copy_rem = cached_len & 0x7; /* remaining bytes */
+    __u32 copy_rem = cached_len & 0x7;  /* remaining bytes */
 
 #pragma clang loop unroll(disable)
     for (__u32 i = 0; i < ARENA_ENTRY_SIZE / 8; i++) {
@@ -509,6 +490,9 @@ int xdp_rx(struct xdp_md* ctx) {
     udp->len = bpf_htons((__u16)(sizeof(struct udphdr) + cached_len));
     udp->check = 0;
 
+    if (val->flags & CACHE_VALUE_FLAG_TC_FALLBACK)
+        obs_count(OBS_BPF_TC_FALLBACK_HIT);
+
     bpf_info("[XDP] Cache HIT -> XDP_TX: Hash=0x%x len=%d", name_hash, cached_len);
     obs_count(OBS_BPF_CACHE_HIT);
     obs_count(OBS_BPF_XDP_TX);
@@ -569,6 +553,13 @@ int tc_tx(struct __sk_buff* skb) {
         return TC_ACT_OK;
     if (dns_len > ARENA_ENTRY_SIZE)
         dns_len = ARENA_ENTRY_SIZE;
+
+    struct dns_hdr* dns = (void*)(udp + 1);
+    if ((void*)(dns + 1) <= data_end) {
+        __u16 dns_flags = bpf_ntohs(dns->flags);
+        if (dns_flags & DNS_FLAG_TC)
+            obs_count(OBS_BPF_TC_UPSTREAM_TRUNCATED);
+    }
 
     struct dns_event* e = bpf_ringbuf_reserve(&rb_pkt, sizeof(*e) + ARENA_ENTRY_SIZE, 0);
     if (unlikely(!e)) {

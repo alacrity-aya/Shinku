@@ -71,12 +71,7 @@ static int http_get(uint16_t port, const char* path, char* out, size_t out_sz) {
     }
 
     char req[256];
-    int req_len = snprintf(
-        req,
-        sizeof(req),
-        "GET %s HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
-        path
-    );
+    int req_len = snprintf(req, sizeof(req), "GET %s HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n", path);
     if (req_len <= 0 || req_len >= (int)sizeof(req)) {
         close(fd);
         return -1;
@@ -131,6 +126,8 @@ int main(void) {
     obs_metrics_add_cleanup_removed(&metrics, 3);
     obs_metrics_count_rb_poll_error(&metrics);
     atomic_store_explicit(&metrics.bpf_counters[OBS_BPF_CACHE_HIT].value, 7, memory_order_relaxed);
+    atomic_store_explicit(&metrics.bpf_counters[OBS_BPF_TC_UPSTREAM_TRUNCATED].value, 3, memory_order_relaxed);
+    atomic_store_explicit(&metrics.bpf_counters[OBS_BPF_TC_FALLBACK_HIT].value, 2, memory_order_relaxed);
 
     atomic_bool bpf_ready = false;
     struct degraded_state degraded;
@@ -147,52 +144,36 @@ int main(void) {
     char resp[8192];
     memset(resp, 0, sizeof(resp));
 
-    TEST_ASSERT(
-        http_get((uint16_t)port, "/healthz", resp, sizeof(resp)) == 0,
-        "GET /healthz succeeds"
-    );
+    TEST_ASSERT(http_get((uint16_t)port, "/healthz", resp, sizeof(resp)) == 0, "GET /healthz succeeds");
     TEST_ASSERT(strstr(resp, "200 OK") != NULL, "/healthz returns HTTP 200");
     TEST_ASSERT(strstr(resp, "ok\n") != NULL, "/healthz body is ok");
 
     memset(resp, 0, sizeof(resp));
-    TEST_ASSERT(
-        http_get((uint16_t)port, "/readyz", resp, sizeof(resp)) == 0,
-        "GET /readyz succeeds before ready"
-    );
-    TEST_ASSERT(
-        strstr(resp, "503 Service Unavailable") != NULL,
-        "/readyz returns 503 before ready"
-    );
+    TEST_ASSERT(http_get((uint16_t)port, "/readyz", resp, sizeof(resp)) == 0, "GET /readyz succeeds before ready");
+    TEST_ASSERT(strstr(resp, "503 Service Unavailable") != NULL, "/readyz returns 503 before ready");
     TEST_ASSERT(strstr(resp, "not_ready\n") != NULL, "/readyz body is not_ready before ready");
 
     atomic_store_explicit(&bpf_ready, true, memory_order_release);
 
     memset(resp, 0, sizeof(resp));
-    TEST_ASSERT(
-        http_get((uint16_t)port, "/readyz", resp, sizeof(resp)) == 0,
-        "GET /readyz succeeds after ready"
-    );
+    TEST_ASSERT(http_get((uint16_t)port, "/readyz", resp, sizeof(resp)) == 0, "GET /readyz succeeds after ready");
     TEST_ASSERT(strstr(resp, "200 OK") != NULL, "/readyz returns 200 after ready");
     TEST_ASSERT(strstr(resp, "ready\n") != NULL, "/readyz body is ready after ready");
 
     memset(resp, 0, sizeof(resp));
-    TEST_ASSERT(
-        http_get((uint16_t)port, "/metrics", resp, sizeof(resp)) == 0,
-        "GET /metrics succeeds"
-    );
+    TEST_ASSERT(http_get((uint16_t)port, "/metrics", resp, sizeof(resp)) == 0, "GET /metrics succeeds");
     TEST_ASSERT(strstr(resp, "200 OK") != NULL, "/metrics returns HTTP 200");
+    TEST_ASSERT(strstr(resp, "shinku_cache_hit_total 7") != NULL, "/metrics includes BPF cache hit counter");
     TEST_ASSERT(
-        strstr(resp, "shinku_cache_hit_total 7") != NULL,
-        "/metrics includes BPF cache hit counter"
+        strstr(resp, "shinku_udp_truncated_responses_total 3") != NULL,
+        "/metrics includes upstream truncated response counter"
     );
     TEST_ASSERT(
-        strstr(resp, "shinku_parser_reject_total") != NULL,
-        "/metrics includes parser reject counter"
+        strstr(resp, "shinku_tc_fallback_cache_hit_total 2") != NULL,
+        "/metrics includes tc fallback cache hit counter"
     );
-    TEST_ASSERT(
-        strstr(resp, "shinku_cache_insert_total 1") != NULL,
-        "/metrics includes cache insert counter"
-    );
+    TEST_ASSERT(strstr(resp, "shinku_parser_reject_total") != NULL, "/metrics includes parser reject counter");
+    TEST_ASSERT(strstr(resp, "shinku_cache_insert_total 1") != NULL, "/metrics includes cache insert counter");
     TEST_ASSERT(
         strstr(resp, "shinku_cache_insert_fail_total 1") != NULL,
         "/metrics includes cache insert fail counter"
@@ -205,18 +186,9 @@ int main(void) {
         strstr(resp, "shinku_cache_admission_reject_freq_total 1") != NULL,
         "/metrics includes admission reject freq counter"
     );
-    TEST_ASSERT(
-        strstr(resp, "shinku_cache_eviction_hot_total 1") != NULL,
-        "/metrics includes hot eviction counter"
-    );
-    TEST_ASSERT(
-        strstr(resp, "shinku_cache_hot_segment_size 4") != NULL,
-        "/metrics includes hot segment gauge"
-    );
-    TEST_ASSERT(
-        strstr(resp, "shinku_cache_cold_segment_size 9") != NULL,
-        "/metrics includes cold segment gauge"
-    );
+    TEST_ASSERT(strstr(resp, "shinku_cache_eviction_hot_total 1") != NULL, "/metrics includes hot eviction counter");
+    TEST_ASSERT(strstr(resp, "shinku_cache_hot_segment_size 4") != NULL, "/metrics includes hot segment gauge");
+    TEST_ASSERT(strstr(resp, "shinku_cache_cold_segment_size 9") != NULL, "/metrics includes cold segment gauge");
     TEST_ASSERT(
         strstr(resp, "shinku_negative_cache_accept_total 2") != NULL,
         "/metrics includes negative accept aggregate"
@@ -244,20 +216,13 @@ int main(void) {
         "/metrics exports cname_no_terminal_a parser reject reason"
     );
     TEST_ASSERT(
-        strstr(resp, "shinku_parser_reject_reason_total{reason=\"cname_ipv6_only_terminal\"}")
-            != NULL,
+        strstr(resp, "shinku_parser_reject_reason_total{reason=\"cname_ipv6_only_terminal\"}") != NULL,
         "/metrics exports cname_ipv6_only_terminal parser reject reason"
     );
-    TEST_ASSERT(
-        strstr(resp, "shinku_degraded_mode 0") != NULL,
-        "/metrics includes degraded mode gauge"
-    );
+    TEST_ASSERT(strstr(resp, "shinku_degraded_mode 0") != NULL, "/metrics includes degraded mode gauge");
 
     memset(resp, 0, sizeof(resp));
-    TEST_ASSERT(
-        http_get((uint16_t)port, "/unknown", resp, sizeof(resp)) == 0,
-        "GET /unknown succeeds"
-    );
+    TEST_ASSERT(http_get((uint16_t)port, "/unknown", resp, sizeof(resp)) == 0, "GET /unknown succeeds");
     TEST_ASSERT(strstr(resp, "404 Not Found") != NULL, "/unknown returns HTTP 404");
 
     obs_http_stop(&srv);

@@ -1,0 +1,13 @@
+[wrap-file]
+directory = libcap-2.77
+source_url = https://git.kernel.org/pub/scm/libs/libcap/libcap.git/snapshot/libcap-2.77.tar.gz
+source_filename = libcap-2.77.tar.gz
+source_hash = 5e339f5ab434bf5b7979f65437ca24942ddcd6e6a3e57347370cd791bc0ea51c
+source_fallback_url = https://github.com/mesonbuild/wrapdb/releases/download/libcap_2.77-1/libcap-2.77.tar.gz
+patch_filename = libcap_2.77-1_patch.zip
+patch_url = https://wrapdb.mesonbuild.com/v2/libcap_2.77-1/get_patch
+patch_hash = 859aae1eee784b07ff705439aba994b0e983696040fc1f4c69e5dfccf2af8415
+wrapdb_version = 2.77-1
+
+[provide]
+dependency_names = libcap
