@@ -7,7 +7,13 @@
 extern "C" {
 #endif
 
-int shinku_run_legacy_ebpf(const struct env* env);
+typedef int (*shinku_shutdown_requested_fn)(void* user_data);
+
+int shinku_run_legacy_ebpf(
+    const struct env* env,
+    shinku_shutdown_requested_fn shutdown_requested,
+    void* shutdown_user_data
+);
 
 #ifdef __cplusplus
 }

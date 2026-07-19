@@ -100,6 +100,14 @@ _Avoid_: Metrics code
 The runtime loop required for a backend to keep functioning, such as packet-event polling, cleanup scheduling, and shutdown handling.
 _Avoid_: Observability loop
 
+**Process Control**:
+The Host Runtime concern that translates process-level termination signals into shutdown requests.
+_Avoid_: Runtime loop, backend lifecycle
+
+**Shutdown Request**:
+A sticky request for the Host Runtime to stop its Operational Loop and shut down cleanly.
+_Avoid_: Exit code, signal handler state
+
 **Fail-open**:
 The cache preserves upstream DNS behavior when it cannot safely answer locally; failures become bypasses or forwarding, not DNS outages.
 _Avoid_: Best effort

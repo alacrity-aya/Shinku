@@ -3,17 +3,10 @@
 
 #include "core/loader.h"
 #include <errno.h>
-#include <signal.h>
 #include <stdio.h>
 #include <sys/capability.h>
 #include <sys/types.h>
 #include <unistd.h>
-
-static volatile bool exiting = false;
-
-static void sig_handler([[maybe_unused]] int sig) {
-    exiting = true;
-}
 
 static int has_effective_cap(cap_t caps, cap_value_t cap) {
     cap_flag_value_t flag = CAP_CLEAR;
@@ -52,18 +45,18 @@ static int check_runtime_privileges(void) {
     return 0;
 }
 
-int shinku_run_legacy_ebpf(const struct env* env) {
-    if (!env)
+int shinku_run_legacy_ebpf(
+    const struct env* env,
+    shinku_shutdown_requested_fn shutdown_requested,
+    void* shutdown_user_data
+) {
+    if (!env || !shutdown_requested)
         return 1;
 
     struct bpf_ctx ctx = { 0 };
     int err = check_runtime_privileges();
     if (err)
         return 1;
-
-    exiting = false;
-    signal(SIGINT, sig_handler);
-    signal(SIGTERM, sig_handler);
 
     err = loader_setup_bpf(&ctx, env);
     if (err)
@@ -77,7 +70,7 @@ int shinku_run_legacy_ebpf(const struct env* env) {
 
     printf("BPF System Running... Press Ctrl+C to stop.\n");
 
-    while (!exiting) {
+    while (!shutdown_requested(shutdown_user_data)) {
         err = loader_dump_bpf_log(&ctx, 100);
         if (err == -EINTR) {
             err = 0;

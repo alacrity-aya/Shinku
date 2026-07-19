@@ -222,6 +222,19 @@ cli_parser_test_exe = executable(
 test('CLI Parser Test', cli_parser_test_exe)
 
 # ====================
+# C++ Process Control Test
+# ====================
+process_control_test_exe = executable(
+    'process_control_test',
+    'process_control/process_control_test.cc',
+    process_control_src,
+    dependencies: catch2_with_main_dep,
+    include_directories: inc_src,
+)
+
+test('Process Control Test', process_control_test_exe)
+
+# ====================
 # Observability HTTP Test
 # ====================
 obs_http_test_exe = executable(

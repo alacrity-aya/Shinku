@@ -18,7 +18,7 @@ Status: canonical execution plan for the C++/DPDK refactor. Future refactor work
 | 2 | Observability Removal | pending | Delete current observability/degraded/event-bus surface while preserving operational loops. |
 | 3 | Config Module | complete | Add C++23 TOML Config Loader, validation, typed errors, and diagnostics. |
 | 4 | CLI Module | complete | Reduce CLI to `shinku run [--config path]` config-file selection. |
-| 5 | Process-control Module | pending | Move signal handling and shutdown request propagation out of CLI/backend code. |
+| 5 | Process-control Module | complete | Move signal handling and shutdown request propagation out of CLI/backend code. |
 | 6 | Backend Interface Module | pending | Introduce C++ Backend lifecycle interface and shared status/result types. |
 | 7 | eBPF Backend Module | pending | Adapt existing eBPF loader behind the Backend interface and keep it runnable. |
 | 8 | Cache/DNS Module | pending | Separate backend-neutral DNS/cache policy from eBPF storage details. |
@@ -27,7 +27,7 @@ Status: canonical execution plan for the C++/DPDK refactor. Future refactor work
 
 Current active module:
 
-- Module 5: Process-control Module.
+- Module 6: Backend Interface Module.
 
 ## Test Policy During Refactor
 
@@ -409,11 +409,33 @@ Scope:
 
 - Convert `SIGINT`/`SIGTERM` into shutdown requests.
 - Do not own Config loading, Backend selection, Backend lifecycle, or diagnostics.
+- Implement this as an independent module, not under `src/cli/` or the legacy runtime bridge.
+- Expose Process Control through a `ProcessControl` C++ class in the MVP.
+- `ProcessControl` is a process-wide singleton because POSIX signal handlers need process-global reachable state.
+- Shutdown requests are sticky: once requested, they remain requested until explicitly reset by tests.
+- Repeated signals do not need counting and signal source does not need to be retained.
+- `install_signal_handlers()` returns `std::expected<void, ProcessControlError>` so startup can fail explicitly if `sigaction()` fails.
+- Test reset is hidden from the production API through a dedicated test-access helper.
+- The signal handler writes only a `volatile sig_atomic_t` shutdown flag.
+- The module layout is `src/process_control/process_control.h`, `process_control.cc`, `process_control_error.h`, and `process_control_test_access.h`.
+- `install_signal_handlers()` is idempotent.
+- The MVP does not restore previous signal handlers.
+- `ProcessControlError` carries a typed code, `std::error_code`, and human-readable message.
 
 Verification:
 
 - Unit test or small smoke test for shutdown request state.
+- Tests do not need to raise real POSIX signals when direct request/reset coverage proves the module state contract.
 - `meson test -C build`
+
+Implementation result:
+
+- Added independent `src/process_control/` C++23 module with `ProcessControl`, `ProcessControlError`, and test-only reset access.
+- `ProcessControl` is a singleton and installs `SIGINT`/`SIGTERM` handlers through `sigaction()`.
+- The legacy eBPF runner no longer installs process signal handlers. It receives a C callback for shutdown state while it remains behind the temporary C ABI bridge.
+- `src/cli/main.cc` installs signal handlers before entering the legacy eBPF runner and reports installation failures as startup errors.
+- Added Catch2 `tests/unit/process_control/process_control_test.cc`.
+- Focused verification passes with LeakSanitizer disabled in this managed environment: `ASAN_OPTIONS=detect_leaks=0 meson test -C build --no-rebuild "Process Control Test" "CLI Parser Test" "Config Loader Test"`.
 
 ### Module 6: Backend Interface Module
 
@@ -746,7 +768,32 @@ Constraint:
 - Backend implementations must not hide blocking waits inside `poll_once()`. Waiting policy, if needed later, belongs to the Host Runtime loop or a later explicit module design.
 - `NoWork` is a normal poll result, not an error.
 
-### Segment 12: Module-by-module Refactor Flow
+### Segment 12: Process-control Module
+
+Decisions:
+
+1. Process Control lives in an independent module.
+2. Process Control exposes a `ProcessControl` C++ class, not only free functions.
+3. `ProcessControl` is a process-wide singleton.
+4. `SIGINT` and `SIGTERM` set a sticky Shutdown Request.
+5. Repeated signals do not need to be counted.
+6. Signal source does not need to be retained in the MVP.
+7. Tests may verify shutdown request state directly without raising real process signals.
+8. `install_signal_handlers()` returns `std::expected<void, ProcessControlError>`.
+9. `ProcessControlErrorCode` starts with the minimum value `SignalInstallFailed`.
+10. Test reset is not part of the public production API; tests use a dedicated access helper.
+11. Signal handlers only write a `volatile sig_atomic_t` flag.
+12. File layout is `src/process_control/process_control.h`, `process_control.cc`, `process_control_error.h`, and `process_control_test_access.h`, with tests in `tests/unit/process_control/`.
+13. `install_signal_handlers()` is idempotent.
+14. Process Control does not restore previous signal handlers in the MVP.
+15. `ProcessControlError` carries a typed code, `std::error_code`, and human-readable message.
+
+Constraint:
+
+- Process Control must not own Config loading, Backend selection, Backend lifecycle, Backend diagnostics, or the Host Runtime polling loop.
+- Test-only reset behavior must be explicit and must not become normal runtime control flow.
+
+### Segment 13: Module-by-module Refactor Flow
 
 Decisions:
 
@@ -756,8 +803,8 @@ Decisions:
 
 Current module:
 
-- Backend lifecycle and Host Runtime loop.
+- Backend Interface module.
 
 Next module candidate:
 
-- Process-control module, limited to signal handling and shutdown request propagation.
+- eBPF Backend module.

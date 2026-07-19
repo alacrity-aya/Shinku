@@ -108,12 +108,16 @@ core_src = files(
 )
 
 # CLI entry point
+process_control_src = files(
+  'src/process_control/process_control.cc',
+)
+
 cli_src = files(
   'src/cli/main.cc',
   'src/cli/cli.cc',
   'src/config/toml_loader.cc',
   'src/config/legacy_env_adapter.cc',
-)
+) + process_control_src
 
 executable(
   'shinku',
