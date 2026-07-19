@@ -9,7 +9,7 @@
 #include "parser_runtime.h"
 #include "runtime/events.h"
 
-#include "cli/config.h"
+#include "runtime/legacy_env.h"
 #include <bpf/libbpf.h>
 #include <pthread.h>
 #include <stdatomic.h>
@@ -31,7 +31,7 @@ struct cache_bpf;
  * @brief Configuration for the cache cleanup thread.
  */
 struct cleanup_config {
-    uint32_t interval_secs; /**< Cleanup interval in seconds */
+    uint32_t interval_ms; /**< Cleanup interval in milliseconds */
 };
 
 /**
@@ -129,13 +129,13 @@ int loader_poll_pkt_ring(struct bpf_ctx* ctx, int timeout_ms);
 /**
  * @brief Start the cache cleanup thread.
  * @param ctx BPF context.
- * @param interval_secs Cleanup interval in seconds.
+ * @param interval_ms Cleanup interval in milliseconds.
  * @return 0 on success, negative on error.
  *
  * Spawns a background thread that periodically calls
  * cache_cleanup_expired_entries() to remove stale cache entries.
  */
-int loader_start_cleanup_thread(struct bpf_ctx* ctx, uint32_t interval_secs);
+int loader_start_cleanup_thread(struct bpf_ctx* ctx, uint32_t interval_ms);
 
 /**
  * @brief Stop the cache cleanup thread.

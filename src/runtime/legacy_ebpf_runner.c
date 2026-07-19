@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only OR Apache-2.0
-#include "config.h"
+#include "legacy_ebpf_runner.h"
+
 #include "core/loader.h"
 #include <errno.h>
 #include <signal.h>
@@ -8,19 +9,8 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-/**
- * @file main.c
- * @brief Main entry point for the Shinku DNS cache daemon.
- */
-
 static volatile bool exiting = false;
 
-/**
- * @brief Signal handler for graceful shutdown.
- * @param sig Signal number (SIGINT or SIGTERM).
- *
- * Sets the exiting flag to trigger clean shutdown.
- */
 static void sig_handler([[maybe_unused]] int sig) {
     exiting = true;
 }
@@ -62,30 +52,26 @@ static int check_runtime_privileges(void) {
     return 0;
 }
 
-int main(int argc, char** argv) {
-    struct env env = { 0 };
+int shinku_run_legacy_ebpf(const struct env* env) {
+    if (!env)
+        return 1;
+
     struct bpf_ctx ctx = { 0 };
-    int err;
-
-    err = config_parse_args(argc, argv, &env);
+    int err = check_runtime_privileges();
     if (err)
-        return err;
+        return 1;
 
-    err = check_runtime_privileges();
-    if (err)
-        return -1;
-
+    exiting = false;
     signal(SIGINT, sig_handler);
     signal(SIGTERM, sig_handler);
 
-    err = loader_setup_bpf(&ctx, &env);
+    err = loader_setup_bpf(&ctx, env);
     if (err)
         goto cleanup;
 
-    err = loader_start_cleanup_thread(&ctx, env.cleanup_interval);
+    err = loader_start_cleanup_thread(&ctx, env->cleanup_interval_ms);
     if (err) {
-        fprintf(stderr, "Cleanup thread unavailable, continuing in degraded mode: %d\n", err);
-        obs_metrics_mark_degraded(&ctx.metrics, OBS_DEGRADED_CLEANUP_THREAD_DOWN);
+        fprintf(stderr, "Cleanup thread unavailable, continuing: %d\n", err);
         err = 0;
     }
 
@@ -106,7 +92,7 @@ int main(int argc, char** argv) {
             break;
         }
         if (err < 0) {
-            fprintf(stderr, "Error polling pkt ring buffer: %d (degraded, continuing)\n", err);
+            fprintf(stderr, "Error polling pkt ring buffer: %d (continuing)\n", err);
             usleep(50000);
             continue;
         }

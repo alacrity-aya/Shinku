@@ -635,7 +635,12 @@ static void* cleanup_thread_func(void* arg) {
         if (ctx->cleanup_wait_sync_initialized) {
             struct timespec wake_at;
             if (clock_gettime(CLOCK_REALTIME, &wake_at) == 0) {
-                wake_at.tv_sec += (time_t)ctx->cleanup_cfg.interval_secs;
+                wake_at.tv_sec += (time_t)(ctx->cleanup_cfg.interval_ms / 1000U);
+                wake_at.tv_nsec += (long)(ctx->cleanup_cfg.interval_ms % 1000U) * 1000000L;
+                if (wake_at.tv_nsec >= 1000000000L) {
+                    wake_at.tv_sec++;
+                    wake_at.tv_nsec -= 1000000000L;
+                }
 
                 pthread_mutex_lock(&ctx->cleanup_wait_lock);
                 if (!atomic_load_explicit(&ctx->cleanup_running, memory_order_acquire)) {
@@ -651,8 +656,8 @@ static void* cleanup_thread_func(void* arg) {
             }
         } else {
             struct timespec sleep_time = {
-                .tv_sec = ctx->cleanup_cfg.interval_secs,
-                .tv_nsec = 0,
+                .tv_sec = (time_t)(ctx->cleanup_cfg.interval_ms / 1000U),
+                .tv_nsec = (long)(ctx->cleanup_cfg.interval_ms % 1000U) * 1000000L,
             };
             nanosleep(&sleep_time, NULL);
             if (!atomic_load_explicit(&ctx->cleanup_running, memory_order_acquire)) {
@@ -673,12 +678,12 @@ static void* cleanup_thread_func(void* arg) {
     return NULL;
 }
 
-int loader_start_cleanup_thread(struct bpf_ctx* ctx, uint32_t interval_secs) {
-    if (interval_secs == 0) {
-        interval_secs = 10; /* Default: 10 seconds */
+int loader_start_cleanup_thread(struct bpf_ctx* ctx, uint32_t interval_ms) {
+    if (interval_ms == 0) {
+        interval_ms = 10000; /* Default: 10 seconds */
     }
 
-    ctx->cleanup_cfg.interval_secs = interval_secs;
+    ctx->cleanup_cfg.interval_ms = interval_ms;
     atomic_store_explicit(&ctx->cleanup_running, true, memory_order_release);
 
     int err = pthread_create(&ctx->cleanup_thread, NULL, cleanup_thread_func, ctx);
@@ -688,7 +693,7 @@ int loader_start_cleanup_thread(struct bpf_ctx* ctx, uint32_t interval_secs) {
         return -err;
     }
 
-    printf("Started cleanup thread (interval: %us)\n", interval_secs);
+    printf("Started cleanup thread (interval: %ums)\n", interval_ms);
     return 0;
 }
 

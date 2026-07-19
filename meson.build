@@ -1,11 +1,12 @@
-project('shinku', 'c',
+project('shinku', 'c', 'cpp',
   version: '0.1',
   default_options: [
     'warning_level=2',    
     'werror=false',       
     'b_sanitize=address',
     'buildtype=debug',
-    'b_lundef=false'
+    'b_lundef=false',
+    'cpp_std=c++23'
   ]
 )
 
@@ -19,8 +20,17 @@ ecs = get_option('ecs')
 cares_dep = dependency('libcares', fallback : ['c-ares', 'cares_dep'])
 libbpf_dep = dependency('libbpf')
 libcap_dep = dependency('libcap', fallback : ['libcap', 'libcap_dep'])
+tomlplusplus_dep = dependency('tomlplusplus', fallback : ['tomlplusplus', 'tomlplusplus_dep'])
 clang = find_program('clang')
 bpftool = find_program('bpftool')
+
+version_conf = configuration_data()
+version_conf.set('SHINKU_VERSION', meson.project_version())
+version_header = configure_file(
+  input: 'src/generated/version.h.in',
+  output: 'version.h',
+  configuration: version_conf
+)
 
 vmlinux_h = custom_target(
   'vmlinux.h',
@@ -78,6 +88,7 @@ bpf_skel = custom_target(
 # Core Library
 core_src = files(
   'src/runtime/events.c',
+  'src/runtime/legacy_ebpf_runner.c',
   'src/core/degraded_mode.c',
   'src/core/hash.c',
   'src/core/cache_sketch.c',
@@ -93,16 +104,19 @@ core_src = files(
 
 # CLI entry point
 cli_src = files(
-  'src/cli/main.c',
-  'src/cli/config.c',
+  'src/cli/main.cc',
+  'src/cli/cli.cc',
+  'src/config/toml_loader.cc',
+  'src/config/legacy_env_adapter.cc',
 )
 
 executable(
   'shinku',
   cli_src,
   core_src,          
-  bpf_skel,         
-  dependencies: [libbpf_dep, libcap_dep],
+  bpf_skel,
+  version_header,
+  dependencies: [libbpf_dep, libcap_dep, tomlplusplus_dep],
   include_directories: [inc_src, inc_runtime],
   c_args: (bpf_log ? ['-DSHINKU_BPF_LOG_ENABLED=1'] : ['-DSHINKU_BPF_LOG_ENABLED=0']) + (obs ? ['-DSHINKU_OBS_ENABLED=1'] : ['-DSHINKU_OBS_ENABLED=0']) + (ecs ? ['-DSHINKU_ECS_ENABLED=1'] : ['-DSHINKU_ECS_ENABLED=0']),
   install: true
@@ -114,7 +128,8 @@ if build_benchmark_bin
     cli_src,
     core_src,
     bpf_skel,
-    dependencies: [libbpf_dep, libcap_dep],
+    version_header,
+    dependencies: [libbpf_dep, libcap_dep, tomlplusplus_dep],
     include_directories: [inc_src, inc_runtime],
     c_args: [
       '-O3',

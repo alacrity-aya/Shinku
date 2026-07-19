@@ -185,6 +185,38 @@ cares_expand_test_exe = executable(
 test('Flat DNS Packet test Test', cares_expand_test_exe)
 
 # ====================
+# C++ Config Loader Test
+# ====================
+config_loader_test_exe = executable(
+    'config_loader_test',
+    'config/config_loader_test.cc',
+    files(
+      '../../src/config/toml_loader.cc',
+      '../../src/config/legacy_env_adapter.cc',
+    ),
+    native: true,
+    dependencies: tomlplusplus_dep,
+    include_directories: inc_src,
+)
+
+test('Config Loader Test', config_loader_test_exe)
+
+# ====================
+# C++ CLI Parser Test
+# ====================
+cli_parser_test_exe = executable(
+    'cli_parser_test',
+    'cli/cli_test.cc',
+    files(
+      '../../src/cli/cli.cc',
+    ),
+    native: true,
+    include_directories: inc_src,
+)
+
+test('CLI Parser Test', cli_parser_test_exe)
+
+# ====================
 # Observability HTTP Test
 # ====================
 obs_http_test_exe = executable(
