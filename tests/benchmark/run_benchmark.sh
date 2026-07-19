@@ -21,7 +21,6 @@ DNSPERF_DURATION="${DNSPERF_DURATION:-10}"
 DNSPERF_CLIENTS="${DNSPERF_CLIENTS:-10}"
 DNSPERF_TIMEOUT="${DNSPERF_TIMEOUT:-5}"
 DNSPERF_THREADS="${DNSPERF_THREADS:-1}"
-METRICS_PORT="${METRICS_PORT:-9095}"
 
 HOT_QUERY_FILE="$SCENARIO_DIR/queries.hot.txt"
 MIXED_QUERY_FILE="$SCENARIO_DIR/queries.mixed.txt"
@@ -71,7 +70,7 @@ trap cleanup EXIT
 
 check_prereqs() {
     local missing=0
-    for cmd in unbound dnsperf ip tc python3 curl awk sed grep; do
+    for cmd in unbound dnsperf ip tc python3 awk sed grep; do
         if ! command -v "$cmd" &>/dev/null; then
             err "Missing required command: $cmd"
             missing=1
@@ -197,20 +196,27 @@ EOF
 start_dns_cache() {
     local scenario="$1"
     local arena_pages="$2"
-    local obs_enabled="$3"
-    local obs_bpf_enabled="$4"
-    local obs_bpf_mask="$5"
 
     DNS_CACHE_LOG="$SCENARIO_DIR/${scenario}.shinku.log"
+    local config_file="$SCENARIO_DIR/${scenario}.shinku.toml"
+
+    {
+        echo 'backend = "ebpf"'
+        echo
+        echo '[ebpf]'
+        echo "iface = \"$VETH_HOST\""
+        echo "arena_pages = $arena_pages"
+        echo 'cleanup_interval = "10s"'
+        echo
+        echo '[cache]'
+        echo 'max_entries = 16384'
+        echo 'max_response_bytes = 512'
+        echo 'cache_negative = true'
+    } > "$config_file"
 
     "$PROJECT_ROOT/build/shinku" \
-        -i "$VETH_HOST" \
-        -l info \
-        -a "$arena_pages" \
-        -m "$METRICS_PORT" \
-        -o "$obs_enabled" \
-        -p "$obs_bpf_enabled" \
-        -k "$obs_bpf_mask" \
+        run \
+        --config "$config_file" \
         >"$DNS_CACHE_LOG" 2>&1 &
 
     DNS_CACHE_PID=$!
@@ -230,23 +236,6 @@ stop_dns_cache() {
     fi
     ip link set dev "$VETH_HOST" xdp off 2>/dev/null || true
     tc qdisc del dev "$VETH_HOST" clsact 2>/dev/null || true
-}
-
-fetch_metrics() {
-    local outfile="$1"
-    curl -fsS "http://127.0.0.1:${METRICS_PORT}/metrics" > "$outfile"
-}
-
-metric_val() {
-    local file="$1"
-    local metric="$2"
-    awk -v m="$metric" '$1==m {print $2; found=1} END{if (!found) print 0}' "$file"
-}
-
-metric_labeled_val() {
-    local file="$1"
-    local pattern="$2"
-    awk -v p="$pattern" '$0 ~ p {print $2; found=1} END{if (!found) print 0}' "$file"
 }
 
 parse_dnsperf_stat() {
@@ -292,88 +281,11 @@ sample_process_resource() {
     echo "$cpu;$rss" > "$out"
 }
 
-compute_derived_metrics() {
-    local before="$1"
-    local after="$2"
-    local summary_out="$3"
-    local run_seconds="$4"
-
-    local hit_before hit_after miss_before miss_after
-    hit_before=$(metric_val "$before" "shinku_cache_hit_total")
-    hit_after=$(metric_val "$after" "shinku_cache_hit_total")
-    miss_before=$(metric_val "$before" "shinku_cache_miss_total")
-    miss_after=$(metric_val "$after" "shinku_cache_miss_total")
-
-    local seq_before seq_after gen_before gen_after ring_before ring_after
-    seq_before=$(metric_val "$before" "shinku_cache_seq_conflict_total")
-    seq_after=$(metric_val "$after" "shinku_cache_seq_conflict_total")
-    gen_before=$(metric_val "$before" "shinku_cache_gen_mismatch_total")
-    gen_after=$(metric_val "$after" "shinku_cache_gen_mismatch_total")
-    ring_before=$(metric_val "$before" "shinku_tc_ringbuf_drop_total")
-    ring_after=$(metric_val "$after" "shinku_tc_ringbuf_drop_total")
-
-    local neg_acc_nx_before neg_acc_nx_after neg_acc_no_before neg_acc_no_after
-    neg_acc_nx_before=$(metric_labeled_val "$before" "shinku_negative_cache_accept_by_type_total[{]type=\"nxdomain\"[}]")
-    neg_acc_nx_after=$(metric_labeled_val "$after" "shinku_negative_cache_accept_by_type_total[{]type=\"nxdomain\"[}]")
-    neg_acc_no_before=$(metric_labeled_val "$before" "shinku_negative_cache_accept_by_type_total[{]type=\"nodata\"[}]")
-    neg_acc_no_after=$(metric_labeled_val "$after" "shinku_negative_cache_accept_by_type_total[{]type=\"nodata\"[}]")
-
-    local neg_rej_nx_before neg_rej_nx_after neg_rej_no_before neg_rej_no_after
-    neg_rej_nx_before=$(metric_labeled_val "$before" "shinku_negative_cache_reject_by_type_total[{]type=\"nxdomain\"[}]")
-    neg_rej_nx_after=$(metric_labeled_val "$after" "shinku_negative_cache_reject_by_type_total[{]type=\"nxdomain\"[}]")
-    neg_rej_no_before=$(metric_labeled_val "$before" "shinku_negative_cache_reject_by_type_total[{]type=\"nodata\"[}]")
-    neg_rej_no_after=$(metric_labeled_val "$after" "shinku_negative_cache_reject_by_type_total[{]type=\"nodata\"[}]")
-
-    local cleanup_before cleanup_after
-    cleanup_before=$(metric_val "$before" "shinku_cache_cleanup_removed_total")
-    cleanup_after=$(metric_val "$after" "shinku_cache_cleanup_removed_total")
-
-    local hits misses total upstream_rate hit_rate seq_rate gen_rate ring_rate
-    hits=$((hit_after - hit_before))
-    misses=$((miss_after - miss_before))
-    total=$((hits + misses))
-
-    if [[ $total -gt 0 ]]; then
-        hit_rate=$(awk -v h="$hits" -v t="$total" 'BEGIN{printf "%.2f", (h/t)*100}')
-        upstream_rate=$(awk -v m="$misses" -v t="$total" 'BEGIN{printf "%.2f", (m/t)*100}')
-    else
-        hit_rate="0.00"
-        upstream_rate="0.00"
-    fi
-
-    seq_rate=$(awk -v a="$seq_after" -v b="$seq_before" -v s="$run_seconds" 'BEGIN{d=a-b; if(s>0) printf "%.6f", d/s; else print "0.000000"}')
-    gen_rate=$(awk -v a="$gen_after" -v b="$gen_before" -v s="$run_seconds" 'BEGIN{d=a-b; if(s>0) printf "%.6f", d/s; else print "0.000000"}')
-    ring_rate=$(awk -v a="$ring_after" -v b="$ring_before" -v s="$run_seconds" 'BEGIN{d=a-b; if(s>0) printf "%.6f", d/s; else print "0.000000"}')
-
-    local neg_accept_nx neg_accept_no neg_reject_nx neg_reject_no cleanup_removed
-    neg_accept_nx=$((neg_acc_nx_after - neg_acc_nx_before))
-    neg_accept_no=$((neg_acc_no_after - neg_acc_no_before))
-    neg_reject_nx=$((neg_rej_nx_after - neg_rej_nx_before))
-    neg_reject_no=$((neg_rej_no_after - neg_rej_no_before))
-    cleanup_removed=$((cleanup_after - cleanup_before))
-
-    {
-        echo "hits=$hits"
-        echo "misses=$misses"
-        echo "hit_rate_percent=$hit_rate"
-        echo "upstream_request_rate_percent=$upstream_rate"
-        echo "seqlock_conflict_per_sec=$seq_rate"
-        echo "generation_mismatch_per_sec=$gen_rate"
-        echo "ringbuf_drop_per_sec=$ring_rate"
-        echo "negative_accept_nxdomain=$neg_accept_nx"
-        echo "negative_accept_nodata=$neg_accept_no"
-        echo "negative_reject_nxdomain=$neg_reject_nx"
-        echo "negative_reject_nodata=$neg_reject_no"
-        echo "cleanup_removed=$cleanup_removed"
-    } > "$summary_out"
-}
-
 print_scenario_report() {
     local scenario="$1"
     local dnsperf_out="$2"
-    local derived="$3"
-    local resource="$4"
-    local report_out="$5"
+    local resource="$3"
+    local report_out="$4"
 
     local qps avg_lat run_time p95 p99 cpu rss
     qps=$(parse_dnsperf_stat "$dnsperf_out" "Queries per second")
@@ -385,21 +297,6 @@ print_scenario_report() {
     cpu=$(awk -F ';' '{print $1}' "$resource")
     rss=$(awk -F ';' '{print $2}' "$resource")
 
-    local hits misses hit_rate upstream_rate seq_rate gen_rate ring_rate
-    local neg_acc_nx neg_acc_no neg_rej_nx neg_rej_no cleanup_removed
-    hits=$(grep '^hits=' "$derived" | cut -d '=' -f2)
-    misses=$(grep '^misses=' "$derived" | cut -d '=' -f2)
-    hit_rate=$(grep '^hit_rate_percent=' "$derived" | cut -d '=' -f2)
-    upstream_rate=$(grep '^upstream_request_rate_percent=' "$derived" | cut -d '=' -f2)
-    seq_rate=$(grep '^seqlock_conflict_per_sec=' "$derived" | cut -d '=' -f2)
-    gen_rate=$(grep '^generation_mismatch_per_sec=' "$derived" | cut -d '=' -f2)
-    ring_rate=$(grep '^ringbuf_drop_per_sec=' "$derived" | cut -d '=' -f2)
-    neg_acc_nx=$(grep '^negative_accept_nxdomain=' "$derived" | cut -d '=' -f2)
-    neg_acc_no=$(grep '^negative_accept_nodata=' "$derived" | cut -d '=' -f2)
-    neg_rej_nx=$(grep '^negative_reject_nxdomain=' "$derived" | cut -d '=' -f2)
-    neg_rej_no=$(grep '^negative_reject_nodata=' "$derived" | cut -d '=' -f2)
-    cleanup_removed=$(grep '^cleanup_removed=' "$derived" | cut -d '=' -f2)
-
     {
         echo "scenario=$scenario"
         echo "qps=$qps"
@@ -407,18 +304,6 @@ print_scenario_report() {
         echo "avg_latency_line=$avg_lat"
         echo "p95_latency_s=$p95"
         echo "p99_latency_s=$p99"
-        echo "cache_hit_count=$hits"
-        echo "cache_miss_count=$misses"
-        echo "cache_hit_rate_percent=$hit_rate"
-        echo "upstream_request_rate_percent=$upstream_rate"
-        echo "seqlock_conflict_per_sec=$seq_rate"
-        echo "generation_mismatch_per_sec=$gen_rate"
-        echo "ringbuf_drop_per_sec=$ring_rate"
-        echo "negative_accept_nxdomain=$neg_acc_nx"
-        echo "negative_accept_nodata=$neg_acc_no"
-        echo "negative_reject_nxdomain=$neg_rej_nx"
-        echo "negative_reject_nodata=$neg_rej_no"
-        echo "cleanup_removed=$cleanup_removed"
         echo "cpu_percent=$cpu"
         echo "rss_kb=$rss"
     } > "$report_out"
@@ -439,14 +324,10 @@ run_scenario() {
 
     local out_prefix="$SCENARIO_DIR/$scenario"
     local dnsperf_out="$out_prefix.dnsperf.txt"
-    local metrics_before="$out_prefix.metrics.before.txt"
-    local metrics_after="$out_prefix.metrics.after.txt"
-    local derived="$out_prefix.derived.txt"
     local resource="$out_prefix.resource.txt"
     local report="$out_prefix.report.txt"
 
-    start_dns_cache "$scenario" "$arena_pages" 1 1 0x1f
-    fetch_metrics "$metrics_before"
+    start_dns_cache "$scenario" "$arena_pages"
 
     if [[ "$warmup_runs" -gt 0 ]]; then
         ip netns exec "$NS_NAME" dnsperf \
@@ -456,10 +337,8 @@ run_scenario() {
     fi
 
     run_dnsperf "$query_file" "$dnsperf_out" "$duration" "$clients" "$threads"
-    fetch_metrics "$metrics_after"
     sample_process_resource "$DNS_CACHE_PID" "$resource"
-    compute_derived_metrics "$metrics_before" "$metrics_after" "$derived" "$duration"
-    print_scenario_report "$scenario" "$dnsperf_out" "$derived" "$resource" "$report"
+    print_scenario_report "$scenario" "$dnsperf_out" "$resource" "$report"
 
     ok "Scenario complete: $scenario"
     stop_dns_cache
@@ -476,7 +355,7 @@ run_ttl_expiry_probe() {
     hdr "TTL Expiry Probe"
 
     local probe_out="$SCENARIO_DIR/ttl-expiry.probe.txt"
-    start_dns_cache "ttl-expiry-probe" 2112 1 1 0x1f
+    start_dns_cache "ttl-expiry-probe" 2112
 
     ip netns exec "$NS_NAME" python3 "$PROJECT_ROOT/tests/integration/dns_client.py" "google.com" "0a01" "$IP_HOST" "3" > "$probe_out" 2>&1 || true
     sleep 2
@@ -485,7 +364,6 @@ run_ttl_expiry_probe() {
     sleep 3
     ip netns exec "$NS_NAME" python3 "$PROJECT_ROOT/tests/integration/dns_client.py" "google.com" "0a03" "$IP_HOST" "3" >> "$probe_out" 2>&1 || true
 
-    fetch_metrics "$SCENARIO_DIR/ttl-expiry.metrics.after.txt"
     stop_dns_cache
     ok "TTL expiry probe complete"
 }
@@ -495,19 +373,14 @@ print_final_summary() {
     local report
     for report in "$SCENARIO_DIR"/*.report.txt; do
         [[ -f "$report" ]] || continue
-        local scenario qps hit_rate upstream seq gen ring p99 cpu rss
+        local scenario qps p99 cpu rss
         scenario=$(grep '^scenario=' "$report" | cut -d '=' -f2)
         qps=$(grep '^qps=' "$report" | cut -d '=' -f2)
-        hit_rate=$(grep '^cache_hit_rate_percent=' "$report" | cut -d '=' -f2)
-        upstream=$(grep '^upstream_request_rate_percent=' "$report" | cut -d '=' -f2)
-        seq=$(grep '^seqlock_conflict_per_sec=' "$report" | cut -d '=' -f2)
-        gen=$(grep '^generation_mismatch_per_sec=' "$report" | cut -d '=' -f2)
-        ring=$(grep '^ringbuf_drop_per_sec=' "$report" | cut -d '=' -f2)
         p99=$(grep '^p99_latency_s=' "$report" | cut -d '=' -f2)
         cpu=$(grep '^cpu_percent=' "$report" | cut -d '=' -f2)
         rss=$(grep '^rss_kb=' "$report" | cut -d '=' -f2)
 
-        echo "[$scenario] QPS=$qps hit_rate=${hit_rate}% upstream_rate=${upstream}% p99=${p99}s cpu=${cpu}% rss=${rss}KB seq_conf/s=${seq} gen_mismatch/s=${gen} ring_drop/s=${ring}"
+        echo "[$scenario] QPS=$qps p99=${p99}s cpu=${cpu}% rss=${rss}KB"
     done
 
     echo

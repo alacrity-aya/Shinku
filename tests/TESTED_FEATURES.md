@@ -66,28 +66,6 @@ This document lists all features covered by the test suite.
 - **TTL Cleanup**: Expired entries removed from cache_map and slot_owners cleared
 - **Slot Owners Tracking**: Reverse mapping (slot_idx -> cache_key) maintained correctly
 
-### Degraded Mode (`degraded/degraded_mode_test.c`)
-
-- Fresh state is not degraded
-- Lag streak activates degraded mode (threshold: 5 consecutive high-load polls)
-- Lag reason clears on healthy poll
-- Cache map failure streak activates degraded mode (threshold: 32 failures)
-- Cache map degraded reason clears after success
-- Cleanup failure streak activates degraded mode (threshold: 3 failures)
-- Cleanup degraded reason clears after healthy cycle
-- Transitions counter increments on state changes
-
-### Observability HTTP (`obs/obs_http_test.c`)
-
-- HTTP server startup on dynamic port
-- `GET /healthz` returns 200 OK with "ok\n"
-- `GET /readyz` returns 503 before BPF ready
-- `GET /readyz` returns 200 after BPF ready
-- `GET /metrics` returns Prometheus-format metrics
-- Metrics include: cache hits, parser rejects, cache inserts, degraded mode gauge
-- `GET /unknown` returns 404 Not Found
-- Server shutdown
-
 ### Ring Buffer Allocator (`allocator/ring_buffer_test.c`)
 
 - Sequential allocation returns correct indices
@@ -163,8 +141,6 @@ This document lists all features covered by the test suite.
 | DNS Hash | `hash/dns_hash_test.c` | 8 suites | No |
 | DNS Parser | `parser/dns_parser_test.c` | 20+ tests | No* |
 | Cache Store | `cache/cache_store_test.c` | 6 tests | No* |
-| Degraded Mode | `degraded/degraded_mode_test.c` | 8 tests | No |
-| Observability HTTP | `obs/obs_http_test.c` | 10+ tests | No |
 | Ring Buffer | `allocator/ring_buffer_test.c` | 10 suites | No |
 | c-ares Expand | `cares/cares_expand_test.c` | 2 tests | No |
 | Arena List | `arena/arena_list_test.c` | 1 test | Yes |

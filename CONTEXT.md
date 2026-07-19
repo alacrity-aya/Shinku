@@ -93,7 +93,7 @@ The runnable Cache Engine that uses eBPF programs for packet handling and must r
 _Avoid_: Legacy backend
 
 **Observability Surface**:
-The runtime-facing health, metrics, and status reporting API.
+The deleted runtime-facing health, metrics, and status reporting API. A replacement must be designed as a future module before reintroduction.
 _Avoid_: Metrics code
 
 **Operational Loop**:

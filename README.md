@@ -105,125 +105,9 @@ Detailed methodology and full results are available in `docs/performance.md`.
 
 ## Observability
 
-Shinku exposes Prometheus-compatible metrics via HTTP endpoints for monitoring and debugging.
+The previous HTTP observability surface has been removed during the C++/DPDK refactor. The current MVP does not expose `/healthz`, `/readyz`, `/metrics`, Prometheus configuration, Grafana dashboards, degraded-mode state, or BPF-side observability counters.
 
-### Endpoints
-
-| Endpoint | Description |
-| :--- | :--- |
-| `GET /healthz` | Liveness probe — returns `200 OK` with body `ok` |
-| `GET /readyz` | Readiness probe — returns `200 OK` when BPF programs attached, `503` otherwise |
-| `GET /metrics` | Prometheus text format metrics export |
-
-Default port: `9095` (configurable via `--metrics-port`).
-
-### BPF Metrics (sampled)
-
-These counters are sampled in the XDP/TC hot path using `bpf_get_prandom_u32() & sample_mask == 0`. When `--obs-bpf=0` (default), these are zero.
-
-| Metric | Type | Description |
-| :--- | :--- | :--- |
-| `shinku_cache_hit_total` | counter | Sampled XDP cache hits |
-| `shinku_cache_miss_total` | counter | Sampled XDP cache misses |
-| `shinku_cache_expired_hit_total` | counter | Sampled expired cache entries encountered in XDP |
-| `shinku_cache_gen_mismatch_total` | counter | Sampled generation mismatches (slot reuse detection) |
-| `shinku_cache_seq_conflict_total` | counter | Sampled seqlock read conflicts |
-| `shinku_xdp_tx_total` | counter | Sampled XDP_TX responses sent |
-| `shinku_tc_capture_total` | counter | Sampled TC-captured DNS responses |
-| `shinku_tc_ringbuf_drop_total` | counter | Sampled TC ring buffer reservation drops |
-| `shinku_udp_truncated_responses_total` | counter | Sampled upstream UDP responses with TC=1 |
-| `shinku_tc_fallback_cache_hit_total` | counter | Sampled cached TC=1 fallback responses served from XDP |
-| `shinku_bpf_sample_mask` | gauge | Current sampling mask (events counted when `rand32 & mask == 0`) |
-
-### Userspace Metrics
-
-| Metric | Type | Description |
-| :--- | :--- | :--- |
-| `shinku_parser_reject_total` | counter | Total DNS parser rejections |
-| `shinku_cache_insert_total` | counter | Successful cache inserts |
-| `shinku_cache_insert_fail_total` | counter | Failed cache inserts |
-| `shinku_cache_admission_attempt_total` | counter | Admission policy decisions attempted |
-| `shinku_cache_admission_accept_total` | counter | Admissions accepted |
-| `shinku_cache_admission_reject_total` | counter | Admissions rejected |
-| `shinku_cache_admission_reject_recent_total` | counter | Rejected by recent-insert dampening |
-| `shinku_cache_admission_reject_ttl_total` | counter | Rejected by minimum TTL policy |
-| `shinku_cache_admission_reject_freq_total` | counter | Rejected by frequency pressure compare |
-| `shinku_cache_eviction_total` | counter | Total evictions caused by slot reuse |
-| `shinku_cache_eviction_hot_total` | counter | Evicted entries previously marked hot |
-| `shinku_cache_eviction_cold_total` | counter | Evicted entries from cold segment |
-| `shinku_cache_hot_segment_size` | gauge | Current count of hot entries |
-| `shinku_cache_cold_segment_size` | gauge | Current count of cold entries |
-| `shinku_cache_cleanup_removed_total` | counter | Expired entries removed by cleanup thread |
-| `shinku_rb_pkt_poll_error_total` | counter | Packet ring buffer poll errors |
-
-### Parser Reject Reasons
-
-The `shinku_parser_reject_reason_total` counter provides detailed breakdown by rejection reason:
-
-| Label (`reason=`) | Description |
-| :--- | :--- |
-| `not_response` | Packet is a query, not a response |
-| `bad_qdcount` | Question count is not 1 |
-| `tc` | Truncation flag is set |
-| `rcode` | Response code is non-zero |
-| `no_answer` | Answer count is 0 |
-| `malformed_name` | DNS name parsing failed |
-| `malformed_question` | Question section parsing failed |
-| `malformed_rr` | Resource record parsing failed |
-| `unsupported_rtype` | Record type not supported (not A/AAAA/CNAME) |
-| `ipv6_ignored` | IPv6 query/response ignored by current policy |
-| `cname_no_terminal_a` | CNAME chain for A query without terminal A |
-| `cname_ipv6_only_terminal` | CNAME chain ends only with AAAA under IPv6-ignore policy |
-| `bad_ecs` | Invalid or unsupported EDNS Client Subnet option |
-| `bad_ttl` | TTL is 0 or invalid |
-
-### Truncation/TCP Behavior (Deterministic)
-
-Shinku's current deterministic behavior for truncated UDP responses is:
-
-1. If upstream UDP response has `TC=1`, userspace caches that truncated response as a short-lived fallback entry.
-2. Subsequent UDP queries for the same key can be served the cached `TC=1` response from XDP fast path.
-3. DNS clients should retry the same query over TCP when receiving `TC=1` (RFC 2181 / RFC 7766 behavior).
-4. Shinku does not synthesize a local TCP answer path yet; TCP retry is handled by client + upstream resolver path.
-
-Observability for this path:
-
-- `shinku_udp_truncated_responses_total`: sampled count of upstream TC=1 UDP responses observed.
-- `shinku_tc_fallback_cache_hit_total`: sampled count of cached TC=1 fallback responses served.
-
-An operator-friendly truncation ratio estimate:
-
-- `rate(shinku_udp_truncated_responses_total[5m]) / rate(shinku_tc_capture_total[5m])`
-
-Fallback efficacy estimate:
-
-- `rate(shinku_tc_fallback_cache_hit_total[5m]) / rate(shinku_udp_truncated_responses_total[5m])`
-
-### CLI Options
-
-```text
--o, --obs             Enable userspace observability (default: 1)
--p, --obs-bpf         Enable BPF observability sampling (default: 0)
--k, --obs-bpf-mask    BPF sampling mask (default: 0xff)
--m, --metrics-port    HTTP metrics port (default: 9095)
---admission           Enable cache admission policies (default: 1)
---pressure-mode       Enable frequency pressure rejection (default: 1)
---admission-min-ttl   Minimum TTL for positive cache admission (default: 0)
---admission-dampen-ms Duplicate insert dampening window in ms (default: 2000)
---hot-threshold       Frequency threshold for hot classification (default: 3)
---freq-width          Count-min sketch width (default: 4096)
---freq-epoch-ops      Sketch decay period in updates (default: 10*entries)
-```
-
-### Compile-Time Control
-
-For zero-overhead in production, disable at compile time:
-
-```bash
-meson setup -Dobs=false -Dobs_bpf=false build
-```
-
-This removes all instrumentation code paths entirely.
+Operational loops remain in place: eBPF attach/detach, packet and log ring polling, cleanup scheduling, signal handling, and shutdown.
 
 ## Testing
 
@@ -238,7 +122,7 @@ Shinku includes a real-soak infrastructure path that uses:
 - existing netns/veth topology (`tests/integration/topology.py`),
 - real upstream DNS server in Docker (`mvance/unbound`),
 - Shinku attached on `veth-host`,
-- periodic metrics/resource snapshots under `tests/soak/results/<run-id>/`.
+- periodic traffic/resource logs under `tests/soak/results/<run-id>/`.
 
 Quick smoke run (5 minutes default):
 

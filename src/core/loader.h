@@ -3,11 +3,7 @@
 
 #include "bpf_log.h"
 #include "cache_types.h"
-#include "degraded_mode.h"
-#include "obs_http.h"
-#include "obs_metrics.h"
 #include "parser_runtime.h"
-#include "runtime/events.h"
 
 #include "runtime/legacy_env.h"
 #include <bpf/libbpf.h>
@@ -20,8 +16,7 @@
  * @brief BPF program loader and lifecycle management.
  *
  * This module handles loading, attaching, and managing BPF programs
- * for DNS caching. It also manages the cleanup thread and observability
- * HTTP server.
+ * for DNS caching. It also manages the cleanup thread.
  */
 
 struct cache_bpf;
@@ -39,8 +34,7 @@ struct cleanup_config {
  * @brief Complete BPF application context.
  *
  * This structure holds all state for the DNS cache BPF application,
- * including skeleton, ring buffers, cache context, metrics, and
- * thread management.
+ * including skeleton, ring buffers, cache context, and thread management.
  */
 struct bpf_ctx {
     struct cache_bpf* skel;     /**< BPF skeleton for program management */
@@ -52,18 +46,6 @@ struct bpf_ctx {
     struct cache_context cache_context; /**< Cache management context */
     struct dns_parser_runtime parser_runtime;
     struct dns_parser_context parser_context;
-
-    struct obs_metrics metrics;      /**< Observability metrics */
-    struct obs_context obs_ctx;      /**< Observability context */
-    struct degraded_state degraded;  /**< Degraded mode state machine */
-    struct shinku_event_bus events;  /**< Internal event bus for component decoupling */
-    struct obs_http_server obs_http; /**< HTTP server for metrics */
-    atomic_bool bpf_ready;           /**< BPF programs ready flag */
-
-    int obs_ncpu;                 /**< Number of CPUs for per-CPU metrics */
-    uint64_t* obs_percpu_vals;    /**< Buffer for per-CPU metric reads */
-    uint32_t pkt_poll_err_streak; /**< Consecutive poll errors */
-    uint32_t rb_backlog_streak;   /**< Consecutive high-load polls */
 
     /* Cleanup thread */
     pthread_t cleanup_thread;          /**< Cleanup thread handle */
@@ -86,7 +68,6 @@ struct bpf_ctx {
  *   - Sets up arena memory options
  *   - Loads and attaches XDP/TC programs
  *   - Initializes ring buffers
- *   - Starts observability HTTP server
  *
  * @note Uses bounded retry with exponential backoff for XDP/TC attach.
  */
@@ -118,7 +99,7 @@ void loader_cleanup_bpf(struct bpf_ctx* ctx);
  * @return Number of events processed, or negative on error.
  *
  * Polls the packet ring buffer and processes DNS responses through
- * cache_handle_event(). Tracks poll errors and backlog for degraded mode.
+ * cache_handle_event().
  */
 int loader_poll_pkt_ring(struct bpf_ctx* ctx, int timeout_ms);
 

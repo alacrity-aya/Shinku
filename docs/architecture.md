@@ -32,18 +32,10 @@ This document describes how runtime modules are connected, which data each modul
                  +------------------+------------------+
                                     v
                     +-----------------------------+
-                    | Shared State + Signaling    |
+                    | Shared State + Ops Loops    |
                     | - cache_map (BPF hash map)  |
                     | - arena cache_entries[]     |
                     | - rb_pkt ring buffer        |
-                    | - runtime events bus        |
-                    +-------------+---------------+
-                                  |
-                                  v
-                    +-----------------------------+
-                    | Observability + Degraded    |
-                    | src/core/obs_*.c            |
-                    | src/core/degraded_mode.c    |
                     +-----------------------------+
 ```
 
@@ -61,12 +53,6 @@ This document describes how runtime modules are connected, which data each modul
 
 - `src/core/loader.c`
   - Owns BPF object lifecycle (load/attach/detach), map FD wiring, arena mmap, ring-buffer polling, cleanup thread orchestration.
-
-- `src/core/obs_metrics.c`, `src/core/obs_http.c`
-  - Own metrics counters and export surface (`/metrics`, `/healthz`, `/readyz`).
-
-- `src/core/degraded_mode.c`
-  - Owns degraded-mode reason tracking and transition logic.
 
 ## 3. End-to-end request and response flow
 

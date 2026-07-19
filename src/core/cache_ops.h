@@ -13,7 +13,7 @@ struct dns_parser_runtime;
  * data to the BPF arena and updates the hash map with appropriate metadata.
  *
  * @param cache_ctx   Cache context containing map pointers and configuration.
- * @param runtime     Parser runtime with metrics and configuration.
+ * @param runtime     Parser runtime dependencies.
  * @param key         Cache key (QNAME hash, QTYPE, QCLASS, optional ECS).
  * @param flat_buf    Flattened response buffer (name compression resolved).
  * @param flat_len    Length of flattened response buffer.
@@ -39,7 +39,7 @@ int dns_cache_store_response_with_flags(
  * Wrapper around dns_cache_store_response_with_flags() with flags=0.
  *
  * @param cache_ctx   Cache context containing map pointers and configuration.
- * @param runtime     Parser runtime with metrics and configuration.
+ * @param runtime     Parser runtime dependencies.
  * @param key         Cache key (QNAME hash, QTYPE, QCLASS, optional ECS).
  * @param flat_buf    Flattened response buffer (name compression resolved).
  * @param flat_len    Length of flattened response buffer.
@@ -64,7 +64,7 @@ int dns_cache_store_response(
  * This is a convenience wrapper that handles flattening before storage.
  *
  * @param cache_ctx   Cache context containing map pointers and configuration.
- * @param runtime     Parser runtime with metrics and configuration.
+ * @param runtime     Parser runtime dependencies.
  * @param key         Cache key (QNAME hash, QTYPE, QCLASS, optional ECS).
  * @param pkt_buf     Raw DNS response packet buffer.
  * @param pkt_len     Length of raw packet buffer.

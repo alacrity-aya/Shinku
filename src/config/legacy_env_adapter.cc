@@ -21,24 +21,20 @@ const char* stable_iface_storage(const std::string& iface) {
 
 std::expected<env, ConfigError> to_legacy_env(const Config& config) {
     if (config.backend != BackendKind::Ebpf || !std::holds_alternative<EbpfConfig>(config.backend_config)) {
-        return std::unexpected(
-            ConfigError {
-                .code = ConfigErrorCode::UnsupportedBackend,
-                .path = {},
-                .message = "legacy eBPF runtime supports only backend ebpf",
-            }
-        );
+        return std::unexpected(ConfigError {
+            .code = ConfigErrorCode::UnsupportedBackend,
+            .path = {},
+            .message = "legacy eBPF runtime supports only backend ebpf",
+        });
     }
 
     const auto& ebpf = std::get<EbpfConfig>(config.backend_config);
     if (ebpf.cleanup_interval.count() <= 0 || ebpf.cleanup_interval.count() > std::numeric_limits<uint32_t>::max()) {
-        return std::unexpected(
-            ConfigError {
-                .code = ConfigErrorCode::ValidationError,
-                .path = {},
-                .message = "invalid ebpf.cleanup_interval: legacy runtime interval is out of range",
-            }
-        );
+        return std::unexpected(ConfigError {
+            .code = ConfigErrorCode::ValidationError,
+            .path = {},
+            .message = "invalid ebpf.cleanup_interval: legacy runtime interval is out of range",
+        });
     }
 
     env out = {};
@@ -46,11 +42,6 @@ std::expected<env, ConfigError> to_legacy_env(const Config& config) {
     out.log_level = LOG_INFO;
     out.arena_pages = ebpf.arena_pages;
     out.cleanup_interval_ms = static_cast<uint32_t>(ebpf.cleanup_interval.count());
-
-    out.metrics_port = 9095;
-    out.obs_enabled = 1;
-    out.obs_bpf_enabled = 0;
-    out.obs_bpf_sample_mask = 0xff;
 
     out.admission_enabled = 1;
     out.pressure_mode = 1;

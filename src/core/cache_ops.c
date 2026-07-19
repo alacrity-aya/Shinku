@@ -3,40 +3,10 @@
 #include "cache_ops_internal.h"
 
 #include <bpf/bpf.h>
-#include <degraded_mode.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
-
-enum cache_admission_reject_kind {
-    CACHE_ADMISSION_REJECT_TTL = 0,
-    CACHE_ADMISSION_REJECT_RECENT = 1,
-    CACHE_ADMISSION_REJECT_FREQ = 2,
-};
-
-static inline struct obs_metrics* cache_runtime_metrics(const struct dns_parser_runtime* runtime) {
-    return runtime && runtime->obs ? runtime->obs->metrics : NULL;
-}
-
-static inline void
-cache_metrics_count_admission_reject(struct obs_metrics* metrics, enum cache_admission_reject_kind kind) {
-    if (!metrics)
-        return;
-
-    obs_metrics_count_cache_admission_reject(metrics);
-    switch (kind) {
-        case CACHE_ADMISSION_REJECT_TTL:
-            obs_metrics_count_cache_admission_reject_ttl(metrics);
-            break;
-        case CACHE_ADMISSION_REJECT_RECENT:
-            obs_metrics_count_cache_admission_reject_recent(metrics);
-            break;
-        case CACHE_ADMISSION_REJECT_FREQ:
-            obs_metrics_count_cache_admission_reject_freq(metrics);
-            break;
-    }
-}
 
 int dns_cache_store_response_with_flags(
     struct cache_context* cache_ctx,
@@ -51,16 +21,12 @@ int dns_cache_store_response_with_flags(
     if (!cache_ctx || !cache_ctx->entries || !cache_ctx->next_idx)
         return -1;
 
-    struct obs_metrics* const metrics = cache_runtime_metrics(runtime);
-    struct degraded_state* const degraded = runtime ? runtime->degraded : NULL;
+    (void)runtime;
 
     if (flat_len > ARENA_ENTRY_SIZE || flat_len <= 0)
         return -1;
 
     if (!cache_ctx->slot_owners) {
-        degraded_note_cache_map_update(degraded, 0);
-        obs_metrics_count_cache_insert(metrics, 0);
-        obs_metrics_mark_degraded(metrics, OBS_DEGRADED_CACHE_MAP_UPDATE_FAIL);
         return -1;
     }
 
@@ -75,17 +41,12 @@ int dns_cache_store_response_with_flags(
     const int admission_default_flags = flags == CACHE_ADMISSION_DEFAULT_FLAGS;
     const int admission_policy_enabled = admission_enabled && admission_default_flags;
 
-    obs_metrics_count_cache_admission_attempt(metrics);
-
-    if (admission_policy_enabled && cache_ctx->admission.min_ttl > 0 && min_ttl < cache_ctx->admission.min_ttl) {
-        cache_metrics_count_admission_reject(metrics, CACHE_ADMISSION_REJECT_TTL);
+    if (admission_policy_enabled && cache_ctx->admission.min_ttl > 0 && min_ttl < cache_ctx->admission.min_ttl)
         return -1;
-    }
 
     if (admission_policy_enabled
         && cache_recent_was_inserted(&cache_ctx->recent, cache_ctx->admission.dampen_window_ns, key, now_ns))
     {
-        cache_metrics_count_admission_reject(metrics, CACHE_ADMISSION_REJECT_RECENT);
         return -1;
     }
 
@@ -109,10 +70,8 @@ int dns_cache_store_response_with_flags(
             if (!victim_hot && cache_ctx->segments.hot_threshold > 0)
                 victim_hot = vict_f >= cache_ctx->segments.hot_threshold;
 
-            if (cand_f <= vict_f && victim_hot) {
-                cache_metrics_count_admission_reject(metrics, CACHE_ADMISSION_REJECT_FREQ);
+            if (cand_f <= vict_f && victim_hot)
                 return -1;
-            }
         }
     }
 
@@ -157,8 +116,6 @@ int dns_cache_store_response_with_flags(
         if (cache_ctx->slot_owners_lock)
             pthread_mutex_unlock(cache_ctx->slot_owners_lock);
         fprintf(stderr, "[Cache] bpf_map_update_elem failed: %d\n", err);
-        degraded_note_cache_map_update(degraded, 0);
-        obs_metrics_count_cache_insert(metrics, 0);
         return -1;
     }
 
@@ -175,25 +132,16 @@ int dns_cache_store_response_with_flags(
     cache_recent_track_insert(&cache_ctx->recent, key, now_ns);
 
     if (replacing_distinct) {
-        struct obs_metrics* eviction_metrics = metrics ? metrics : cache_ctx->metrics;
-        obs_metrics_count_cache_eviction(eviction_metrics, old_hot ? 1 : 0);
         struct cache_value old_val;
         int old_lookup_err = bpf_map_lookup_elem(cache_ctx->cache_map_fd, &old_key_copy, &old_val);
         if (old_lookup_err == 0 && old_val.arena_idx == idx)
             bpf_map_delete_elem(cache_ctx->cache_map_fd, &old_key_copy);
     }
 
-    cache_segments_update_metrics(runtime, cache_ctx->metrics, &cache_ctx->segments);
-
     if (cache_ctx->slot_owners_lock)
         pthread_mutex_unlock(cache_ctx->slot_owners_lock);
 
-    obs_metrics_count_cache_admission_accept(metrics);
-
-    degraded_note_cache_map_update(degraded, 1);
-
     printf("[Cache] Stored: Hash=0x%x Idx=%u Size=%d TTL=%us Gen=%u\n", key->name_hash, idx, flat_len, min_ttl, gen);
-    obs_metrics_count_cache_insert(metrics, 1);
     return 0;
 }
 
@@ -281,8 +229,6 @@ int dns_cache_cleanup_expired_entries(struct cache_context* cache_ctx) {
                     if (cache_ctx->segments.slot_hit_count)
                         cache_ctx->segments.slot_hit_count[idx] = 0;
                 }
-
-                cache_segments_update_metrics(NULL, cache_ctx->metrics, &cache_ctx->segments);
 
                 if (cache_ctx->slot_owners_lock)
                     pthread_mutex_unlock(cache_ctx->slot_owners_lock);

@@ -11,7 +11,6 @@ SHINKU_BIN="${SHINKU_BIN:-$PROJECT_ROOT/build/shinku}"
 
 SOAK_DURATION_SEC="${SOAK_DURATION_SEC:-300}"
 SAMPLE_INTERVAL_SEC="${SAMPLE_INTERVAL_SEC:-30}"
-METRICS_PORT="${METRICS_PORT:-9095}"
 HOST_DNS_PORT="${HOST_DNS_PORT:-1053}"
 
 CONTAINER_NAME="shinku-soak-unbound"
@@ -28,11 +27,6 @@ SUCCESS_QUERIES=0
 TIMEOUT_QUERIES=0
 RCODE_NONZERO_QUERIES=0
 ANOMALY_COUNT=0
-PREV_HIT=-1
-PREV_MISS=-1
-PREV_REJECT=-1
-PREV_RING_DROP=-1
-PREV_DEGRADED_TRANSITIONS=-1
 ANOMALY_FILE=""
 SUMMARY_FILE=""
 
@@ -64,12 +58,6 @@ trap cleanup EXIT
 require_cmd() {
     local cmd="$1"
     command -v "$cmd" >/dev/null 2>&1 || { err "Missing command: $cmd"; exit 1; }
-}
-
-metric_from_blob() {
-    local blob="$1"
-    local metric="$2"
-    awk -v m="$metric" '$1==m {print $2; found=1} END{if(!found) print 0}' <<<"$blob"
 }
 
 record_anomaly() {
@@ -137,7 +125,6 @@ check_prereqs() {
     require_cmd python3
     require_cmd ip
     require_cmd iptables
-    require_cmd curl
 
     if [[ $EUID -ne 0 ]]; then
         err "Must run as root"
@@ -202,7 +189,23 @@ wait_unbound_ready() {
 }
 
 start_shinku() {
-    "$SHINKU_BIN" -i "$VETH_HOST" -m "$METRICS_PORT" -l info >"$RUN_DIR/shinku.log" 2>&1 &
+    local config_file="$RUN_DIR/shinku.toml"
+
+    {
+        echo 'backend = "ebpf"'
+        echo
+        echo '[ebpf]'
+        echo "iface = \"$VETH_HOST\""
+        echo 'arena_pages = 2112'
+        echo 'cleanup_interval = "10s"'
+        echo
+        echo '[cache]'
+        echo 'max_entries = 16384'
+        echo 'max_response_bytes = 512'
+        echo 'cache_negative = true'
+    } > "$config_file"
+
+    "$SHINKU_BIN" run --config "$config_file" >"$RUN_DIR/shinku.log" 2>&1 &
     SHINKU_PID=$!
 
     sleep 2
@@ -217,15 +220,11 @@ soak_loop() {
     local end_ts
     end_ts=$(( $(date +%s) + SOAK_DURATION_SEC ))
 
-    local metrics_file="$RUN_DIR/metrics.timeseries.prom"
-    local health_file="$RUN_DIR/health.timeseries.log"
+    local resource_file="$RUN_DIR/resource.timeseries.log"
     local traffic_file="$RUN_DIR/traffic.timeseries.log"
     ANOMALY_FILE="$RUN_DIR/anomalies.log"
     SUMMARY_FILE="$RUN_DIR/summary.txt"
 
-    echo "# run_id=$RUN_ID" > "$metrics_file"
-    echo "# sample_interval_sec=$SAMPLE_INTERVAL_SEC" >> "$metrics_file"
-    echo "# soak_duration_sec=$SOAK_DURATION_SEC" >> "$metrics_file"
     : > "$ANOMALY_FILE"
     : > "$SUMMARY_FILE"
 
@@ -238,65 +237,6 @@ soak_loop() {
         probe_query "$now" "$traffic_file" "cloudflare.com" "1003"
         probe_query "$now" "$traffic_file" "nonexistent-subdomain-$RANDOM.example.com" "1004"
 
-        local metrics_blob
-        metrics_blob=$(curl -fsS "http://127.0.0.1:${METRICS_PORT}/metrics" || true)
-        {
-            echo "# timestamp=$now"
-            if [[ -n "$metrics_blob" ]]; then
-                echo "$metrics_blob"
-            else
-                echo "# metrics_fetch_failed"
-            fi
-            echo
-        } >> "$metrics_file"
-
-        if [[ -z "$metrics_blob" ]]; then
-            record_anomaly "$now" "metrics_fetch_failed" "endpoint=127.0.0.1:${METRICS_PORT}/metrics"
-        else
-            local hit miss reject ring_drop degraded_mode degraded_transitions
-            hit=$(metric_from_blob "$metrics_blob" "shinku_cache_hit_total")
-            miss=$(metric_from_blob "$metrics_blob" "shinku_cache_miss_total")
-            reject=$(metric_from_blob "$metrics_blob" "shinku_parser_reject_total")
-            ring_drop=$(metric_from_blob "$metrics_blob" "shinku_tc_ringbuf_drop_total")
-            degraded_mode=$(metric_from_blob "$metrics_blob" "shinku_degraded_mode")
-            degraded_transitions=$(metric_from_blob "$metrics_blob" "shinku_degraded_transitions_total")
-
-            if [[ $PREV_HIT -ge 0 ]]; then
-                local d_hit d_miss d_reject d_ring d_degraded
-                d_hit=$((hit - PREV_HIT))
-                d_miss=$((miss - PREV_MISS))
-                d_reject=$((reject - PREV_REJECT))
-                d_ring=$((ring_drop - PREV_RING_DROP))
-                d_degraded=$((degraded_transitions - PREV_DEGRADED_TRANSITIONS))
-
-                if [[ $d_reject -gt 0 ]]; then
-                    record_anomaly "$now" "parser_reject_delta" "delta=$d_reject"
-                fi
-                if [[ $d_ring -gt 0 ]]; then
-                    record_anomaly "$now" "ringbuf_drop_delta" "delta=$d_ring"
-                fi
-                if [[ $degraded_mode -gt 0 || $d_degraded -gt 0 ]]; then
-                    record_anomaly "$now" "degraded_mode" "active=$degraded_mode transitions_delta=$d_degraded"
-                fi
-
-                local d_total
-                d_total=$((d_hit + d_miss))
-                if [[ $d_total -ge 8 ]]; then
-                    local miss_pct
-                    miss_pct=$(awk -v m="$d_miss" -v t="$d_total" 'BEGIN{if(t>0) printf "%.2f", (m*100.0)/t; else print "0.00"}')
-                    if awk "BEGIN{exit !($miss_pct > 95.0)}"; then
-                        record_anomaly "$now" "high_miss_ratio" "miss_pct=$miss_pct window_total=$d_total"
-                    fi
-                fi
-            fi
-
-            PREV_HIT=$hit
-            PREV_MISS=$miss
-            PREV_REJECT=$reject
-            PREV_RING_DROP=$ring_drop
-            PREV_DEGRADED_TRANSITIONS=$degraded_transitions
-        fi
-
         local shinku_cpu shinku_rss unbound_cpu unbound_mem
         shinku_cpu=$(ps -p "$SHINKU_PID" -o %cpu= 2>/dev/null | awk '{print $1+0}')
         shinku_rss=$(ps -p "$SHINKU_PID" -o rss= 2>/dev/null | awk '{print $1+0}')
@@ -304,7 +244,7 @@ soak_loop() {
         unbound_cpu=$(docker stats --no-stream --format '{{.CPUPerc}}' "$CONTAINER_NAME" 2>/dev/null | tr -d '%')
         unbound_mem=$(docker stats --no-stream --format '{{.MemUsage}}' "$CONTAINER_NAME" 2>/dev/null)
 
-        echo "$now shinku_cpu=${shinku_cpu:-0} shinku_rss_kb=${shinku_rss:-0} unbound_cpu=${unbound_cpu:-0} unbound_mem=${unbound_mem:-n/a}" >> "$health_file"
+        echo "$now shinku_cpu=${shinku_cpu:-0} shinku_rss_kb=${shinku_rss:-0} unbound_cpu=${unbound_cpu:-0} unbound_mem=${unbound_mem:-n/a}" >> "$resource_file"
         echo "$now traffic=sampled_mixed" >> "$traffic_file"
 
         if ! kill -0 "$SHINKU_PID" 2>/dev/null; then

@@ -21,10 +21,6 @@ struct env {
     enum log_level log_level;
     uint32_t arena_pages;
     uint32_t cleanup_interval_ms;
-    uint32_t metrics_port;
-    uint32_t obs_enabled;
-    uint32_t obs_bpf_enabled;
-    uint32_t obs_bpf_sample_mask;
     uint32_t admission_enabled;
     uint32_t pressure_mode;
     uint32_t admission_min_ttl;

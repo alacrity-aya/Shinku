@@ -12,8 +12,6 @@ project('shinku', 'c', 'cpp',
 
 # Build options
 bpf_log = get_option('bpf_log')
-obs = get_option('obs')
-obs_bpf = get_option('obs_bpf')
 build_benchmark_bin = get_option('build_benchmark_bin')
 ecs = get_option('ecs')
 
@@ -59,7 +57,7 @@ bpf_obj = custom_target(
   depends: vmlinux_h,
   command: [
     clang, '-g', '-O2', '-target', 'bpf',
-  ] + (bpf_log ? ['-DSHINKU_BPF_LOG_ENABLED=1'] : ['-DSHINKU_BPF_LOG_ENABLED=0']) + (obs_bpf ? ['-DSHINKU_OBS_BPF_ENABLED=1'] : ['-DSHINKU_OBS_BPF_ENABLED=0']) + (ecs ? ['-DSHINKU_ECS_ENABLED=1'] : ['-DSHINKU_ECS_ENABLED=0']) + [
+  ] + (bpf_log ? ['-DSHINKU_BPF_LOG_ENABLED=1'] : ['-DSHINKU_BPF_LOG_ENABLED=0']) + (ecs ? ['-DSHINKU_ECS_ENABLED=1'] : ['-DSHINKU_ECS_ENABLED=0']) + [
     '-I' + meson.current_build_dir(),
     '-I' + meson.current_source_dir() + '/src/include',
     '-I' + meson.current_source_dir() + '/src',
@@ -92,17 +90,13 @@ bpf_skel = custom_target(
 
 # Core Library
 core_src = files(
-  'src/runtime/events.c',
   'src/runtime/legacy_ebpf_runner.c',
-  'src/core/degraded_mode.c',
   'src/core/hash.c',
   'src/core/cache_sketch.c',
   'src/core/cache_recent.c',
   'src/core/cache_segments.c',
   'src/core/cache_ops.c',
   'src/core/dns_parser.c',
-  'src/core/obs_metrics.c',
-  'src/core/obs_http.c',
   'src/core/loader.c',
 
 )
@@ -127,7 +121,7 @@ executable(
   version_header,
   dependencies: [libbpf_dep, libcap_dep, tomlplusplus_dep, argparse_dep],
   include_directories: [inc_src, inc_runtime],
-  c_args: (bpf_log ? ['-DSHINKU_BPF_LOG_ENABLED=1'] : ['-DSHINKU_BPF_LOG_ENABLED=0']) + (obs ? ['-DSHINKU_OBS_ENABLED=1'] : ['-DSHINKU_OBS_ENABLED=0']) + (ecs ? ['-DSHINKU_ECS_ENABLED=1'] : ['-DSHINKU_ECS_ENABLED=0']),
+  c_args: (bpf_log ? ['-DSHINKU_BPF_LOG_ENABLED=1'] : ['-DSHINKU_BPF_LOG_ENABLED=0']) + (ecs ? ['-DSHINKU_ECS_ENABLED=1'] : ['-DSHINKU_ECS_ENABLED=0']),
   install: true
 )
 
@@ -143,7 +137,7 @@ if build_benchmark_bin
     c_args: [
       '-O3',
       '-DNDEBUG',
-    ] + (bpf_log ? ['-DSHINKU_BPF_LOG_ENABLED=1'] : ['-DSHINKU_BPF_LOG_ENABLED=0']) + (obs ? ['-DSHINKU_OBS_ENABLED=1'] : ['-DSHINKU_OBS_ENABLED=0']) + (ecs ? ['-DSHINKU_ECS_ENABLED=1'] : ['-DSHINKU_ECS_ENABLED=0']),
+    ] + (bpf_log ? ['-DSHINKU_BPF_LOG_ENABLED=1'] : ['-DSHINKU_BPF_LOG_ENABLED=0']) + (ecs ? ['-DSHINKU_ECS_ENABLED=1'] : ['-DSHINKU_ECS_ENABLED=0']),
     override_options: [
       'b_sanitize=none',
       'buildtype=release',

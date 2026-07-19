@@ -133,11 +133,6 @@ int cache_recent_was_inserted(
 void cache_recent_track_insert(struct cache_recent_tracker* recent, const struct cache_key* key, uint64_t now_ns);
 
 /* Hot/cold segment functions (cache_segments.c) */
-void cache_segments_update_metrics(
-    struct dns_parser_runtime* runtime,
-    struct obs_metrics* fallback_metrics,
-    const struct cache_segment_tracker* segments
-);
 uint8_t cache_segments_calc_slot_hot(const struct cache_segment_tracker* segments, int rehit, uint32_t cur_freq);
 void cache_segments_adjust_counts(
     struct cache_segment_tracker* segments,

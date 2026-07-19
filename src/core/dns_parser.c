@@ -20,10 +20,9 @@ static _Thread_local uint8_t dns_parser_flat_buf_tls[DNS_PARSER_FLAT_BUF_SIZE];
  * @brief Parsed information from a negative cache response.
  */
 struct negative_cache_info {
-    int valid;                   /**< Non-zero if this is a valid negative response */
-    enum obs_negative_type type; /**< NXDOMAIN or NODATA */
-    uint8_t flags;               /**< Cache entry flags */
-    uint32_t ttl;                /**< TTL from SOA minimum field (clamped) */
+    int valid;     /**< Non-zero if this is a valid negative response */
+    uint8_t flags; /**< Cache entry flags */
+    uint32_t ttl;  /**< TTL from SOA minimum field (clamped) */
 };
 
 /** @brief Clamp TTL to valid negative cache range (5-600 seconds per RFC 2308) */
@@ -177,41 +176,6 @@ struct ecs_parse_result {
     uint32_t addr_v4;
 };
 
-static inline struct obs_metrics* parser_runtime_metrics(const struct dns_parser_runtime* runtime) {
-    return runtime && runtime->obs ? runtime->obs->metrics : NULL;
-}
-
-static inline void parser_count_reject(struct obs_metrics* metrics, enum obs_parser_reject_reason reason) {
-    if (!metrics)
-        return;
-    obs_metrics_count_parser_reject(metrics, reason);
-}
-
-enum parser_negative_reject_kind {
-    PARSER_NEGATIVE_REJECT_NO_SOA = 0,
-    PARSER_NEGATIVE_REJECT_BAD_POLICY = 1,
-};
-
-static inline void parser_count_negative_reject(
-    struct obs_metrics* metrics,
-    enum parser_negative_reject_kind kind,
-    enum obs_negative_type type
-) {
-    if (!metrics)
-        return;
-
-    switch (kind) {
-        case PARSER_NEGATIVE_REJECT_NO_SOA:
-            obs_metrics_count_parser_reject(metrics, OBS_REJECT_NEGATIVE_NO_SOA);
-            break;
-        case PARSER_NEGATIVE_REJECT_BAD_POLICY:
-            obs_metrics_count_parser_reject(metrics, OBS_REJECT_NEGATIVE_BAD_POLICY);
-            break;
-    }
-
-    obs_metrics_count_negative_reject(metrics, type);
-}
-
 #if SHINKU_ECS_ENABLED
 static int parse_ecs_option_ipv4(const uint8_t* pkt, int offset, int max_len, int rdlen, struct ecs_parse_result* out) {
     if (!out)
@@ -302,7 +266,6 @@ static int read_soa_negative_ttl(const uint8_t* pkt_data, int rdata_off, int pkt
 }
 
 static struct negative_cache_info parse_negative_cache_info(
-    struct dns_parser_runtime* runtime,
     const uint8_t* pkt_data,
     uint32_t pkt_len,
     uint16_t flags,
@@ -311,7 +274,6 @@ static struct negative_cache_info parse_negative_cache_info(
     uint16_t nscount
 ) {
     struct negative_cache_info info = { 0 };
-    struct obs_metrics* const metrics = parser_runtime_metrics(runtime);
 
     uint16_t rcode = (uint16_t)(flags & DNS_RCODE_MASK);
     int is_nxdomain = (rcode == DNS_RCODE_NXDOMAIN);
@@ -376,28 +338,15 @@ static struct negative_cache_info parse_negative_cache_info(
         read_offset += rdlen;
     }
 
-    if (!found_soa) {
-        parser_count_negative_reject(
-            metrics,
-            PARSER_NEGATIVE_REJECT_NO_SOA,
-            is_nxdomain ? OBS_NEGATIVE_NXDOMAIN : OBS_NEGATIVE_NODATA
-        );
+    if (!found_soa)
         return info;
-    }
 
     uint32_t ttl = clamp_negative_ttl(best_soa_ttl);
-    if (ttl == 0 || ttl == UINT32_MAX) {
-        parser_count_negative_reject(
-            metrics,
-            PARSER_NEGATIVE_REJECT_BAD_POLICY,
-            is_nxdomain ? OBS_NEGATIVE_NXDOMAIN : OBS_NEGATIVE_NODATA
-        );
+    if (ttl == 0 || ttl == UINT32_MAX)
         return info;
-    }
 
     info.valid = 1;
     info.ttl = ttl;
-    info.type = is_nxdomain ? OBS_NEGATIVE_NXDOMAIN : OBS_NEGATIVE_NODATA;
     info.flags = CACHE_VALUE_FLAG_NEGATIVE;
     if (is_nxdomain)
         info.flags |= CACHE_VALUE_FLAG_NXDOMAIN;
@@ -412,13 +361,11 @@ int dns_parser_handle_event(void* ctx, void* data, [[maybe_unused]] size_t len) 
     struct dns_parser_context* parser_ctx = ctx;
     struct cache_context* cache_ctx = parser_ctx ? parser_ctx->cache : NULL;
     struct dns_parser_runtime* runtime = parser_ctx ? parser_ctx->runtime : NULL;
-    struct obs_metrics* const metrics = parser_runtime_metrics(runtime);
     struct dns_event* e = data;
     uint32_t pkt_len = e->len;
     uint8_t* pkt_data = e->payload;
 
     if (pkt_len < sizeof(struct dns_hdr)) {
-        parser_count_reject(metrics, OBS_REJECT_MALFORMED_RR);
         return 0;
     }
 
@@ -429,23 +376,19 @@ int dns_parser_handle_event(void* ctx, void* data, [[maybe_unused]] size_t len) 
     uint16_t flags = ntohs(dns->flags);
 
     struct negative_cache_info neg_info =
-        parse_negative_cache_info(runtime, pkt_data, pkt_len, flags, qdcount, ancount, nscount);
+        parse_negative_cache_info(pkt_data, pkt_len, flags, qdcount, ancount, nscount);
 
     uint8_t is_response = (flags >> 15) & 0x1;
     if (!is_response) {
-        parser_count_reject(metrics, OBS_REJECT_NOT_RESPONSE);
         return 0;
     }
     if (qdcount != 1) {
-        parser_count_reject(metrics, OBS_REJECT_BAD_QDCOUNT);
         return 0;
     }
     if ((flags & DNS_RCODE_MASK) != 0 && !neg_info.valid) {
-        parser_count_reject(metrics, OBS_REJECT_RCODE);
         return 0;
     }
     if (ancount == 0 && !neg_info.valid) {
-        parser_count_reject(metrics, OBS_REJECT_NO_ANSWER);
         return 0;
     }
 
@@ -454,25 +397,21 @@ int dns_parser_handle_event(void* ctx, void* data, [[maybe_unused]] size_t len) 
     int qname_len_packet = calculate_hash_strict(pkt_data, read_offset, pkt_len, &name_hash);
 
     if (qname_len_packet < 0) {
-        parser_count_reject(metrics, OBS_REJECT_MALFORMED_NAME);
         return 0;
     }
 
     int q_end = read_offset + qname_len_packet;
     if ((uint32_t)q_end + 4 > pkt_len) {
-        parser_count_reject(metrics, OBS_REJECT_MALFORMED_QUESTION);
         return 0;
     }
     uint16_t qtype = read_u16(pkt_data + q_end);
     uint16_t qclass = read_u16(pkt_data + q_end + 2);
 
     if (qtype == DNS_TYPE_AAAA) {
-        parser_count_reject(metrics, OBS_REJECT_IPV6_IGNORED);
         return 0;
     }
 
     if (flags & DNS_FLAG_TC) {
-        parser_count_reject(metrics, OBS_REJECT_TC);
         struct cache_key tc_key = { CACHE_KEY_CORE_AND_ECS_INIT_DESIG(name_hash, qtype, qclass, 0, 0, 0) };
 
         dns_cache_store_raw_response(
@@ -512,7 +451,6 @@ int dns_parser_handle_event(void* ctx, void* data, [[maybe_unused]] size_t len) 
     uint32_t min_ttl = neg_info.valid ? neg_info.ttl : UINT32_MAX;
     int has_terminal_rr = 0;
     int has_cname_rr = 0;
-    int has_ipv6_rr = 0;
 
     for (int i = 0; i < ancount; i++) {
         int name_skip = 0;
@@ -526,14 +464,12 @@ int dns_parser_handle_event(void* ctx, void* data, [[maybe_unused]] size_t len) 
             &name_skip
         );
         if (w_len < 0) {
-            parser_count_reject(metrics, OBS_REJECT_MALFORMED_NAME);
             return 0;
         }
         read_offset += name_skip;
         flat_offset += w_len;
 
         if (read_offset + 10 > pkt_len) {
-            parser_count_reject(metrics, OBS_REJECT_MALFORMED_RR);
             return 0;
         }
 
@@ -545,7 +481,6 @@ int dns_parser_handle_event(void* ctx, void* data, [[maybe_unused]] size_t len) 
             min_ttl = ttl;
 
         if (flat_offset + 10 > flat_capacity) {
-            parser_count_reject(metrics, OBS_REJECT_MALFORMED_RR);
             return 0;
         }
         memcpy(flat_buf + flat_offset, pkt_data + read_offset, 10);
@@ -553,17 +488,13 @@ int dns_parser_handle_event(void* ctx, void* data, [[maybe_unused]] size_t len) 
         read_offset += 10;
 
         if (read_offset + rdlen > pkt_len) {
-            parser_count_reject(metrics, OBS_REJECT_MALFORMED_RR);
             return 0;
         }
 
         if (rtype == DNS_TYPE_A || rtype == DNS_TYPE_AAAA) {
             if (rtype == DNS_TYPE_A)
                 has_terminal_rr = 1;
-            if (rtype == DNS_TYPE_AAAA)
-                has_ipv6_rr = 1;
             if (flat_offset + rdlen > flat_capacity) {
-                parser_count_reject(metrics, OBS_REJECT_MALFORMED_RR);
                 return 0;
             }
             memcpy(flat_buf + flat_offset, pkt_data + read_offset, rdlen);
@@ -572,36 +503,23 @@ int dns_parser_handle_event(void* ctx, void* data, [[maybe_unused]] size_t len) 
             has_cname_rr = 1;
             int cname_len = flatten_name(pkt_data, read_offset, pkt_len, NULL, 0);
             if (cname_len < 0) {
-                parser_count_reject(metrics, OBS_REJECT_MALFORMED_NAME);
                 return 0;
             }
             if ((uint16_t)cname_len != rdlen) {
-                parser_count_reject(metrics, OBS_REJECT_MALFORMED_NAME);
                 return 0;
             }
             if (flat_offset + rdlen > flat_capacity) {
-                parser_count_reject(metrics, OBS_REJECT_MALFORMED_RR);
                 return 0;
             }
             memcpy(flat_buf + flat_offset, pkt_data + read_offset, rdlen);
             flat_offset += rdlen;
         } else {
-            parser_count_reject(metrics, OBS_REJECT_UNSUPPORTED_RTYPE);
             return 0;
         }
         read_offset += rdlen;
     }
 
     if (!neg_info.valid && qtype == DNS_TYPE_A && !has_terminal_rr) {
-        enum obs_parser_reject_reason reason = OBS_REJECT_UNSUPPORTED_RTYPE;
-        if (has_cname_rr && has_ipv6_rr)
-            reason = OBS_REJECT_CNAME_IPV6_ONLY_TERMINAL;
-        else if (has_cname_rr)
-            reason = OBS_REJECT_CNAME_NO_TERMINAL_A;
-        else if (has_ipv6_rr)
-            reason = OBS_REJECT_IPV6_IGNORED;
-
-        parser_count_reject(metrics, reason);
         return 0;
     }
 
@@ -609,12 +527,10 @@ int dns_parser_handle_event(void* ctx, void* data, [[maybe_unused]] size_t len) 
     for (int i = 0; i < nscount; i++) {
         int name_skip = skip_name(pkt_data, read_offset, pkt_len);
         if (name_skip < 0) {
-            parser_count_reject(metrics, OBS_REJECT_MALFORMED_NAME);
             return 0;
         }
         read_offset += name_skip;
         if (read_offset + 10 > pkt_len) {
-            parser_count_reject(metrics, OBS_REJECT_MALFORMED_RR);
             return 0;
         }
         uint16_t rdlen = read_u16(pkt_data + read_offset + 8);
@@ -628,12 +544,10 @@ int dns_parser_handle_event(void* ctx, void* data, [[maybe_unused]] size_t len) 
     for (int i = 0; i < arcount; i++) {
         int name_skip = skip_name(pkt_data, read_offset, pkt_len);
         if (name_skip < 0) {
-            parser_count_reject(metrics, OBS_REJECT_MALFORMED_NAME);
             return 0;
         }
         read_offset += name_skip;
         if (read_offset + 10 > pkt_len) {
-            parser_count_reject(metrics, OBS_REJECT_MALFORMED_RR);
             return 0;
         }
 
@@ -644,7 +558,6 @@ int dns_parser_handle_event(void* ctx, void* data, [[maybe_unused]] size_t len) 
         if (rtype == DNS_TYPE_OPT) {
             int ecs_parse = parse_ecs_option_ipv4(pkt_data, read_offset, pkt_len, rdlen, &ecs);
             if (ecs_parse < 0) {
-                parser_count_reject(metrics, OBS_REJECT_BAD_ECS);
                 return 0;
             }
 
@@ -653,14 +566,12 @@ int dns_parser_handle_event(void* ctx, void* data, [[maybe_unused]] size_t len) 
         }
 
         if (read_offset + rdlen > pkt_len) {
-            parser_count_reject(metrics, OBS_REJECT_MALFORMED_RR);
             return 0;
         }
         read_offset += rdlen;
     }
 
     if (min_ttl == 0 || min_ttl == UINT32_MAX) {
-        parser_count_reject(metrics, OBS_REJECT_BAD_TTL);
         return 0;
     }
 
@@ -674,7 +585,6 @@ int dns_parser_handle_event(void* ctx, void* data, [[maybe_unused]] size_t len) 
     ) };
 
     if (neg_info.valid) {
-        obs_metrics_count_negative_accept(metrics, neg_info.type);
         dns_cache_store_response_with_flags(
             cache_ctx,
             runtime,

@@ -33,11 +33,9 @@ To be "industrial-grade," Shinku must close six categories of gaps:
    - Count-Min sketch + hot/cold segmentation.
    - Code split: `cache_sketch.c`, `cache_recent.c`, `cache_segments.c`.
 
-5. **Observability + degraded-mode baseline**
-   - `/metrics`, `/healthz`, `/readyz` exported.
-   - Degraded reason/state machine + counters/gauges implemented.
-   - Truncation ratio and fallback efficacy metrics exposed (P0.5 closeout).
-   - Grafana dashboard panels and Prometheus alert rules for P0.5 metrics.
+5. **Observability + degraded-mode baseline (removed during C++/DPDK refactor)**
+   - The previous `/metrics`, `/healthz`, `/readyz`, degraded state machine, BPF counters, Grafana dashboards, and Prometheus alert rules have been deleted.
+   - Replacement observability must be redesigned after backend boundaries stabilize.
 
 6. **Transport fallback baseline**
    - `TC=1` UDP responses are cacheable fallback hints with integration coverage.
@@ -49,7 +47,7 @@ To be "industrial-grade," Shinku must close six categories of gaps:
 
 From a real production DNS perspective, the highest remaining "unreasonable" points are:
 
-1. ~~**No explicit truncation/TCP fallback strategy**~~ — **RESOLVED**: TC=1 cache fallback baseline + metrics + behavior docs complete.
+1. ~~**No explicit truncation/TCP fallback strategy**~~ — **RESOLVED**: TC=1 cache fallback baseline and behavior docs exist; observability metrics were removed during refactor.
 2. **EDNS behavior is not fully operationalized**
    - ECS baseline exists, but end-to-end policy for EDNS fallback/normalization (including malformed or unsupported EDNS behaviors) is not fully specified.
 3. **Capacity governance is too coarse under churn**
@@ -90,11 +88,11 @@ Shinku is optimized for **co-located sidecar caching** in front of a local upstr
 
 ## P0 (Must-have before production rollout)
 
-### P0.1 Observability baseline ✅
-Already implemented. Keep extending only when new features require additional metrics.
+### P0.1 Observability baseline ⏸️ Removed during refactor
+The previous observability surface was deleted to unblock the C++/DPDK refactor. Reintroduce a smaller backend-aware design only after backend interfaces stabilize.
 
-### P0.2 Failure-mode policy and graceful degradation ✅
-Already implemented baseline with retry/backoff + degraded reasons.
+### P0.2 Failure-mode policy and graceful degradation ⏸️ Needs redesign
+Retry/backoff behavior remains, but the previous degraded reason/state surface was removed during refactor.
 
 ### P0.3 IPv6 support ⏸️ Deferred
 No change.
@@ -111,11 +109,9 @@ No change.
 ### P0.5 Truncation/TCP operational completion ✅
 **Current:**
 - TC=1 cache fallback baseline exists.
-- Truncation and fallback efficacy observability metrics are exposed.
 - Deterministic UDP TC=1 behavior and client TCP-retry expectation are documented.
-- Grafana dashboard panels and Prometheus alert rules added for truncation ratio and fallback efficacy.
 
-**Status:** P0.5 closeout complete.
+**Status:** Behavior baseline complete. Observability closeout was removed during refactor and must be redesigned later.
 
 ### P0.6 (Removed from P0): upstream pool failover/failback
 Reason: not aligned with co-located sidecar model where upstream resolver is local and managed as node-local dependency.
@@ -183,7 +179,7 @@ ECS support is out of current roadmap scope. Planning and validation are done un
 - No ambiguous handling of truncated responses.
 - Repeated UDP queries for the same large name avoid repeated upstream UDP pressure.
 
-**Status:** Complete — cached `TC=1` UDP fallback behavior + integration coverage + truncation/fallback metrics + dashboard panels + alert rules.
+**Status:** Complete — cached `TC=1` UDP fallback behavior and integration coverage. Truncation/fallback metrics and dashboards were removed during refactor.
 
 ---
 

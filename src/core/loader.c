@@ -9,7 +9,6 @@
  *   - Loading and attaching XDP/TC programs with retry logic
  *   - Ring buffer initialization and polling
  *   - Cleanup thread management
- *   - BPF metrics synchronization
  */
 #include "loader.h"
 
@@ -54,46 +53,6 @@ static uint32_t floor_power_of_two(uint32_t value) {
  */
 static int is_tcx_not_supported_err(int err) {
     return err == -EOPNOTSUPP || err == -EINVAL || err == -ENOTSUP || err == -ENOSYS;
-}
-
-/**
- * @brief Synchronize BPF-side metrics to userspace counters.
- * @param ctx BPF context containing metrics and skeleton.
- *
- * Reads per-CPU BPF counters and aggregates them into userspace metrics.
- * Called periodically to update Prometheus-exported values.
- */
-static void sync_bpf_metrics(struct bpf_ctx* ctx) {
-#if SHINKU_OBS_ENABLED
-    if (!ctx || !ctx->metrics.cfg.enabled || !ctx->metrics.cfg.bpf_enabled)
-        return;
-
-    if (!ctx->skel || !ctx->obs_percpu_vals || ctx->obs_ncpu <= 0) {
-        return;
-    }
-
-    int map_fd = bpf_map__fd(ctx->skel->maps.obs_bpf_metrics);
-    if (map_fd < 0) {
-        obs_metrics_mark_degraded(&ctx->metrics, OBS_DEGRADED_BPF_METRICS_SYNC_FAIL);
-        return;
-    }
-
-    for (uint32_t key = 0; key < OBS_BPF_METRIC_MAX; key++) {
-        if (bpf_map_lookup_elem(map_fd, &key, ctx->obs_percpu_vals) != 0) {
-            obs_metrics_mark_degraded(&ctx->metrics, OBS_DEGRADED_BPF_METRICS_SYNC_FAIL);
-            continue;
-        }
-
-        uint64_t total = 0;
-        for (int cpu = 0; cpu < ctx->obs_ncpu; cpu++) {
-            total += ctx->obs_percpu_vals[cpu];
-        }
-
-        atomic_store_explicit(&ctx->metrics.bpf_counters[key].value, total, memory_order_relaxed);
-    }
-#else
-    (void)ctx;
-#endif
 }
 
 /**
@@ -216,42 +175,6 @@ int loader_setup_bpf(struct bpf_ctx* ctx, const struct env* env) {
         goto cleanup;
     }
 
-#if SHINKU_OBS_ENABLED
-    struct obs_metrics_config obs_cfg = {
-        .enabled = env->obs_enabled ? 1 : 0,
-        .bpf_enabled = (env->obs_enabled && env->obs_bpf_enabled) ? 1 : 0,
-        .bpf_sample_mask = env->obs_bpf_sample_mask,
-    };
-#else
-    struct obs_metrics_config obs_cfg = {
-        .enabled = 0,
-        .bpf_enabled = 0,
-        .bpf_sample_mask = 0,
-    };
-#endif
-    shinku_events_init(&ctx->events);
-    obs_metrics_init(&ctx->metrics, &obs_cfg);
-    shinku_events_subscribe(
-        &ctx->events,
-        SHINKU_EVENT_DEGRADED_REASON_SET,
-        obs_metrics_handle_degraded_event,
-        &ctx->metrics
-    );
-    shinku_events_subscribe(
-        &ctx->events,
-        SHINKU_EVENT_DEGRADED_REASON_CLEAR,
-        obs_metrics_handle_degraded_event,
-        &ctx->metrics
-    );
-    degraded_state_init(&ctx->degraded);
-    degraded_bind_event_bus(&ctx->degraded, &ctx->events);
-    ctx->obs_ctx.metrics = &ctx->metrics;
-    atomic_store_explicit(&ctx->bpf_ready, false, memory_order_relaxed);
-    ctx->obs_ncpu = 0;
-    ctx->obs_percpu_vals = NULL;
-    ctx->pkt_poll_err_streak = 0;
-    ctx->rb_backlog_streak = 0;
-
     libbpf_set_print(libbpf_print_fn);
 
     /* Open skeleton (don't load yet — need to configure arena size) */
@@ -269,9 +192,6 @@ int loader_setup_bpf(struct bpf_ctx* ctx, const struct env* env) {
         goto cleanup;
     }
 
-    ctx->skel->rodata->obs_bpf_enabled = obs_cfg.bpf_enabled;
-    ctx->skel->rodata->obs_bpf_sample_mask = obs_cfg.bpf_sample_mask;
-
     bpf_program__set_autoattach(ctx->skel->progs.tc_tx, false);
 
     /* Load BPF programs and create maps */
@@ -280,26 +200,6 @@ int loader_setup_bpf(struct bpf_ctx* ctx, const struct env* env) {
         fprintf(stderr, "Failed to load BPF skeleton: %d\n", err);
         err = ERR_SKEL_LOAD;
         goto cleanup;
-    }
-
-    if (ctx->metrics.cfg.bpf_enabled) {
-        ctx->obs_ncpu = libbpf_num_possible_cpus();
-        if (ctx->obs_ncpu <= 0) {
-            fprintf(stderr, "Failed to get possible CPU count for observability metrics\n");
-            obs_metrics_mark_degraded(&ctx->metrics, OBS_DEGRADED_BPF_METRICS_SYNC_FAIL);
-            ctx->metrics.cfg.bpf_enabled = 0;
-            ctx->obs_ncpu = 0;
-        }
-
-        if (ctx->obs_ncpu > 0) {
-            ctx->obs_percpu_vals = calloc((size_t)ctx->obs_ncpu, sizeof(uint64_t));
-            if (!ctx->obs_percpu_vals) {
-                fprintf(stderr, "Failed to allocate percpu buffer for observability metrics\n");
-                obs_metrics_mark_degraded(&ctx->metrics, OBS_DEGRADED_BPF_METRICS_SYNC_FAIL);
-                ctx->metrics.cfg.bpf_enabled = 0;
-                ctx->obs_ncpu = 0;
-            }
-        }
     }
 
     /* Wire up cache context — skeleton auto-mmap's arena via __arena globals */
@@ -316,8 +216,6 @@ int loader_setup_bpf(struct bpf_ctx* ctx, const struct env* env) {
     ctx->cache_context.sketch.width = env->freq_width;
     ctx->cache_context.sketch.epoch_ops = env->freq_epoch_ops;
     ctx->cache_context.sketch.ops = 0;
-    ctx->cache_context.metrics = &ctx->metrics;
-
     uint32_t normalized_freq_width = floor_power_of_two(ctx->cache_context.sketch.width);
     if (normalized_freq_width == 0)
         normalized_freq_width = 1;
@@ -330,14 +228,11 @@ int loader_setup_bpf(struct bpf_ctx* ctx, const struct env* env) {
         );
         ctx->cache_context.sketch.width = normalized_freq_width;
     }
-    ctx->parser_runtime.obs = &ctx->obs_ctx;
-    ctx->parser_runtime.degraded = &ctx->degraded;
     ctx->parser_context.cache = &ctx->cache_context;
     ctx->parser_context.runtime = &ctx->parser_runtime;
     ctx->cache_context.slot_owners = calloc(CACHE_MAP_MAX_ENTRIES, sizeof(struct cache_key));
     if (!ctx->cache_context.slot_owners) {
-        fprintf(stderr, "Failed to allocate slot_owners array, continuing in degraded mode\n");
-        obs_metrics_mark_degraded(&ctx->metrics, OBS_DEGRADED_CACHE_MAP_UPDATE_FAIL);
+        fprintf(stderr, "Failed to allocate slot_owners array\n");
     }
 
     ctx->cache_context.recent.capacity = CACHE_MAP_MAX_ENTRIES;
@@ -380,7 +275,6 @@ int loader_setup_bpf(struct bpf_ctx* ctx, const struct env* env) {
         ctx->cache_context.sketch.ops = 0;
         ctx->cache_context.admission.enabled = 0;
         ctx->cache_context.admission.pressure_mode = 0;
-        obs_metrics_mark_degraded(&ctx->metrics, OBS_DEGRADED_CACHE_MAP_UPDATE_FAIL);
     }
 
     err = cache_bpf__attach(ctx->skel);
@@ -422,7 +316,6 @@ int loader_setup_bpf(struct bpf_ctx* ctx, const struct env* env) {
         err = -errno;
 
         ctx->skel->links.xdp_rx = NULL;
-        degraded_set_reason(&ctx->degraded, DEGRADED_REASON_STARTUP_ATTACH_RETRY);
         int backoff_ms = ATTACH_RETRY_BASE_MS << attempt;
         if (backoff_ms > ATTACH_RETRY_MAX_MS) {
             backoff_ms = ATTACH_RETRY_MAX_MS;
@@ -440,7 +333,6 @@ int loader_setup_bpf(struct bpf_ctx* ctx, const struct env* env) {
     }
 
     if (!attached) {
-        obs_metrics_mark_degraded(&ctx->metrics, OBS_DEGRADED_STARTUP_ATTACH_FAILED);
         err = ERR_XDP_ATTACH;
         goto cleanup;
     }
@@ -456,7 +348,6 @@ int loader_setup_bpf(struct bpf_ctx* ctx, const struct env* env) {
 
         if (is_tcx_not_supported_err(err)) {
             fprintf(stderr, "TCX not supported on %s, falling back to TC\n", env->interface);
-            obs_metrics_mark_degraded(&ctx->metrics, OBS_DEGRADED_TCX_ATTACH_FAILED);
             ctx->skel->links.tc_tx = NULL;
             err = attach_tc_legacy(ctx, ifindex);
             if (!err) {
@@ -467,7 +358,6 @@ int loader_setup_bpf(struct bpf_ctx* ctx, const struct env* env) {
         }
 
         ctx->skel->links.tc_tx = NULL;
-        degraded_set_reason(&ctx->degraded, DEGRADED_REASON_STARTUP_ATTACH_RETRY);
         int backoff_ms = ATTACH_RETRY_BASE_MS << attempt;
         if (backoff_ms > ATTACH_RETRY_MAX_MS) {
             backoff_ms = ATTACH_RETRY_MAX_MS;
@@ -485,16 +375,8 @@ int loader_setup_bpf(struct bpf_ctx* ctx, const struct env* env) {
     }
 
     if (!attached) {
-        obs_metrics_mark_degraded(&ctx->metrics, OBS_DEGRADED_STARTUP_ATTACH_FAILED);
         err = ERR_TC_ATTACH;
         goto cleanup;
-    }
-
-    if (degraded_is_active(&ctx->degraded)
-        && (degraded_get_reason_flags(&ctx->degraded) & DEGRADED_REASON_STARTUP_ATTACH_RETRY) != 0)
-    {
-        fprintf(stderr, "Startup attach recovered after retries; degraded reason cleared\n");
-        degraded_clear_reason(&ctx->degraded, DEGRADED_REASON_STARTUP_ATTACH_RETRY);
     }
 
     ctx->rb_pkt =
@@ -504,16 +386,6 @@ int loader_setup_bpf(struct bpf_ctx* ctx, const struct env* env) {
         err = ERR_RB_CREATE;
         goto cleanup;
     }
-
-    if (ctx->metrics.cfg.enabled) {
-        err = obs_http_start(&ctx->obs_http, env->metrics_port, &ctx->metrics, &ctx->degraded, &ctx->bpf_ready);
-        if (err)
-            fprintf(stderr, "Failed to start observability HTTP server on 127.0.0.1:%u\n", env->metrics_port);
-        if (err)
-            obs_metrics_mark_degraded(&ctx->metrics, OBS_DEGRADED_OBS_HTTP_DOWN);
-    }
-
-    atomic_store_explicit(&ctx->bpf_ready, true, memory_order_release);
 
     printf("Successfully attached to interface: %s (ifindex: %d)\n", env->interface, ifindex);
 
@@ -526,26 +398,6 @@ cleanup:
 
 int loader_poll_pkt_ring(struct bpf_ctx* ctx, int timeout_ms) {
     int ret = ring_buffer__poll(ctx->rb_pkt, timeout_ms);
-    if (ret < 0) {
-        ctx->pkt_poll_err_streak++;
-        obs_metrics_count_rb_poll_error(&ctx->metrics);
-        degraded_note_poll_load(&ctx->degraded, 0);
-        ctx->rb_backlog_streak = 0;
-        if (ctx->pkt_poll_err_streak >= 3)
-            obs_metrics_mark_degraded(&ctx->metrics, OBS_DEGRADED_PKT_POLL_ERRORS);
-    } else {
-        ctx->pkt_poll_err_streak = 0;
-        degraded_note_poll_load(&ctx->degraded, ret);
-        if (ret >= SHINKU_LAG_POLL_HIGH_WATERMARK) {
-            ctx->rb_backlog_streak++;
-            if (ctx->rb_backlog_streak >= SHINKU_LAG_STREAK_THRESHOLD)
-                obs_metrics_mark_degraded(&ctx->metrics, OBS_DEGRADED_RING_BACKLOG);
-        } else {
-            ctx->rb_backlog_streak = 0;
-        }
-    }
-
-    sync_bpf_metrics(ctx);
     return ret;
 }
 
@@ -558,8 +410,6 @@ int loader_dump_bpf_log([[maybe_unused]] struct bpf_ctx* ctx, [[maybe_unused]] i
 }
 
 void loader_cleanup_bpf(struct bpf_ctx* ctx) {
-    atomic_store_explicit(&ctx->bpf_ready, false, memory_order_release);
-    obs_http_stop(&ctx->obs_http);
     loader_stop_cleanup_thread(ctx);
 
     if (ctx->rb_log) {
@@ -593,10 +443,6 @@ void loader_cleanup_bpf(struct bpf_ctx* ctx) {
         ctx->cache_context.sketch.rows[i] = NULL;
     }
 
-    free(ctx->obs_percpu_vals);
-    ctx->obs_percpu_vals = NULL;
-    ctx->obs_ncpu = 0;
-
     if (ctx->skel) {
         cache_bpf__destroy(ctx->skel);
         ctx->skel = NULL;
@@ -612,8 +458,6 @@ void loader_cleanup_bpf(struct bpf_ctx* ctx) {
         pthread_mutex_destroy(&ctx->cleanup_wait_lock);
         ctx->cleanup_wait_sync_initialized = false;
     }
-
-    shinku_events_destroy(&ctx->events);
 }
 
 /* ============================================================================
@@ -666,13 +510,7 @@ static void* cleanup_thread_func(void* arg) {
         }
 
         int removed = dns_parser_cleanup_expired_entries(&ctx->cache_context);
-        if (removed > 0) {
-            obs_metrics_add_cleanup_removed(&ctx->metrics, (uint64_t)removed);
-        }
-        degraded_note_cleanup_result(&ctx->degraded, removed);
-        if (removed < 0) {
-            obs_metrics_mark_degraded(&ctx->metrics, OBS_DEGRADED_CLEANUP_THREAD_DOWN);
-        }
+        (void)removed;
     }
 
     return NULL;

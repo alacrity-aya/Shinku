@@ -10,20 +10,17 @@
  * those modules.
  */
 
-#include "degraded_mode.h"
-#include "obs_metrics.h"
+#include <stdint.h>
 
 struct cache_context;
 
 /**
  * @brief Runtime context for DNS parser.
  *
- * Contains observability and degraded state references needed
- * during packet processing. Passed to cache operations.
+ * Reserved for runtime dependencies needed during packet processing.
  */
 struct dns_parser_runtime {
-    struct obs_context* obs; /**< Observability context (metrics, HTTP) */
-    struct degraded_state* degraded; /**< Degraded mode state machine */
+    uint8_t reserved;
 };
 
 /**
@@ -33,6 +30,6 @@ struct dns_parser_runtime {
  * event processing callbacks.
  */
 struct dns_parser_context {
-    struct cache_context* cache; /**< Cache instance for storage */
+    struct cache_context* cache;        /**< Cache instance for storage */
     struct dns_parser_runtime* runtime; /**< Runtime context */
 };

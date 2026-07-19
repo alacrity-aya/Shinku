@@ -7,15 +7,12 @@ dns_hash_test_exe = executable(
     'dns_hash_verify',
     'hash/dns_hash_test.c',
     files(
-      '../../src/runtime/events.c',
-      '../../src/core/degraded_mode.c',
       '../../src/core/hash.c',
       '../../src/core/cache_sketch.c',
       '../../src/core/cache_recent.c',
       '../../src/core/cache_segments.c',
       '../../src/core/cache_ops.c',
       '../../src/core/dns_parser.c',
-      '../../src/core/obs_metrics.c',
 
     ),
     native: true,
@@ -33,15 +30,12 @@ dns_parser_test_exe = executable(
     'dns_parser_test',
     'parser/dns_parser_test.c',
     files(
-      '../../src/runtime/events.c',
-      '../../src/core/degraded_mode.c',
       '../../src/core/hash.c',
       '../../src/core/cache_sketch.c',
       '../../src/core/cache_recent.c',
       '../../src/core/cache_segments.c',
       '../../src/core/cache_ops.c',
       '../../src/core/dns_parser.c',
-      '../../src/core/obs_metrics.c',
     ),
     native: true,
     dependencies: [libbpf_dep],
@@ -58,15 +52,12 @@ cache_store_test_exe = executable(
     'cache_store_test',
     'cache/cache_store_test.c',
     files(
-      '../../src/runtime/events.c',
-      '../../src/core/degraded_mode.c',
       '../../src/core/hash.c',
       '../../src/core/cache_sketch.c',
       '../../src/core/cache_recent.c',
       '../../src/core/cache_segments.c',
       '../../src/core/cache_ops.c',
       '../../src/core/dns_parser.c',
-      '../../src/core/obs_metrics.c',
     ),
     native: true,
     dependencies: [libbpf_dep, dependency('threads')],
@@ -235,72 +226,18 @@ process_control_test_exe = executable(
 test('Process Control Test', process_control_test_exe)
 
 # ====================
-# Observability HTTP Test
-# ====================
-obs_http_test_exe = executable(
-    'obs_http_test',
-    'obs/obs_http_test.c',
-    files(
-      '../../src/runtime/events.c',
-      '../../src/core/degraded_mode.c',
-      '../../src/core/obs_http.c',
-      '../../src/core/obs_metrics.c',
-    ),
-    native: true,
-    dependencies: dependency('threads'),
-    include_directories: [inc_src, include_directories('../../src/runtime')],
-)
-
-test('Observability HTTP Test', obs_http_test_exe)
-
-# ====================
-# Degraded Mode Test
-# ====================
-degraded_mode_test_exe = executable(
-    'degraded_mode_test',
-    'degraded/degraded_mode_test.c',
-    files(
-      '../../src/runtime/events.c',
-      '../../src/core/degraded_mode.c',
-    ),
-    native: true,
-    include_directories: [inc_src, include_directories('../../src/runtime')],
-)
-
-test('Degraded Mode Test', degraded_mode_test_exe)
-
-# ====================
-# Event Bus Test
-# ====================
-events_test_exe = executable(
-    'events_test',
-    'runtime/events_test.c',
-    files(
-      '../../src/runtime/events.c',
-    ),
-    native: true,
-    dependencies: dependency('threads'),
-    include_directories: [inc_src, include_directories('../../src/runtime')],
-)
-
-test('Event Bus Test', events_test_exe)
-
-# ====================
 # DNS Benchmark (manual, not a test)
 # ====================
 dns_bench_exe = executable(
     'dns_bench',
     'bench/dns_bench.c',
     files(
-      '../../src/runtime/events.c',
-      '../../src/core/degraded_mode.c',
       '../../src/core/hash.c',
       '../../src/core/cache_sketch.c',
       '../../src/core/cache_recent.c',
       '../../src/core/cache_segments.c',
       '../../src/core/cache_ops.c',
       '../../src/core/dns_parser.c',
-      '../../src/core/obs_metrics.c',
     ),
     native: true,
     dependencies: [libbpf_dep],

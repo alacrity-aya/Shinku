@@ -1,12 +1,6 @@
 option('bpf_log', type : 'boolean', value : false,
        description : 'Enable BPF ring buffer logging (disable for production/benchmarks)')
 
-option('obs', type : 'boolean', value : true,
-       description : 'Compile in userspace observability instrumentation')
-
-option('obs_bpf', type : 'boolean', value : true,
-       description : 'Compile in BPF observability instrumentation')
-
 option('build_benchmark_bin', type : 'boolean', value : false,
        description : 'Build optimized non-sanitized benchmark binary target (shinku_bench)')
 

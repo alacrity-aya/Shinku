@@ -15,7 +15,7 @@ Status: canonical execution plan for the C++/DPDK refactor. Future refactor work
 | Order | Module | Status | Purpose |
 |---:|---|---|---|
 | 1 | Build/Test Baseline | complete | Establish the current build and test state before behavior changes. |
-| 2 | Observability Removal | pending | Delete current observability/degraded/event-bus surface while preserving operational loops. |
+| 2 | Observability Removal | complete | Delete current observability/degraded/event-bus surface while preserving operational loops. |
 | 3 | Config Module | complete | Add C++23 TOML Config Loader, validation, typed errors, and diagnostics. |
 | 4 | CLI Module | complete | Reduce CLI to `shinku run [--config path]` config-file selection. |
 | 5 | Process-control Module | complete | Move signal handling and shutdown request propagation out of CLI/backend code. |
@@ -108,6 +108,14 @@ Verification:
 
 - `meson compile -C build`
 - `meson test -C build`
+
+Result:
+
+- Removed degraded mode, runtime event bus, health/readiness HTTP endpoints, Prometheus metrics, BPF counters, observability build options, Grafana/Prometheus files, and observability-specific unit tests.
+- Preserved eBPF attach/detach, packet/log ring polling, cache cleanup scheduling, signal handling, and shutdown.
+- Updated the soak script to launch through TOML config and rely on traffic/process checks instead of deleted metrics endpoints.
+- `meson compile -C build` passes on 2026-07-19 after Module 2 removal.
+- `ASAN_OPTIONS=detect_leaks=0 meson test -C build --no-rebuild` now reports 7/10 passing. Remaining failures are the known legacy baseline: `Arena List Test` and `Arena Hash Table Test` require root in this environment, and `Cache Store Correctness Test` remains a pre-existing arena/BPF-map baseline failure.
 
 Rollback:
 
@@ -525,12 +533,12 @@ The refactor starts from `master` on branch `refactor`, not from an empty tree. 
 
 ## Current Code Facts
 
-- `src/core/loader.c` currently owns BPF lifecycle, ring polling, cleanup thread lifecycle, degraded mode, and observability startup.
-- `src/core/dns_parser.c` performs response validation and cache insertion, but it directly counts observability metrics.
-- `src/core/cache_types.h` carries `struct obs_metrics*` inside cache context.
-- `src/bpf/cache.bpf.c` contains BPF-side observability counters and sampling configuration.
-- `meson.build` and `meson.options` expose observability build flags.
-- Tests include behavior tests that should be preserved, and observability-specific tests that may be deleted or parked.
+- `src/core/loader.c` currently owns eBPF lifecycle, ring polling, and cleanup thread lifecycle.
+- `src/core/dns_parser.c` performs response validation and cache insertion without the deleted observability counters.
+- `src/core/cache_types.h` no longer carries observability state inside cache context.
+- `src/bpf/cache.bpf.c` no longer contains BPF-side observability counters or sampling configuration.
+- `meson.build` and `meson.options` no longer expose observability build flags.
+- Tests include behavior tests that should be preserved; observability-specific tests have been deleted.
 
 ## Candidate Work Slices
 
