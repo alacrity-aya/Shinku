@@ -184,6 +184,12 @@ cares_expand_test_exe = executable(
 
 test('Flat DNS Packet test Test', cares_expand_test_exe)
 
+catch2_with_main_dep = dependency(
+    'catch2-with-main',
+    fallback : ['catch2', 'catch2_with_main_dep'],
+    default_options : ['tests=false', 'install=false'],
+)
+
 # ====================
 # C++ Config Loader Test
 # ====================
@@ -194,8 +200,7 @@ config_loader_test_exe = executable(
       '../../src/config/toml_loader.cc',
       '../../src/config/legacy_env_adapter.cc',
     ),
-    native: true,
-    dependencies: tomlplusplus_dep,
+    dependencies: [tomlplusplus_dep, catch2_with_main_dep],
     include_directories: inc_src,
 )
 
@@ -210,7 +215,7 @@ cli_parser_test_exe = executable(
     files(
       '../../src/cli/cli.cc',
     ),
-    native: true,
+    dependencies: [argparse_dep, catch2_with_main_dep],
     include_directories: inc_src,
 )
 

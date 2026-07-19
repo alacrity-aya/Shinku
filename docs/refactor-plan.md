@@ -36,6 +36,7 @@ Current active module:
 - Do not spend effort preserving tests for modules that are intentionally deleted, such as current observability, degraded mode, and event bus tests.
 - Each rewritten module should gain focused tests for its new contract.
 - The broader legacy test suite is rewritten as a dedicated module after the runtime boundaries stabilize.
+- Do not migrate the whole legacy suite to a C++ framework as part of CLI/Config. New C++ module tests use Catch2 because the current tests are executable-focused, module-local, and do not need mocks or fixtures heavy enough to justify GTest.
 
 ## Module Plans
 
@@ -267,8 +268,8 @@ Implementation result:
 
 - Added C++23 `src/config/` with typed `Config`, selected-backend-only `BackendConfig`, typed `ConfigError`, injectable diagnostics, TOML loader, and temporary `to_legacy_env()` adapter.
 - Added `tomlplusplus` Meson fallback wrap.
-- Added `tests/unit/config/config_loader_test.cc`.
-- Focused verification passes with LeakSanitizer disabled in this managed environment: `ASAN_OPTIONS=detect_leaks=0 LD_LIBRARY_PATH=build/subprojects/tomlplusplus/src build/tests/unit/config_loader_test`.
+- Added `tests/unit/config/config_loader_test.cc` using Catch2 through `catch2-with-main`.
+- Focused verification passes with LeakSanitizer disabled in this managed environment: `ASAN_OPTIONS=detect_leaks=0 build/tests/unit/config_loader_test`.
 
 ### Module 4: CLI Module
 
@@ -283,18 +284,19 @@ Scope:
 - Support `shinku --help` and `shinku run --help`; both print usage and exit successfully.
 - Support `shinku --version`; it prints the Meson project version and exits successfully.
 - Reject all other CLI forms in the MVP, including `shinku --config path`, `shinku run -c path`, and `shinku run --backend ebpf`.
-- Reject `-h`, `shinku run --version`, empty `--config` paths, duplicate `--config`, and all short aliases in the MVP.
+- Reject `-h`, `shinku run --version`, duplicate `--config`, missing `--config` values, and all short aliases in the MVP.
 - Do not support env vars.
 - Do not preserve old CLI flag compatibility.
 - CLI must not understand TOML schema or format Config diagnostics.
 - CLI owns only CLI syntax diagnostics, such as missing subcommand or unsupported CLI option.
 - CLI parsing returns a typed command object instead of scattering argument checks through `main()`.
+- CLI parsing uses `argparse` through a Meson wrap, while `parse_cli()` keeps the project's typed `std::expected<CliResult, CliError>` boundary.
 - Old `src/cli/config.c` and `src/cli/config.h` are deleted or renamed during this module; they must not remain as the canonical Config authority.
 
 File layout:
 
 - `src/cli/cli.h`: `CliCommand`, `CliError`, and `parse_cli()` declarations.
-- `src/cli/cli.cc`: strict `argv` parser for `shinku run [--config path]`.
+- `src/cli/cli.cc`: strict `argparse`-backed parser for `shinku run [--config path]`.
 - `src/cli/main.cc`: temporary process entrypoint wiring `parse_cli()`, `load_config()`, `to_legacy_env()`, and the old eBPF loader path until later modules move runtime concerns out.
 - generated config/version header from Meson `configuration_data()`: provides the version string used by `shinku --version`.
 
@@ -316,7 +318,7 @@ shinku run -c ./custom.toml
 shinku run --backend ebpf
 shinku -h
 shinku run --version
-shinku run --config ""
+shinku run --config
 shinku run --config a.toml --config b.toml
 ```
 
@@ -329,7 +331,7 @@ Diagnostic boundary:
 CLI diagnostic examples:
 
 - `error: expected subcommand: run`
-- `error: unsupported option: -c`
+- `error: Unknown argument: -c`
 - `error: usage: shinku run [--config path]`
 
 CLI parser API:
@@ -363,8 +365,7 @@ struct CliResult {
     std::optional<CliCommand> command;
 };
 
-std::expected<CliResult, CliError>
-parse_cli(int argc, char** argv);
+std::expected<CliResult, CliError> parse_cli(int argc, char** argv);
 ```
 
 API contract:
@@ -373,9 +374,9 @@ API contract:
 - `parse_cli()` does not open, parse, or validate the Config File.
 - `CliCommand::config_path` defaults to `./shinku.toml` for `shinku run`.
 - CLI does not canonicalize `CliCommand::config_path`; Config Loader is responsible for opening the path as provided.
-- Empty `--config` path is a CLI syntax error.
-- `shinku run --config` with no following path returns `MissingConfigPath`.
-- Duplicate `--config` returns `UnexpectedArgument`.
+- CLI does not validate whether a provided config path is empty or openable; Config Loader owns those diagnostics.
+- `shinku run --config` with no following path is rejected by argparse and mapped to `UnexpectedArgument`.
+- Duplicate `--config` is rejected by argparse and mapped to `UnexpectedArgument`.
 - `ShowHelp` and `ShowVersion` actions must not call Config Loader.
 - Version output is sourced from Meson `configuration_data()`, not duplicated as a hardcoded CLI string.
 - `CliError` represents CLI syntax errors only and must not mention TOML schema fields.
@@ -384,7 +385,7 @@ API contract:
 
 Verification:
 
-- CLI smoke test for default path, explicit `--config`, rejected unsupported forms, empty config path, missing config path, duplicate `--config`, help/version actions, CLI syntax diagnostics, typed `CliResult` results, and `CliErrorCode` coverage.
+- CLI smoke test for default path, explicit `--config`, empty config path delegation, rejected unsupported forms, missing config path, duplicate `--config`, help/version actions, CLI syntax diagnostics, typed `CliResult` results, and `CliErrorCode` coverage.
 - `meson test -C build`
 
 Implementation result:
@@ -392,7 +393,10 @@ Implementation result:
 - Replaced old `src/cli/config.c`, `src/cli/config.h`, and `src/cli/main.c` with `src/cli/cli.h`, `src/cli/cli.cc`, and `src/cli/main.cc`.
 - CLI now owns only syntax parsing and version/help output. Config file diagnostics remain in `src/config/`.
 - Added Meson-generated `version.h` via `configuration_data()`.
+- Added `argparse` Meson wrap for CLI parsing.
+- Removed project-local preflight parsing and manual argparse failure classification; argparse now owns CLI argument validation in the MVP, with parse failures mapped to typed `CliError`.
 - Added temporary `src/runtime/legacy_env.h` and `src/runtime/legacy_ebpf_runner.c` C ABI bridge to keep the existing eBPF runtime runnable until Backend Interface/eBPF Backend modules replace it.
+- CLI parser tests use Catch2 through `catch2-with-main`.
 - Focused verification passes with LeakSanitizer disabled in this managed environment: `ASAN_OPTIONS=detect_leaks=0 build/tests/unit/cli_parser_test`.
 
 ### Module 5: Process-control Module
@@ -617,10 +621,10 @@ Decisions:
 10. `CliErrorCode` MVP contains `MissingSubcommand`, `UnsupportedSubcommand`, `MissingConfigPath`, `UnsupportedOption`, and `UnexpectedArgument`.
 11. CLI supports `shinku --help`, `shinku run --help`, and `shinku --version` as non-run actions.
 12. CLI version output comes from Meson `configuration_data()`.
-13. CLI rejects empty `--config` paths.
+13. CLI does not reject explicit empty `--config` paths; Config Loader owns path-open failures.
 14. CLI does not canonicalize config paths.
-15. `shinku run --config` with no path returns `MissingConfigPath`.
-16. Duplicate `--config` returns `UnexpectedArgument`.
+15. `shinku run --config` with no path is rejected by argparse and mapped to `UnexpectedArgument`.
+16. Duplicate `--config` is rejected by argparse and mapped to `UnexpectedArgument`.
 
 Constraint:
 

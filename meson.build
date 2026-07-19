@@ -20,7 +20,12 @@ ecs = get_option('ecs')
 cares_dep = dependency('libcares', fallback : ['c-ares', 'cares_dep'])
 libbpf_dep = dependency('libbpf')
 libcap_dep = dependency('libcap', fallback : ['libcap', 'libcap_dep'])
-tomlplusplus_dep = dependency('tomlplusplus', fallback : ['tomlplusplus', 'tomlplusplus_dep'])
+tomlplusplus_dep = dependency(
+  'tomlplusplus',
+  fallback : ['tomlplusplus', 'tomlplusplus_dep'],
+  default_options : ['compile_library=false']
+)
+argparse_dep = dependency('argparse', fallback : ['argparse', 'argparse_dep'])
 clang = find_program('clang')
 bpftool = find_program('bpftool')
 
@@ -116,7 +121,7 @@ executable(
   core_src,          
   bpf_skel,
   version_header,
-  dependencies: [libbpf_dep, libcap_dep, tomlplusplus_dep],
+  dependencies: [libbpf_dep, libcap_dep, tomlplusplus_dep, argparse_dep],
   include_directories: [inc_src, inc_runtime],
   c_args: (bpf_log ? ['-DSHINKU_BPF_LOG_ENABLED=1'] : ['-DSHINKU_BPF_LOG_ENABLED=0']) + (obs ? ['-DSHINKU_OBS_ENABLED=1'] : ['-DSHINKU_OBS_ENABLED=0']) + (ecs ? ['-DSHINKU_ECS_ENABLED=1'] : ['-DSHINKU_ECS_ENABLED=0']),
   install: true
@@ -129,7 +134,7 @@ if build_benchmark_bin
     core_src,
     bpf_skel,
     version_header,
-    dependencies: [libbpf_dep, libcap_dep, tomlplusplus_dep],
+    dependencies: [libbpf_dep, libcap_dep, tomlplusplus_dep, argparse_dep],
     include_directories: [inc_src, inc_runtime],
     c_args: [
       '-O3',

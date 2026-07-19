@@ -1,18 +1,26 @@
 // SPDX-License-Identifier: GPL-2.0-only OR Apache-2.0
 #include "config/toml_loader.h"
 
+#define TOML_EXCEPTIONS 0
 #include <toml++/toml.hpp>
 
-#include <cerrno>
 #include <charconv>
-#include <cstdio>
+#include <chrono>
+#include <concepts>
+#include <cstdint>
+#include <expected>
+#include <filesystem>
 #include <fstream>
+#include <istream>
 #include <limits>
 #include <optional>
+#include <print>
+#include <string>
 #include <string_view>
 #include <system_error>
 #include <type_traits>
 #include <unordered_set>
+#include <utility>
 
 namespace shinku::config {
 namespace {
@@ -20,7 +28,7 @@ namespace {
 constexpr std::string_view kBackendKey = "backend";
 
 ConfigError make_error(ConfigErrorCode code, const std::filesystem::path& path, std::string message) {
-    return ConfigError{
+    return ConfigError {
         .code = code,
         .path = path,
         .message = std::move(message),
@@ -29,54 +37,62 @@ ConfigError make_error(ConfigErrorCode code, const std::filesystem::path& path, 
 
 std::unexpected<ConfigError>
 emit_error(DiagnosticSink& sink, ConfigErrorCode code, const std::filesystem::path& path, std::string message) {
-    ConfigError error = make_error(code, path, std::move(message));
+    const ConfigError error = make_error(code, path, std::move(message));
     sink.error(error);
     return std::unexpected(error);
 }
 
 void emit_warning(DiagnosticSink& sink, const std::filesystem::path& path, std::string message) {
-    sink.warning(ConfigWarning{
-        .path = path,
-        .message = std::move(message),
-    });
+    sink.warning(
+        ConfigWarning {
+            .path = path,
+            .message = std::move(message),
+        }
+    );
+}
+
+std::expected<toml::table, ConfigError>
+parse_toml(std::istream& input, const std::filesystem::path& path, DiagnosticSink& sink) {
+    toml::parse_result result = toml::parse(input, path.string());
+    if (!result) {
+        return emit_error(sink, ConfigErrorCode::ParseError, path, std::string(result.error().description()));
+    }
+
+    return std::move(result).table();
 }
 
 std::optional<std::string> string_value(const toml::table& table, std::string_view key) {
     const toml::node* node = table.get(key);
-    if (!node)
+    if (node == nullptr)
         return std::nullopt;
-    if (const auto value = node->value<std::string>())
-        return *value;
-    return std::nullopt;
+    return node->value<std::string>();
 }
 
-template <typename T>
+template<std::unsigned_integral T>
 std::optional<T> unsigned_integer_value(const toml::table& table, std::string_view key) {
-    static_assert(std::is_unsigned_v<T>);
-
     const toml::node* node = table.get(key);
-    if (!node)
+    if (node == nullptr)
         return std::nullopt;
 
-    if (const auto value = node->value<std::int64_t>()) {
-        if (*value < 0)
-            return std::nullopt;
-        const auto as_u64 = static_cast<std::uint64_t>(*value);
-        if (as_u64 > std::numeric_limits<T>::max())
-            return std::nullopt;
-        return static_cast<T>(as_u64);
-    }
+    const auto value = node->value<int64_t>();
+    if (!value.has_value())
+        return std::nullopt;
 
-    return std::nullopt;
+    const int64_t signed_value = value.value();
+    if (signed_value < 0)
+        return std::nullopt;
+
+    const auto as_u64 = static_cast<uint64_t>(signed_value);
+    if (as_u64 > std::numeric_limits<T>::max())
+        return std::nullopt;
+    return static_cast<T>(as_u64);
 }
 
 std::optional<bool> bool_value(const toml::table& table, std::string_view key) {
     const toml::node* node = table.get(key);
-    if (!node)
+    if (node == nullptr)
         return std::nullopt;
-    if (const auto value = node->value<bool>())
-        return *value;
-    return std::nullopt;
+    return node->value<bool>();
 }
 
 bool has_key(const toml::table& table, std::string_view key) {
@@ -85,7 +101,7 @@ bool has_key(const toml::table& table, std::string_view key) {
 
 const toml::table* subtable(const toml::table& table, std::string_view key) {
     const toml::node* node = table.get(key);
-    return node ? node->as_table() : nullptr;
+    return (node != nullptr) ? node->as_table() : nullptr;
 }
 
 std::string join_key(std::string_view prefix, std::string_view key) {
@@ -104,7 +120,7 @@ void warn_unknown_keys(
     DiagnosticSink& sink,
     const std::filesystem::path& path
 ) {
-    for (const auto& [key, node] : table) {
+    for (const auto& [key, node]: table) {
         (void)node;
         const std::string_view key_view(key.str());
         if (!allowed.contains(key_view))
@@ -115,17 +131,17 @@ void warn_unknown_keys(
 void warn_unknown_keys(const toml::table& root, DiagnosticSink& sink, const std::filesystem::path& path) {
     warn_unknown_keys(root, "", { "backend", "ebpf", "dpdk", "cache" }, sink, path);
 
-    if (const toml::table* ebpf = subtable(root, "ebpf"))
+    if (const toml::table* ebpf = subtable(root, "ebpf"); ebpf != nullptr)
         warn_unknown_keys(*ebpf, "ebpf", { "iface", "arena_pages", "cleanup_interval" }, sink, path);
 
-    if (const toml::table* dpdk = subtable(root, "dpdk"))
+    if (const toml::table* dpdk = subtable(root, "dpdk"); dpdk != nullptr)
         warn_unknown_keys(*dpdk, "dpdk", { "client_port", "server_port" }, sink, path);
 
-    if (const toml::table* cache = subtable(root, "cache"))
+    if (const toml::table* cache = subtable(root, "cache"); cache != nullptr)
         warn_unknown_keys(*cache, "cache", { "max_entries", "max_response_bytes", "cache_negative" }, sink, path);
 }
 
-template <typename T>
+template<typename T>
 std::expected<T, ConfigError> require_unsigned(
     const toml::table& table,
     std::string_view key,
@@ -137,10 +153,10 @@ std::expected<T, ConfigError> require_unsigned(
         return emit_error(sink, ConfigErrorCode::SchemaError, path, "missing required key " + std::string(field_path));
 
     auto value = unsigned_integer_value<T>(table, key);
-    if (!value)
+    if (!value.has_value())
         return emit_error(sink, ConfigErrorCode::SchemaError, path, "invalid type for key " + std::string(field_path));
 
-    return *value;
+    return value.value();
 }
 
 std::expected<std::string, ConfigError> require_string(
@@ -154,10 +170,10 @@ std::expected<std::string, ConfigError> require_string(
         return emit_error(sink, ConfigErrorCode::SchemaError, path, "missing required key " + std::string(field_path));
 
     auto value = string_value(table, key);
-    if (!value)
+    if (!value.has_value())
         return emit_error(sink, ConfigErrorCode::SchemaError, path, "invalid type for key " + std::string(field_path));
 
-    return *value;
+    return value.value();
 }
 
 std::expected<bool, ConfigError> require_bool(
@@ -171,10 +187,10 @@ std::expected<bool, ConfigError> require_bool(
         return emit_error(sink, ConfigErrorCode::SchemaError, path, "missing required key " + std::string(field_path));
 
     auto value = bool_value(table, key);
-    if (!value)
+    if (!value.has_value())
         return emit_error(sink, ConfigErrorCode::SchemaError, path, "invalid type for key " + std::string(field_path));
 
-    return *value;
+    return value.value();
 }
 
 std::optional<std::chrono::milliseconds> parse_duration(std::string_view text) {
@@ -200,15 +216,16 @@ std::optional<std::chrono::milliseconds> parse_duration(std::string_view text) {
     if (number_part.empty())
         return std::nullopt;
 
-    std::uint64_t amount = 0;
+    uint64_t amount = 0;
     const auto* begin = number_part.data();
     const auto* end = number_part.data() + number_part.size();
     auto [ptr, ec] = std::from_chars(begin, end, amount);
     if (ec != std::errc() || ptr != end || amount == 0)
         return std::nullopt;
 
-    const auto max_count = std::numeric_limits<std::chrono::milliseconds::rep>::max();
-    if (amount > static_cast<std::uint64_t>(max_count / multiplier.count()))
+    const auto max_count = static_cast<uint64_t>(std::numeric_limits<std::chrono::milliseconds::rep>::max());
+    const auto multiplier_count = static_cast<uint64_t>(multiplier.count());
+    if (amount > max_count / multiplier_count)
         return std::nullopt;
 
     return std::chrono::milliseconds(static_cast<std::chrono::milliseconds::rep>(amount * multiplier.count()));
@@ -220,31 +237,37 @@ parse_backend_kind(const toml::table& root, const std::filesystem::path& path, D
         return emit_error(sink, ConfigErrorCode::SchemaError, path, "missing required key backend");
 
     auto backend = string_value(root, kBackendKey);
-    if (!backend)
+    if (!backend.has_value())
         return emit_error(sink, ConfigErrorCode::SchemaError, path, "invalid type for key backend");
 
-    if (*backend == "ebpf")
+    const std::string& backend_value = backend.value();
+    if (backend_value == "ebpf")
         return BackendKind::Ebpf;
-    if (*backend == "dpdk")
+    if (backend_value == "dpdk")
         return BackendKind::Dpdk;
 
-    return emit_error(sink, ConfigErrorCode::UnsupportedBackend, path, "unsupported backend: " + *backend);
+    return emit_error(sink, ConfigErrorCode::UnsupportedBackend, path, "unsupported backend: " + backend_value);
 }
 
 std::expected<CacheConfig, ConfigError>
 parse_cache_config(const toml::table& root, const std::filesystem::path& path, DiagnosticSink& sink) {
     const toml::table* cache = subtable(root, "cache");
-    if (!cache)
+    if (cache == nullptr)
         return emit_error(sink, ConfigErrorCode::SchemaError, path, "missing required table cache");
 
-    auto max_entries = require_unsigned<std::uint32_t>(*cache, "max_entries", "cache.max_entries", path, sink);
+    auto max_entries = require_unsigned<uint32_t>(*cache, "max_entries", "cache.max_entries", path, sink);
     if (!max_entries)
         return std::unexpected(max_entries.error());
     if (*max_entries == 0)
-        return emit_error(sink, ConfigErrorCode::ValidationError, path, "invalid cache.max_entries: must be greater than zero");
+        return emit_error(
+            sink,
+            ConfigErrorCode::ValidationError,
+            path,
+            "invalid cache.max_entries: must be greater than zero"
+        );
 
     auto max_response_bytes =
-        require_unsigned<std::uint32_t>(*cache, "max_response_bytes", "cache.max_response_bytes", path, sink);
+        require_unsigned<uint32_t>(*cache, "max_response_bytes", "cache.max_response_bytes", path, sink);
     if (!max_response_bytes)
         return std::unexpected(max_response_bytes.error());
     if (*max_response_bytes == 0) {
@@ -260,7 +283,7 @@ parse_cache_config(const toml::table& root, const std::filesystem::path& path, D
     if (!cache_negative)
         return std::unexpected(cache_negative.error());
 
-    return CacheConfig{
+    return CacheConfig {
         .max_entries = *max_entries,
         .max_response_bytes = *max_response_bytes,
         .cache_negative = *cache_negative,
@@ -270,14 +293,14 @@ parse_cache_config(const toml::table& root, const std::filesystem::path& path, D
 std::expected<EbpfConfig, ConfigError>
 parse_ebpf_config(const toml::table& root, const std::filesystem::path& path, DiagnosticSink& sink) {
     const toml::table* ebpf = subtable(root, "ebpf");
-    if (!ebpf)
+    if (ebpf == nullptr)
         return emit_error(sink, ConfigErrorCode::SchemaError, path, "missing required table ebpf");
 
     auto iface = require_string(*ebpf, "iface", "ebpf.iface", path, sink);
     if (!iface)
         return std::unexpected(iface.error());
 
-    auto arena_pages = require_unsigned<std::uint32_t>(*ebpf, "arena_pages", "ebpf.arena_pages", path, sink);
+    auto arena_pages = require_unsigned<uint32_t>(*ebpf, "arena_pages", "ebpf.arena_pages", path, sink);
     if (!arena_pages)
         return std::unexpected(arena_pages.error());
     if (*arena_pages < 1024)
@@ -288,7 +311,7 @@ parse_ebpf_config(const toml::table& root, const std::filesystem::path& path, Di
         return std::unexpected(cleanup_interval_text.error());
 
     auto cleanup_interval = parse_duration(*cleanup_interval_text);
-    if (!cleanup_interval) {
+    if (!cleanup_interval.has_value()) {
         return emit_error(
             sink,
             ConfigErrorCode::ValidationError,
@@ -297,24 +320,24 @@ parse_ebpf_config(const toml::table& root, const std::filesystem::path& path, Di
         );
     }
 
-    return EbpfConfig{
+    return EbpfConfig {
         .iface = *iface,
         .arena_pages = *arena_pages,
-        .cleanup_interval = *cleanup_interval,
+        .cleanup_interval = cleanup_interval.value(),
     };
 }
 
 std::expected<DpdkConfig, ConfigError>
 parse_dpdk_config(const toml::table& root, const std::filesystem::path& path, DiagnosticSink& sink) {
     const toml::table* dpdk = subtable(root, "dpdk");
-    if (!dpdk)
+    if (dpdk == nullptr)
         return emit_error(sink, ConfigErrorCode::SchemaError, path, "missing required table dpdk");
 
-    auto client_port = require_unsigned<std::uint16_t>(*dpdk, "client_port", "dpdk.client_port", path, sink);
+    auto client_port = require_unsigned<uint16_t>(*dpdk, "client_port", "dpdk.client_port", path, sink);
     if (!client_port)
         return std::unexpected(client_port.error());
 
-    auto server_port = require_unsigned<std::uint16_t>(*dpdk, "server_port", "dpdk.server_port", path, sink);
+    auto server_port = require_unsigned<uint16_t>(*dpdk, "server_port", "dpdk.server_port", path, sink);
     if (!server_port)
         return std::unexpected(server_port.error());
 
@@ -327,7 +350,7 @@ parse_dpdk_config(const toml::table& root, const std::filesystem::path& path, Di
         );
     }
 
-    return DpdkConfig{
+    return DpdkConfig {
         .client_port = *client_port,
         .server_port = *server_port,
     };
@@ -337,14 +360,14 @@ parse_dpdk_config(const toml::table& root, const std::filesystem::path& path, Di
 
 void StderrDiagnosticSink::warning(const ConfigWarning& warning) {
     if (!warning.path.empty())
-        std::fprintf(stderr, "%s: ", warning.path.string().c_str());
-    std::fprintf(stderr, "warning: %s\n", warning.message.c_str());
+        std::print(stderr, "{}: ", warning.path.string());
+    std::println(stderr, "warning: {}", warning.message);
 }
 
 void StderrDiagnosticSink::error(const ConfigError& error) {
     if (!error.path.empty())
-        std::fprintf(stderr, "%s: ", error.path.string().c_str());
-    std::fprintf(stderr, "error: %s\n", error.message.c_str());
+        std::print(stderr, "{}: ", error.path.string());
+    std::println(stderr, "error: {}", error.message);
 }
 
 std::expected<Config, ConfigError> load_config(const std::filesystem::path& path, DiagnosticSink& sink) {
@@ -352,45 +375,37 @@ std::expected<Config, ConfigError> load_config(const std::filesystem::path& path
     if (!file.is_open())
         return emit_error(sink, ConfigErrorCode::FileNotFound, path, "failed to open config file");
 
-    toml::table root;
-    try {
-        root = toml::parse(file, path.string());
-    } catch (const toml::parse_error& err) {
-        return emit_error(sink, ConfigErrorCode::ParseError, path, std::string(err.description()));
-    } catch (const std::ios_base::failure& err) {
-        return emit_error(sink, ConfigErrorCode::ReadError, path, err.what());
-    }
+    auto root = parse_toml(file, path, sink);
+    if (!root)
+        return std::unexpected(root.error());
 
-    if (file.bad())
-        return emit_error(sink, ConfigErrorCode::ReadError, path, "failed to read config file");
+    warn_unknown_keys(*root, sink, path);
 
-    warn_unknown_keys(root, sink, path);
-
-    auto backend = parse_backend_kind(root, path, sink);
+    auto backend = parse_backend_kind(*root, path, sink);
     if (!backend)
         return std::unexpected(backend.error());
 
     if (*backend == BackendKind::Ebpf) {
-        auto ebpf = parse_ebpf_config(root, path, sink);
+        auto ebpf = parse_ebpf_config(*root, path, sink);
         if (!ebpf)
             return std::unexpected(ebpf.error());
-        auto cache = parse_cache_config(root, path, sink);
+        auto cache = parse_cache_config(*root, path, sink);
         if (!cache)
             return std::unexpected(cache.error());
-        return Config{
+        return Config {
             .backend = *backend,
             .backend_config = *ebpf,
             .cache = *cache,
         };
     }
 
-    auto dpdk = parse_dpdk_config(root, path, sink);
+    auto dpdk = parse_dpdk_config(*root, path, sink);
     if (!dpdk)
         return std::unexpected(dpdk.error());
-    auto cache = parse_cache_config(root, path, sink);
+    auto cache = parse_cache_config(*root, path, sink);
     if (!cache)
         return std::unexpected(cache.error());
-    return Config{
+    return Config {
         .backend = *backend,
         .backend_config = *dpdk,
         .cache = *cache,

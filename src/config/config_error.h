@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: GPL-2.0-only OR Apache-2.0
 #pragma once
 
+#include <cstdint>
 #include <filesystem>
 #include <string>
 
 namespace shinku::config {
 
-enum class ConfigErrorCode {
+enum class ConfigErrorCode : uint8_t {
     FileNotFound,
     ReadError,
     ParseError,
