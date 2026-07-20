@@ -16,6 +16,10 @@ _Avoid_: Mode, driver
 The explicit state flow for probing, configuring, starting, polling, stopping, and destroying a Backend.
 _Avoid_: Startup code
 
+**Backend Runner**:
+The Host Runtime object that owns Backend lifecycle sequencing and drives `poll_once()` calls.
+_Avoid_: Backend implementation, runtime loop
+
 **Backend Probe**:
 The pre-start capability check that decides whether the selected Backend is supported on the current host with the validated Config.
 _Avoid_: Warm-up, partial start

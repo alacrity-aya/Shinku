@@ -19,7 +19,7 @@ Status: canonical execution plan for the C++/DPDK refactor. Future refactor work
 | 3 | Config Module | complete | Add C++23 TOML Config Loader, validation, typed errors, and diagnostics. |
 | 4 | CLI Module | complete | Reduce CLI to `shinku run [--config path]` config-file selection. |
 | 5 | Process-control Module | complete | Move signal handling and shutdown request propagation out of CLI/backend code. |
-| 6 | Backend Interface Module | pending | Introduce C++ Backend lifecycle interface and shared status/result types. |
+| 6 | Backend Interface Module | complete | Introduce C++ Backend lifecycle interface and shared status/result types. |
 | 7 | eBPF Backend Module | pending | Adapt existing eBPF loader behind the Backend interface and keep it runnable. |
 | 8 | Cache/DNS Module | pending | Separate backend-neutral DNS/cache policy from eBPF storage details. |
 | 9 | DPDK Backend Module | pending | Implement the DPDK backend after common interfaces are stable. |
@@ -27,7 +27,7 @@ Status: canonical execution plan for the C++/DPDK refactor. Future refactor work
 
 Current active module:
 
-- Module 6: Backend Interface Module.
+- Module 7: eBPF Backend Module.
 
 ## Test Policy During Refactor
 
@@ -453,15 +453,46 @@ Goal:
 
 Scope:
 
+- Place the first backend abstraction in `src/backend/`.
+- Use the minimum file split for Module 6: `backend.h`, `backend_error.h`, `backend_runner.h`, and `backend_runner.cc`.
 - Interface uses `probe()`, `start()`, `poll_once()`, and `stop()`.
+- Public interface uses a normal pure virtual `Backend` class. CRTP is not part of the public abstraction; it may be used later only as an implementation helper if it removes real duplication.
+- `BackendRunner` owns the common lifecycle state machine. Backend implementations own resource actions, not state sequencing policy.
+- `BackendRunner` exposes `BackendState state() const noexcept` as the read-only lifecycle state query.
 - `probe()` is pure, side-effect-free, and returns typed status plus explanation messages.
+- `probe()` returns `std::expected<ProbeResult, BackendError>` so unsupported capability results are distinct from probe execution failures.
+- `ProbeResult` uses `ProbeStatus { Supported, Unsupported }` plus a single human-readable message.
+- `BackendRunner::start()` calls `probe()` before acquiring backend resources.
+- `Backend` destructor does not call `stop()`. Lifecycle shutdown is explicit through `BackendRunner`.
+- Backend implementations report lifecycle failures through `std::expected`, not exceptions.
+- `BackendRunner` destructor performs best-effort `stop()` and discards the returned status because destructors cannot report typed errors.
+- `BackendRunner::probe()` is invalid while running and returns `InvalidState`.
+- If `BackendRunner::start()` gets an `Unsupported` probe result, the runner enters `Failed`.
+- `BackendRunner::stop()` from `Failed` calls backend `stop()` best-effort, then transitions to `Stopped` if stop succeeds.
 - `poll_once()` must return quickly. If no work exists, return `NoWork`.
+- `poll_once()` returns `std::expected<PollStatus, BackendError>`.
+- `PollFailed` moves `BackendRunner` into `Failed` for the MVP.
+- `stop()` is idempotent. Calling `stop()` when already stopped returns success.
 - Construction receives a `BackendConfig` variant.
+- `BackendRunner` owns the backend via `std::unique_ptr<Backend>`.
+- Module 6 does not implement a production `BackendFactory`; introduce backend creation in Module 7 when a real C++ eBPF Backend exists.
 
 Verification:
 
 - Fake backend tests for lifecycle sequencing and `NoWork`.
 - `meson test -C build`
+
+Result:
+
+- Added `docs/adr/0009-backend-interface-runner.md`.
+- Added `src/backend/` with the pure virtual `Backend` interface, typed backend errors, probe/poll/status types, and `BackendRunner`.
+- Added fake backend Catch2 coverage in `tests/unit/backend/backend_runner_test.cc`.
+- Registered `Backend Runner Test` in Meson without wiring production runtime to the new interface yet.
+- Removed an unrelated stale TODO comment from `src/process_control/process_control.h` as part of this module cleanup.
+- `meson compile -C build` passes on 2026-07-19.
+- `ASAN_OPTIONS=detect_leaks=0 meson test -C build --no-rebuild "Backend Runner Test"` passes.
+- `ASAN_OPTIONS=detect_leaks=0 meson test -C build --no-rebuild "Process Control Test"` passes.
+- `ASAN_OPTIONS=detect_leaks=0 meson test -C build --no-rebuild` reports 8/11 passing. Remaining failures are the known legacy baseline: `Arena List Test`, `Arena Hash Table Test`, and `Cache Store Correctness Test`.
 
 ### Module 7: eBPF Backend Module
 
@@ -747,15 +778,40 @@ Decisions:
 2. Backend construction receives one `BackendConfig` variant that contains either `EbpfConfig` or `DpdkConfig`.
 3. Backends do not own hidden background threads in the first interface. The Host Runtime drives progress by calling `poll_once()`.
 4. `probe()` returns typed capability status plus human-readable explanation messages for unsupported features.
+5. Backend abstraction files live in `src/backend/`.
+6. The public `Backend` interface is a pure virtual class. CRTP is not used as the public interface because backend selection is runtime-configured; CRTP may be used later only as a private implementation helper.
+7. `BackendRunner` owns lifecycle sequencing for `Created -> Running -> Stopped -> Failed`; backend implementations only perform backend-specific resource actions.
+8. `poll_once()` returns `std::expected<PollStatus, BackendError>`, where `PollStatus` includes `WorkDone` and `NoWork`.
+9. `stop()` is idempotent and returns success if the backend is already stopped.
+10. Module 6 uses a minimal file layout: `backend.h`, `backend_error.h`, `backend_runner.h`, and `backend_runner.cc`.
+11. `BackendError` uses a typed enum, message, and optional `std::error_code` cause.
+12. `probe()` returns `std::expected<ProbeResult, BackendError>`; `Unsupported` is a probe result, while `ProbeFailed` is an execution error.
+13. `BackendRunner::start()` calls `probe()` automatically before backend resource acquisition.
+14. A `PollFailed` result moves `BackendRunner` to `Failed` in the MVP.
+15. Module 6 does not implement a production `BackendFactory`; introduce `make_backend()` or equivalent in Module 7 with the real eBPF Backend.
+16. `BackendRunner` exposes `BackendState state() const noexcept` for read-only lifecycle inspection.
+17. `Backend` destructor does not call `stop()`; explicit shutdown belongs to `BackendRunner`.
+18. Backend implementations report lifecycle failures through `std::expected`, not exceptions. `BackendRunner` destructor performs best-effort `stop()` and discards the returned status because destructors cannot report typed errors.
+19. `BackendRunner::probe()` returns `InvalidState` while the runner is `Running`.
+20. If `BackendRunner::start()` gets an `Unsupported` probe result, the runner enters `Failed`.
+21. `BackendRunner::stop()` from `Failed` calls backend `stop()` best-effort and transitions to `Stopped` if stop succeeds.
+22. `ProbeResult` uses a minimal shape: `ProbeStatus { Supported, Unsupported }` plus one explanatory `std::string message`.
+23. `Unsupported` is a `ProbeStatus` for direct `probe()` calls. `BackendRunner::start()` converts an unsupported probe result into `BackendErrorCode::Unsupported`.
+24. `BackendErrorCode` starts with `InvalidState`, `WrongConfig`, `Unsupported`, `ProbeFailed`, `StartFailed`, `PollFailed`, and `StopFailed`.
+25. `BackendRunner` owns its backend through `std::unique_ptr<Backend>`.
+26. Fake backend tests live in `tests/unit/backend/backend_runner_test.cc`.
+27. Backend runner tests cover happy path and lifecycle edges: initial state, automatic probe on start, invalid pre-start poll, `WorkDone`, `NoWork`, poll failure to `Failed`, idempotent stop, stop from `Failed`, destructor best-effort stop, unsupported probe, start failure, and probe while running.
 
 Constraint:
 
 - A synchronous `poll_once()` keeps lifecycle ownership visible while the eBPF backend is being adapted and the DPDK backend is still new.
 - `BackendConfig` variant is selected from the validated top-level `Config`; backend implementations must reject the wrong variant as a typed programmer/configuration error instead of reading raw TOML.
+- `BackendRunner` is the single place that enforces invalid lifecycle transitions. This prevents eBPF and DPDK implementations from drifting into different state-machine behavior.
 
 Probe role:
 
 - `probe()` is the pre-start capability gate. It is not a warm-up, not partial startup, and not a fallback mechanism.
+- `probe()` is not a health check or readiness check. It does not describe runtime liveness after `start()`.
 - eBPF examples: verify required kernel capabilities, usable BPF arena support, interface existence, and permissions that can be checked without attaching programs or creating maps.
 - DPDK examples: verify DPDK support is compiled/available and configured port identifiers look usable without binding ports or reserving runtime resources.
 - Probe results must be machine-readable and operator-readable. Example: `UnsupportedBackend` plus `eBPF backend requires BPF arena support, but the target kernel does not provide it`.

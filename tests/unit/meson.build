@@ -226,6 +226,19 @@ process_control_test_exe = executable(
 test('Process Control Test', process_control_test_exe)
 
 # ====================
+# C++ Backend Runner Test
+# ====================
+backend_runner_test_exe = executable(
+    'backend_runner_test',
+    'backend/backend_runner_test.cc',
+    backend_src,
+    dependencies: catch2_with_main_dep,
+    include_directories: inc_src,
+)
+
+test('Backend Runner Test', backend_runner_test_exe)
+
+# ====================
 # DNS Benchmark (manual, not a test)
 # ====================
 dns_bench_exe = executable(

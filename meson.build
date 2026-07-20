@@ -106,6 +106,10 @@ process_control_src = files(
   'src/process_control/process_control.cc',
 )
 
+backend_src = files(
+  'src/backend/backend_runner.cc',
+)
+
 cli_src = files(
   'src/cli/main.cc',
   'src/cli/cli.cc',

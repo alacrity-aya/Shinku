@@ -4,8 +4,6 @@
 #include "process_control_error.h"
 
 #include <expected>
-#include <string_view>
-#include <system_error>
 
 namespace shinku::process_control {
 
@@ -29,11 +27,6 @@ private:
 
     ProcessControl() = default;
     ~ProcessControl() = default;
-
-    static void handle_shutdown_signal(int signal_number) noexcept;
-    static std::expected<void, ProcessControlError> install_handler(int signal_number, std::string_view signal_name);
-    static std::unexpected<ProcessControlError>
-    signal_install_error(std::string_view signal_name, std::error_code error);
 
     static void reset_for_tests() noexcept;
 };
