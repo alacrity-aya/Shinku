@@ -17,12 +17,12 @@ The explicit state flow for probing, configuring, starting, polling, stopping, a
 _Avoid_: Startup code
 
 **Backend Runner**:
-The Host Runtime object that owns Backend lifecycle sequencing and drives `poll_once()` calls.
+The Host Runtime object that owns Backend lifecycle sequencing and runs a Backend until a Stop Request or backend failure.
 _Avoid_: Backend implementation, runtime loop
 
 **Backend Probe**:
-The pre-start capability check that decides whether the selected Backend is supported on the current host with the validated Config.
-_Avoid_: Warm-up, partial start
+The pre-start capability check that decides whether the selected Backend is supported on the current host with the validated Config. A failed Backend Probe stops startup instead of triggering Backend fallback.
+_Avoid_: Warm-up, partial start, health check
 
 **Control Plane**:
 The management path that owns configuration, lifecycle, response validation, cache insertion, eviction, and shutdown.
@@ -111,6 +111,22 @@ _Avoid_: Runtime loop, backend lifecycle
 **Shutdown Request**:
 A sticky request for the Host Runtime to stop its Operational Loop and shut down cleanly.
 _Avoid_: Exit code, signal handler state
+
+**Stop Condition**:
+A Host Runtime source that can produce a Stop Request, such as a process signal, manual control action, or elapsed runtime deadline.
+_Avoid_: Backend state, signal handler
+
+**Stop Request**:
+The explicit request for the Backend Runner to stop a running Backend, including the reason the stop was requested.
+_Avoid_: Backend failure, exit code
+
+**Stop Reason**:
+The cause of an orderly Stop Request: Signal for an observed process-termination signal, Manual for an explicit in-process control request, or Timeout for an elapsed runtime deadline. Backend failures and operation-level timeouts are not Stop Reasons.
+_Avoid_: Backend error, poll timeout
+
+**Shutdown Report**:
+The normal successful result returned by the Backend Runner when it accepts a Stop Request and shuts a Backend down cleanly.
+_Avoid_: Run result, backend error, exit code
 
 **Fail-open**:
 The cache preserves upstream DNS behavior when it cannot safely answer locally; failures become bypasses or forwarding, not DNS outages.

@@ -4,7 +4,6 @@
 #include <expected>
 #include <format>
 #include <optional>
-#include <print>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -50,17 +49,6 @@ std::unexpected<BackendError> missing_backend_error(std::string_view operation) 
     );
 }
 
-BackendError unsupported_start_error(const ProbeResult& probe_result) {
-    auto message = probe_result.message.empty() ? std::string("backend unsupported")
-                                                : std::format("backend unsupported: {}", probe_result.message);
-
-    return BackendError {
-        .code = BackendErrorCode::Unsupported,
-        .message = std::move(message),
-        .cause = std::nullopt,
-    };
-}
-
 } // namespace
 
 BackendRunner::BackendRunner(std::unique_ptr<Backend> backend) noexcept: backend_(std::move(backend)) {}
@@ -69,17 +57,14 @@ BackendRunner::~BackendRunner() noexcept {
     if (state_ == BackendState::Stopped)
         return;
 
-    auto result = stop();
-    if (!result) {
-        std::println(stderr, "error: backend stop failed during shutdown: {}", result.error().message);
-    }
+    stop();
 }
 
 BackendState BackendRunner::state() const noexcept {
     return state_;
 }
 
-std::expected<ProbeResult, BackendError> BackendRunner::probe() {
+std::expected<void, BackendError> BackendRunner::probe() {
     if (!backend_)
         return missing_backend_error("probe");
     if (state_ != BackendState::Created)
@@ -98,11 +83,6 @@ std::expected<void, BackendError> BackendRunner::start() {
     if (!probe_result) {
         state_ = BackendState::Failed;
         return std::unexpected(probe_result.error());
-    }
-
-    if (probe_result->status == ProbeStatus::Unsupported) {
-        state_ = BackendState::Failed;
-        return std::unexpected(unsupported_start_error(*probe_result));
     }
 
     auto start_result = backend_->start();

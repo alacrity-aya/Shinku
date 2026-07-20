@@ -33,17 +33,13 @@ class FakeBackend final: public shinku::backend::Backend {
 public:
     explicit FakeBackend(std::shared_ptr<FakeBackendTrace> trace): trace_(std::move(trace)) {}
 
-    std::expected<shinku::backend::ProbeResult, shinku::backend::BackendError> probe_result =
-        shinku::backend::ProbeResult {
-            .status = shinku::backend::ProbeStatus::Supported,
-            .message = "supported",
-        };
+    std::expected<void, shinku::backend::BackendError> probe_result;
     std::expected<void, shinku::backend::BackendError> start_result;
     std::expected<shinku::backend::PollStatus, shinku::backend::BackendError> poll_result =
         shinku::backend::PollStatus::NoWork;
     std::expected<void, shinku::backend::BackendError> stop_result;
 
-    std::expected<shinku::backend::ProbeResult, shinku::backend::BackendError> probe() override {
+    std::expected<void, shinku::backend::BackendError> probe() override {
         trace_->probe_calls++;
         trace_->calls.emplace_back("probe");
         return probe_result;
@@ -184,12 +180,10 @@ TEST_CASE("BackendRunner destructor best-effort stops running backend") {
     CHECK(trace->stop_calls == 1);
 }
 
-TEST_CASE("BackendRunner start converts unsupported probe into error and Failed state") {
+TEST_CASE("BackendRunner start propagates probe error and moves to Failed") {
     RunnerFixture fixture;
-    fixture.backend->probe_result = shinku::backend::ProbeResult {
-        .status = shinku::backend::ProbeStatus::Unsupported,
-        .message = "missing BPF arena",
-    };
+    fixture.backend->probe_result =
+        std::unexpected(backend_error(shinku::backend::BackendErrorCode::Unsupported, "missing BPF arena"));
 
     auto started = fixture.runner->start();
 

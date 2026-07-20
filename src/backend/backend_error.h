@@ -12,6 +12,7 @@ enum class BackendErrorCode : uint8_t {
     InvalidState,
     WrongConfig,
     Unsupported,
+    PermissionDenied,
     ProbeFailed,
     StartFailed,
     PollFailed,

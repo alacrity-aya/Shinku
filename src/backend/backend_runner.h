@@ -20,7 +20,7 @@ public:
     BackendRunner& operator=(BackendRunner&&) = delete;
 
     [[nodiscard]] BackendState state() const noexcept;
-    [[nodiscard]] std::expected<ProbeResult, BackendError> probe();
+    [[nodiscard]] std::expected<void, BackendError> probe();
     [[nodiscard]] std::expected<void, BackendError> start();
     [[nodiscard]] std::expected<PollStatus, BackendError> poll_once();
     [[nodiscard]] std::expected<void, BackendError> stop();
