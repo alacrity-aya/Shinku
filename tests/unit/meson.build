@@ -18,7 +18,7 @@ dns_hash_test_exe = executable(
     native: true,
     dependencies: [libbpf_dep],
     c_args: ['-g', '-O2', '-D__BPF__=0'],
-    include_directories: [inc_src, include_directories('../../src/runtime')]
+    include_directories: inc_src
 )
 
 test('DNS Hash Consistency Check', dns_hash_test_exe)
@@ -40,7 +40,7 @@ dns_parser_test_exe = executable(
     native: true,
     dependencies: [libbpf_dep],
     c_args: ['-g', '-O2', '-D__BPF__=0'],
-    include_directories: [inc_src, include_directories('../../src/runtime')]
+    include_directories: inc_src
 )
 
 test('DNS Parser Test', dns_parser_test_exe)
@@ -62,7 +62,7 @@ cache_store_test_exe = executable(
     native: true,
     dependencies: [libbpf_dep, dependency('threads')],
     c_args: ['-g', '-O2', '-D__BPF__=0'],
-    include_directories: [inc_src, include_directories('../../src/runtime')]
+    include_directories: inc_src
 )
 
 test('Cache Store Correctness Test', cache_store_test_exe)
@@ -189,7 +189,6 @@ config_loader_test_exe = executable(
     'config/config_loader_test.cc',
     files(
       '../../src/config/toml_loader.cc',
-      '../../src/config/legacy_env_adapter.cc',
     ),
     dependencies: [tomlplusplus_dep, catch2_with_main_dep],
     include_directories: inc_src,
@@ -239,6 +238,22 @@ backend_runner_test_exe = executable(
 test('Backend Runner Test', backend_runner_test_exe)
 
 # ====================
+# C++ eBPF Backend Test
+# ====================
+ebpf_backend_test_exe = executable(
+    'ebpf_backend_test',
+    'backend/ebpf_backend_test.cc',
+    files(
+      '../../src/backend/backend_creation.cc',
+      '../../src/backend/ebpf/ebpf_backend.cc',
+    ),
+    dependencies: catch2_with_main_dep,
+    include_directories: inc_src,
+)
+
+test('eBPF Backend Test', ebpf_backend_test_exe)
+
+# ====================
 # DNS Benchmark (manual, not a test)
 # ====================
 dns_bench_exe = executable(
@@ -255,5 +270,5 @@ dns_bench_exe = executable(
     native: true,
     dependencies: [libbpf_dep],
     c_args: ['-g', '-O2', '-D__BPF__=0'],
-    include_directories: [inc_src, include_directories('../../src/runtime')]
+    include_directories: inc_src
 )

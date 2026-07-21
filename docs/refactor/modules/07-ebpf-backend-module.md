@@ -139,3 +139,17 @@ Verification:
 - `EbpfBackend` tests verify that private loader sentinel failures do not become `BackendError::cause`, while explicitly identified system error codes do.
 - Each `EbpfBackend` stores a non-owning `void*` ops context alongside the static `EbpfLoaderOps` table. Every operation receives that context; production may use `nullptr`, while tests use fixture-owned contexts for independent traces and configured results without global mutable fake state. Tests ensure the context outlives the backend.
 - Existing parser/cache/eBPF-relevant tests pass where host capabilities allow.
+
+Result:
+
+- Added `StopCondition`, Stop Requests, canonical Stop Reason names, and the runner-owned `run()` loop. `BackendRunner` now exposes only `run()` and `state()` and preserves the documented cleanup/error semantics.
+- Made Process Control implement `StopCondition` directly while retaining static signal-handler operations.
+- Added the private `EbpfLoaderConfig` and context-aware `EbpfLoaderOps` seam, production privilege/interface/arena probes, `EbpfBackend`, and the `make_backend(const Config&)` free function.
+- Replaced the production legacy runner path in `main.cc` with `make_backend() + BackendRunner`, removed the public legacy Config adapter and legacy runtime runner, and kept the temporary C `env` type inside the loader boundary.
+- Added focused Backend Runner and eBPF Backend tests for lifecycle sequencing, cleanup retries, Stop Reasons, probe mapping, loader-error causes, partial startup, ring polling, factory mismatch, and unsupported DPDK behavior.
+- `meson compile -C build` passed.
+- `meson compile -C /tmp/shinku-build-bpf-log shinku xdp_pass.bpf.o` passed with `bpf_log=true`; generated `vmlinux.h` warnings remain unchanged.
+- `ASAN_OPTIONS=detect_leaks=0:halt_on_error=1:abort_on_error=1 meson test -C build 'Backend Runner Test' 'Process Control Test' 'eBPF Backend Test' --no-rebuild --print-errorlogs` passed all three focused tests. Leak detection is disabled because LeakSanitizer cannot run under the current ptrace environment; AddressSanitizer remains enabled.
+- The full non-root Meson run passed 9 of 12 tests. The two arena tests still require root, and the legacy Cache Store Correctness Test still has its existing no-root `slot_owners` failures.
+- `meson compile -C build tidy` remains blocked by existing BPF-header clang-tidy errors; an additional direct clang-tidy pass over the new C++ production sources found no new actionable diagnostics after fixes.
+- Root-required attach/detach integration and soak tests were not run in this environment.

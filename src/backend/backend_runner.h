@@ -3,11 +3,16 @@
 
 #include "backend.h"
 #include "backend_error.h"
+#include "stop_condition.h"
 
 #include <expected>
 #include <memory>
 
 namespace shinku::backend {
+
+struct ShutdownReport {
+    StopRequest accepted_stop;
+};
 
 class BackendRunner final {
 public:
@@ -19,15 +24,15 @@ public:
     BackendRunner(BackendRunner&&) = delete;
     BackendRunner& operator=(BackendRunner&&) = delete;
 
+    [[nodiscard]] std::expected<ShutdownReport, BackendError> run(StopCondition& stop_condition);
     [[nodiscard]] BackendState state() const noexcept;
-    [[nodiscard]] std::expected<void, BackendError> probe();
-    [[nodiscard]] std::expected<void, BackendError> start();
-    [[nodiscard]] std::expected<PollStatus, BackendError> poll_once();
-    [[nodiscard]] std::expected<void, BackendError> stop();
 
 private:
+    [[nodiscard]] std::expected<void, BackendError> stop_backend();
+
     std::unique_ptr<Backend> backend_;
     BackendState state_ = BackendState::Created;
+    bool backend_active_ = false;
 };
 
 } // namespace shinku::backend

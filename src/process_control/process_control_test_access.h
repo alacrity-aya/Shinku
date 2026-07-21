@@ -7,8 +7,8 @@ namespace shinku::process_control {
 
 class ProcessControlTestAccess final {
 public:
-    static void reset_shutdown_request(ProcessControl& control = ProcessControl::instance()) noexcept {
-        control.reset_for_tests();
+    static void reset_shutdown_request() noexcept {
+        ProcessControl::reset_for_tests();
     }
 
 private:

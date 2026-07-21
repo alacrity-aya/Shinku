@@ -20,6 +20,7 @@ enum class PollStatus : uint8_t {
     NoWork,
 };
 
+// TODO: Backend is on hot path, CRTP maybe better?
 class Backend {
 public:
     Backend(const Backend&) = delete;

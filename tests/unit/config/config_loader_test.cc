@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: GPL-2.0-only OR Apache-2.0
-#include "config/legacy_env_adapter.h"
 #include "config/toml_loader.h"
 
 #include <catch2/catch_test_macros.hpp>
@@ -42,7 +41,7 @@ std::filesystem::path write_config(std::string_view name, std::string_view body)
 
 } // namespace
 
-TEST_CASE("valid eBPF config loads and adapts to legacy env") {
+TEST_CASE("valid eBPF config loads") {
     const auto path = write_config(
         "valid-ebpf.toml",
         R"(backend = "ebpf"
@@ -74,15 +73,9 @@ cache_negative = true
     CHECK(result->cache.max_response_bytes == 512);
     CHECK(result->cache.cache_negative);
     CHECK(sink.messages().empty());
-
-    auto legacy = shinku::config::to_legacy_env(*result);
-    REQUIRE(legacy.has_value());
-    CHECK(std::string(legacy->interface) == "eth0");
-    CHECK(legacy->arena_pages == 2112);
-    CHECK(legacy->cleanup_interval_ms == 10'000);
 }
 
-TEST_CASE("valid DPDK config loads but legacy adapter rejects it") {
+TEST_CASE("valid DPDK config loads") {
     const auto path = write_config(
         "valid-dpdk.toml",
         R"(backend = "dpdk"
@@ -108,10 +101,6 @@ cache_negative = false
     const auto& dpdk = std::get<shinku::config::DpdkConfig>(result->backend_config);
     CHECK(dpdk.client_port == 0);
     CHECK(dpdk.server_port == 1);
-
-    auto legacy = shinku::config::to_legacy_env(*result);
-    REQUIRE_FALSE(legacy.has_value());
-    CHECK(legacy.error().code == shinku::config::ConfigErrorCode::UnsupportedBackend);
 }
 
 TEST_CASE("unselected backend can be incomplete and is not retained") {

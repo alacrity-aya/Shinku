@@ -5,11 +5,14 @@
 #include "cache_types.h"
 #include "parser_runtime.h"
 
-#include "runtime/legacy_env.h"
 #include <bpf/libbpf.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdbool.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 /**
  * @file loader.h
@@ -20,6 +23,20 @@
  */
 
 struct cache_bpf;
+
+struct env {
+    const char* interface;
+    enum log_level log_level;
+    uint32_t arena_pages;
+    uint32_t cleanup_interval_ms;
+    uint32_t admission_enabled;
+    uint32_t pressure_mode;
+    uint32_t admission_min_ttl;
+    uint32_t admission_dampen_window_ms;
+    uint32_t hot_threshold;
+    uint32_t freq_width;
+    uint32_t freq_epoch_ops;
+};
 
 /**
  * @struct cleanup_config
@@ -125,3 +142,7 @@ int loader_start_cleanup_thread(struct bpf_ctx* ctx, uint32_t interval_ms);
  * Signals the cleanup thread to stop and waits for it to exit.
  */
 void loader_stop_cleanup_thread(struct bpf_ctx* ctx);
+
+#ifdef __cplusplus
+}
+#endif

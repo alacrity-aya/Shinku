@@ -20,7 +20,7 @@ Status: canonical execution plan entrypoint for the C++/DPDK refactor. The modul
 | 4 | [CLI Module](refactor/modules/04-cli-module.md) | complete | Reduce CLI to `shinku run [--config path]` config-file selection. |
 | 5 | [Process-control Module](refactor/modules/05-process-control-module.md) | complete | Move signal handling and shutdown request propagation out of CLI/backend code. |
 | 6 | [Backend Interface Module](refactor/modules/06-backend-interface-module.md) | complete | Introduce C++ Backend lifecycle interface and shared status/result types. |
-| 7 | [eBPF Backend Module](refactor/modules/07-ebpf-backend-module.md) | pending | Adapt existing eBPF loader behind the Backend interface and keep it runnable. |
+| 7 | [eBPF Backend Module](refactor/modules/07-ebpf-backend-module.md) | complete | Adapt existing eBPF loader behind the Backend interface and keep it runnable. |
 | 8 | [Cache/DNS Module](refactor/modules/08-cache-dns-module.md) | pending | Separate backend-neutral DNS/cache policy from eBPF storage details. |
 | 9 | [DPDK Backend Module](refactor/modules/09-dpdk-backend-module.md) | pending | Implement the DPDK backend after common interfaces are stable. |
 | 10 | [Runtime Diagnostics/Logging](refactor/modules/10-runtime-diagnostics-logging.md) | pending | Centralize operator-facing diagnostics, warnings, and runtime logging after backend boundaries stabilize. |
@@ -28,7 +28,7 @@ Status: canonical execution plan entrypoint for the C++/DPDK refactor. The modul
 
 Current active module:
 
-- [Module 7: eBPF Backend Module](refactor/modules/07-ebpf-backend-module.md)
+- [Module 8: Cache/DNS Module](refactor/modules/08-cache-dns-module.md)
 
 ## Test Policy During Refactor
 

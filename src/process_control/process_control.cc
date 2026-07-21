@@ -1,10 +1,14 @@
 // SPDX-License-Identifier: GPL-2.0-only OR Apache-2.0
 #include "process_control/process_control.h"
 
+#include "backend/stop_condition.h"
+#include "process_control/process_control_error.h"
+
 #include <cerrno>
 #include <csignal>
 #include <expected>
 #include <format>
+#include <optional>
 #include <string_view>
 #include <system_error>
 #include <utility>
@@ -22,11 +26,13 @@ void handle_shutdown_signal([[maybe_unused]] int signal_number) noexcept {
 std::unexpected<ProcessControlError> signal_install_error(std::string_view signal_name, std::error_code error) {
     auto message = std::format("sigaction({}) failed: {}", signal_name, error.message());
 
-    return std::unexpected(ProcessControlError {
-        .code = ProcessControlErrorCode::SignalInstallFailed,
-        .error = error,
-        .message = std::move(message),
-    });
+    return std::unexpected(
+        ProcessControlError {
+            .code = ProcessControlErrorCode::SignalInstallFailed,
+            .error = error,
+            .message = std::move(message),
+        }
+    );
 }
 
 std::expected<void, ProcessControlError> install_handler(int signal_number, std::string_view signal_name) {
@@ -53,6 +59,13 @@ void ProcessControl::request_shutdown() noexcept {
 
 bool ProcessControl::shutdown_requested() noexcept {
     return shutdown_requested_flag != 0;
+}
+
+std::optional<backend::StopRequest> ProcessControl::poll() noexcept {
+    if (!shutdown_requested())
+        return std::nullopt;
+
+    return backend::StopRequest { .reason = backend::StopReason::Signal };
 }
 
 std::expected<void, ProcessControlError> ProcessControl::install_signal_handlers() {

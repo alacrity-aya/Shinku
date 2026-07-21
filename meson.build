@@ -45,7 +45,6 @@ vmlinux_h = custom_target(
 )
 
 inc_src = include_directories('src/include', 'src')
-inc_runtime = include_directories('src/runtime')
 
 # ====================
 # Main BPF Program
@@ -90,7 +89,6 @@ bpf_skel = custom_target(
 
 # Core Library
 core_src = files(
-  'src/runtime/legacy_ebpf_runner.c',
   'src/core/hash.c',
   'src/core/cache_sketch.c',
   'src/core/cache_recent.c',
@@ -108,14 +106,20 @@ process_control_src = files(
 
 backend_src = files(
   'src/backend/backend_runner.cc',
+  'src/backend/stop_condition.cc',
+)
+
+ebpf_backend_src = files(
+  'src/backend/backend_creation.cc',
+  'src/backend/ebpf/ebpf_backend.cc',
+  'src/backend/ebpf/ebpf_loader_ops.cc',
 )
 
 cli_src = files(
   'src/cli/main.cc',
   'src/cli/cli.cc',
   'src/config/toml_loader.cc',
-  'src/config/legacy_env_adapter.cc',
-) + process_control_src
+) + process_control_src + backend_src + ebpf_backend_src
 
 executable(
   'shinku',
@@ -124,7 +128,7 @@ executable(
   bpf_skel,
   version_header,
   dependencies: [libbpf_dep, libcap_dep, tomlplusplus_dep, argparse_dep],
-  include_directories: [inc_src, inc_runtime],
+  include_directories: inc_src,
   c_args: (bpf_log ? ['-DSHINKU_BPF_LOG_ENABLED=1'] : ['-DSHINKU_BPF_LOG_ENABLED=0']) + (ecs ? ['-DSHINKU_ECS_ENABLED=1'] : ['-DSHINKU_ECS_ENABLED=0']),
   install: true
 )
@@ -137,7 +141,7 @@ if build_benchmark_bin
     bpf_skel,
     version_header,
     dependencies: [libbpf_dep, libcap_dep, tomlplusplus_dep, argparse_dep],
-    include_directories: [inc_src, inc_runtime],
+    include_directories: inc_src,
     c_args: [
       '-O3',
       '-DNDEBUG',

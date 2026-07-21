@@ -8,10 +8,21 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <utility>
 #include <vector>
 
 namespace {
+
+using shinku::backend::Backend;
+using shinku::backend::BackendError;
+using shinku::backend::BackendErrorCode;
+using shinku::backend::BackendRunner;
+using shinku::backend::BackendState;
+using shinku::backend::PollStatus;
+using shinku::backend::StopCondition;
+using shinku::backend::StopReason;
+using shinku::backend::StopRequest;
 
 struct FakeBackendTrace {
     int probe_calls = 0;
@@ -21,201 +32,234 @@ struct FakeBackendTrace {
     std::vector<std::string> calls;
 };
 
-shinku::backend::BackendError backend_error(shinku::backend::BackendErrorCode code, std::string_view message) {
-    return shinku::backend::BackendError {
+BackendError
+backend_error(BackendErrorCode code, std::string_view message, std::optional<std::error_code> cause = std::nullopt) {
+    return BackendError {
         .code = code,
         .message = std::string(message),
-        .cause = std::nullopt,
+        .cause = cause,
     };
 }
 
-class FakeBackend final: public shinku::backend::Backend {
+class FakeBackend final: public Backend {
 public:
     explicit FakeBackend(std::shared_ptr<FakeBackendTrace> trace): trace_(std::move(trace)) {}
 
-    std::expected<void, shinku::backend::BackendError> probe_result;
-    std::expected<void, shinku::backend::BackendError> start_result;
-    std::expected<shinku::backend::PollStatus, shinku::backend::BackendError> poll_result =
-        shinku::backend::PollStatus::NoWork;
-    std::expected<void, shinku::backend::BackendError> stop_result;
+    std::expected<void, BackendError> probe_result;
+    std::expected<void, BackendError> start_result;
+    std::expected<PollStatus, BackendError> poll_result = PollStatus::NoWork;
+    std::vector<std::expected<void, BackendError>> stop_results;
 
-    std::expected<void, shinku::backend::BackendError> probe() override {
+    std::expected<void, BackendError> probe() override {
         trace_->probe_calls++;
         trace_->calls.emplace_back("probe");
         return probe_result;
     }
 
-    std::expected<void, shinku::backend::BackendError> start() override {
+    std::expected<void, BackendError> start() override {
         trace_->start_calls++;
         trace_->calls.emplace_back("start");
         return start_result;
     }
 
-    std::expected<shinku::backend::PollStatus, shinku::backend::BackendError> poll_once() override {
+    std::expected<PollStatus, BackendError> poll_once() override {
         trace_->poll_calls++;
         trace_->calls.emplace_back("poll_once");
         return poll_result;
     }
 
-    std::expected<void, shinku::backend::BackendError> stop() override {
+    std::expected<void, BackendError> stop() override {
         trace_->stop_calls++;
         trace_->calls.emplace_back("stop");
-        return stop_result;
+        if (next_stop_result_ < stop_results.size())
+            return stop_results.at(next_stop_result_++);
+        return {};
     }
 
 private:
     std::shared_ptr<FakeBackendTrace> trace_;
+    std::size_t next_stop_result_ = 0;
+};
+
+class SequencedStopCondition final: public StopCondition {
+public:
+    explicit SequencedStopCondition(std::vector<std::optional<StopRequest>> results): results_(std::move(results)) {}
+
+    std::optional<StopRequest> poll() noexcept override {
+        if (next_result_ < results_.size())
+            return results_[next_result_++];
+        return StopRequest { .reason = StopReason::Manual };
+    }
+
+private:
+    std::vector<std::optional<StopRequest>> results_;
+    std::size_t next_result_ = 0;
 };
 
 struct RunnerFixture {
     std::shared_ptr<FakeBackendTrace> trace = std::make_shared<FakeBackendTrace>();
     FakeBackend* backend = nullptr;
-    std::unique_ptr<shinku::backend::BackendRunner> runner;
+    std::unique_ptr<BackendRunner> runner;
 
     RunnerFixture() {
         auto fake = std::make_unique<FakeBackend>(trace);
         backend = fake.get();
-        runner = std::make_unique<shinku::backend::BackendRunner>(std::move(fake));
+        runner = std::make_unique<BackendRunner>(std::move(fake));
     }
 };
+
+static_assert(noexcept(std::declval<StopCondition&>().poll()));
 
 } // namespace
 
 TEST_CASE("BackendRunner initial state is Created") {
     RunnerFixture fixture;
 
-    CHECK(fixture.runner->state() == shinku::backend::BackendState::Created);
+    CHECK(fixture.runner->state() == BackendState::Created);
     CHECK(fixture.trace->calls.empty());
 }
 
-TEST_CASE("BackendRunner start probes before starting backend") {
+TEST_CASE("BackendRunner accepts a pre-existing stop request without starting") {
     RunnerFixture fixture;
+    SequencedStopCondition stop_condition({ StopRequest { .reason = StopReason::Manual } });
 
-    auto started = fixture.runner->start();
+    auto result = fixture.runner->run(stop_condition);
 
-    REQUIRE(started.has_value());
-    CHECK(fixture.runner->state() == shinku::backend::BackendState::Running);
-    CHECK(fixture.trace->probe_calls == 1);
-    CHECK(fixture.trace->start_calls == 1);
-    CHECK(fixture.trace->calls == std::vector<std::string> { "probe", "start" });
+    REQUIRE(result.has_value());
+    CHECK(result->accepted_stop.reason == StopReason::Manual);
+    CHECK(fixture.runner->state() == BackendState::Stopped);
+    CHECK(fixture.trace->calls.empty());
 }
 
-TEST_CASE("BackendRunner rejects poll before start") {
+TEST_CASE("BackendRunner owns probe start poll and stop sequencing") {
     RunnerFixture fixture;
+    SequencedStopCondition stop_condition({ std::nullopt, std::nullopt, StopRequest { .reason = StopReason::Signal } });
 
-    auto polled = fixture.runner->poll_once();
+    auto result = fixture.runner->run(stop_condition);
 
-    REQUIRE_FALSE(polled.has_value());
-    CHECK(polled.error().code == shinku::backend::BackendErrorCode::InvalidState);
-    CHECK(fixture.runner->state() == shinku::backend::BackendState::Created);
-    CHECK(fixture.trace->poll_calls == 0);
+    REQUIRE(result.has_value());
+    CHECK(result->accepted_stop.reason == StopReason::Signal);
+    CHECK(fixture.runner->state() == BackendState::Stopped);
+    CHECK(fixture.trace->calls == std::vector<std::string> { "probe", "start", "poll_once", "stop" });
 }
 
-TEST_CASE("BackendRunner forwards WorkDone and NoWork while running") {
+TEST_CASE("BackendRunner preserves probe failure without starting or stopping") {
     RunnerFixture fixture;
-    REQUIRE(fixture.runner->start().has_value());
+    fixture.backend->probe_result = std::unexpected(backend_error(BackendErrorCode::Unsupported, "missing BPF arena"));
+    SequencedStopCondition stop_condition({ std::nullopt });
 
-    fixture.backend->poll_result = shinku::backend::PollStatus::WorkDone;
-    auto work_done = fixture.runner->poll_once();
-    REQUIRE(work_done.has_value());
-    CHECK(*work_done == shinku::backend::PollStatus::WorkDone);
+    auto result = fixture.runner->run(stop_condition);
 
-    fixture.backend->poll_result = shinku::backend::PollStatus::NoWork;
-    auto no_work = fixture.runner->poll_once();
-    REQUIRE(no_work.has_value());
-    CHECK(*no_work == shinku::backend::PollStatus::NoWork);
-    CHECK(fixture.runner->state() == shinku::backend::BackendState::Running);
-    CHECK(fixture.trace->poll_calls == 2);
+    REQUIRE_FALSE(result.has_value());
+    CHECK(result.error().code == BackendErrorCode::Unsupported);
+    CHECK(fixture.runner->state() == BackendState::Failed);
+    CHECK(fixture.trace->calls == std::vector<std::string> { "probe" });
 }
 
-TEST_CASE("BackendRunner poll failure moves state to Failed") {
-    RunnerFixture fixture;
-    REQUIRE(fixture.runner->start().has_value());
-    fixture.backend->poll_result =
-        std::unexpected(backend_error(shinku::backend::BackendErrorCode::PollFailed, "poll failed"));
-
-    auto polled = fixture.runner->poll_once();
-
-    REQUIRE_FALSE(polled.has_value());
-    CHECK(polled.error().code == shinku::backend::BackendErrorCode::PollFailed);
-    CHECK(fixture.runner->state() == shinku::backend::BackendState::Failed);
-}
-
-TEST_CASE("BackendRunner stop is idempotent") {
-    RunnerFixture fixture;
-    REQUIRE(fixture.runner->start().has_value());
-
-    auto first_stop = fixture.runner->stop();
-    auto second_stop = fixture.runner->stop();
-
-    REQUIRE(first_stop.has_value());
-    REQUIRE(second_stop.has_value());
-    CHECK(fixture.runner->state() == shinku::backend::BackendState::Stopped);
-    CHECK(fixture.trace->stop_calls == 1);
-}
-
-TEST_CASE("BackendRunner stop from Failed calls backend stop") {
-    RunnerFixture fixture;
-    REQUIRE(fixture.runner->start().has_value());
-    fixture.backend->poll_result =
-        std::unexpected(backend_error(shinku::backend::BackendErrorCode::PollFailed, "poll failed"));
-    REQUIRE_FALSE(fixture.runner->poll_once().has_value());
-
-    auto stopped = fixture.runner->stop();
-
-    REQUIRE(stopped.has_value());
-    CHECK(fixture.runner->state() == shinku::backend::BackendState::Stopped);
-    CHECK(fixture.trace->stop_calls == 1);
-}
-
-TEST_CASE("BackendRunner destructor best-effort stops running backend") {
+TEST_CASE("BackendRunner cleans up after start failure and does not repeat successful cleanup") {
     auto trace = std::make_shared<FakeBackendTrace>();
     {
         auto fake = std::make_unique<FakeBackend>(trace);
-        shinku::backend::BackendRunner runner(std::move(fake));
-        REQUIRE(runner.start().has_value());
-        CHECK(trace->stop_calls == 0);
+        fake->start_result = std::unexpected(backend_error(BackendErrorCode::StartFailed, "start failed"));
+        BackendRunner runner(std::move(fake));
+        SequencedStopCondition stop_condition({ std::nullopt });
+
+        auto result = runner.run(stop_condition);
+
+        REQUIRE_FALSE(result.has_value());
+        CHECK(result.error().code == BackendErrorCode::StartFailed);
+        CHECK(runner.state() == BackendState::Failed);
+        CHECK(trace->calls == std::vector<std::string> { "probe", "start", "stop" });
     }
 
     CHECK(trace->stop_calls == 1);
 }
 
-TEST_CASE("BackendRunner start propagates probe error and moves to Failed") {
-    RunnerFixture fixture;
-    fixture.backend->probe_result =
-        std::unexpected(backend_error(shinku::backend::BackendErrorCode::Unsupported, "missing BPF arena"));
+TEST_CASE("BackendRunner preserves start failure and retries failed cleanup in destructor") {
+    auto trace = std::make_shared<FakeBackendTrace>();
+    {
+        auto fake = std::make_unique<FakeBackend>(trace);
+        fake->start_result = std::unexpected(backend_error(BackendErrorCode::StartFailed, "start failed"));
+        fake->stop_results = {
+            std::unexpected(backend_error(BackendErrorCode::StopFailed, "first cleanup failed")),
+            {},
+        };
+        BackendRunner runner(std::move(fake));
+        SequencedStopCondition stop_condition({ std::nullopt });
 
-    auto started = fixture.runner->start();
+        auto result = runner.run(stop_condition);
 
-    REQUIRE_FALSE(started.has_value());
-    CHECK(started.error().code == shinku::backend::BackendErrorCode::Unsupported);
-    CHECK(fixture.runner->state() == shinku::backend::BackendState::Failed);
-    CHECK(fixture.trace->probe_calls == 1);
-    CHECK(fixture.trace->start_calls == 0);
+        REQUIRE_FALSE(result.has_value());
+        CHECK(result.error().message == "start failed");
+        CHECK(trace->stop_calls == 1);
+    }
+
+    CHECK(trace->stop_calls == 2);
 }
 
-TEST_CASE("BackendRunner start failure moves state to Failed") {
+TEST_CASE("BackendRunner returns the original poll error after successful cleanup") {
     RunnerFixture fixture;
-    fixture.backend->start_result =
-        std::unexpected(backend_error(shinku::backend::BackendErrorCode::StartFailed, "start failed"));
+    fixture.backend->poll_result =
+        std::unexpected(backend_error(BackendErrorCode::PollFailed, "packet ring poll failed"));
+    SequencedStopCondition stop_condition({ std::nullopt, std::nullopt });
 
-    auto started = fixture.runner->start();
+    auto result = fixture.runner->run(stop_condition);
 
-    REQUIRE_FALSE(started.has_value());
-    CHECK(started.error().code == shinku::backend::BackendErrorCode::StartFailed);
-    CHECK(fixture.runner->state() == shinku::backend::BackendState::Failed);
-    CHECK(fixture.trace->probe_calls == 1);
-    CHECK(fixture.trace->start_calls == 1);
+    REQUIRE_FALSE(result.has_value());
+    CHECK(result.error().code == BackendErrorCode::PollFailed);
+    CHECK(result.error().message == "packet ring poll failed");
+    CHECK(fixture.runner->state() == BackendState::Failed);
+    CHECK(fixture.trace->calls == std::vector<std::string> { "probe", "start", "poll_once", "stop" });
+
+    fixture.runner.reset();
+    CHECK(fixture.trace->stop_calls == 1);
 }
 
-TEST_CASE("BackendRunner rejects probe while running") {
+TEST_CASE("BackendRunner reports stop failure with the accepted reason") {
     RunnerFixture fixture;
-    REQUIRE(fixture.runner->start().has_value());
+    const auto cause = std::make_error_code(std::errc::io_error);
+    fixture.backend->stop_results = {
+        std::unexpected(backend_error(BackendErrorCode::StopFailed, "cleanup failed", cause)),
+        {},
+    };
+    SequencedStopCondition stop_condition({ std::nullopt, StopRequest { .reason = StopReason::Timeout } });
 
-    auto probed = fixture.runner->probe();
+    auto result = fixture.runner->run(stop_condition);
 
-    REQUIRE_FALSE(probed.has_value());
-    CHECK(probed.error().code == shinku::backend::BackendErrorCode::InvalidState);
-    CHECK(fixture.runner->state() == shinku::backend::BackendState::Running);
-    CHECK(fixture.trace->probe_calls == 1);
+    REQUIRE_FALSE(result.has_value());
+    CHECK(result.error().code == BackendErrorCode::StopFailed);
+    CHECK(result.error().message.find("timeout") != std::string::npos);
+    CHECK(result.error().message.find("cleanup failed") != std::string::npos);
+    CHECK(result.error().cause == cause);
+    CHECK(fixture.runner->state() == BackendState::Failed);
+}
+
+TEST_CASE("BackendRunner run is single-use") {
+    RunnerFixture fixture;
+    SequencedStopCondition first_stop({ StopRequest { .reason = StopReason::Manual } });
+    REQUIRE(fixture.runner->run(first_stop).has_value());
+    SequencedStopCondition second_stop({ StopRequest { .reason = StopReason::Signal } });
+
+    auto second_result = fixture.runner->run(second_stop);
+
+    REQUIRE_FALSE(second_result.has_value());
+    CHECK(second_result.error().code == BackendErrorCode::InvalidState);
+    CHECK(fixture.runner->state() == BackendState::Stopped);
+}
+
+TEST_CASE("BackendRunner rejects a missing backend") {
+    BackendRunner runner(nullptr);
+    SequencedStopCondition stop_condition({ StopRequest { .reason = StopReason::Manual } });
+
+    auto result = runner.run(stop_condition);
+
+    REQUIRE_FALSE(result.has_value());
+    CHECK(result.error().code == BackendErrorCode::InvalidState);
+    CHECK(runner.state() == BackendState::Failed);
+}
+
+TEST_CASE("stop_reason_name provides canonical names") {
+    CHECK(shinku::backend::stop_reason_name(StopReason::Signal) == "signal");
+    CHECK(shinku::backend::stop_reason_name(StopReason::Manual) == "manual");
+    CHECK(shinku::backend::stop_reason_name(StopReason::Timeout) == "timeout");
 }

@@ -531,7 +531,6 @@ int loader_start_cleanup_thread(struct bpf_ctx* ctx, uint32_t interval_ms) {
         return -err;
     }
 
-    printf("Started cleanup thread (interval: %ums)\n", interval_ms);
     return 0;
 }
 
@@ -548,5 +547,4 @@ void loader_stop_cleanup_thread(struct bpf_ctx* ctx) {
     }
 
     pthread_join(ctx->cleanup_thread, NULL);
-    printf("Cleanup thread stopped\n");
 }
