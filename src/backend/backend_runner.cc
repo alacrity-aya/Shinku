@@ -51,16 +51,18 @@ std::unexpected<BackendError> missing_backend_error() {
     );
 }
 
-BackendError stop_failed_error(StopRequest request, const BackendError& error) {
-    return BackendError {
-        .code = BackendErrorCode::StopFailed,
-        .message = std::format(
-            "failed to stop backend after {} shutdown request: {}",
-            stop_reason_name(request.reason),
-            error.message
-        ),
-        .cause = error.cause,
-    };
+std::unexpected<BackendError> stop_failed_error(StopRequest request, const BackendError& error) {
+    return std::unexpected(
+        BackendError {
+            .code = BackendErrorCode::StopFailed,
+            .message = std::format(
+                "failed to stop backend after {} shutdown request: {}",
+                stop_reason_name(request.reason),
+                error.message
+            ),
+            .cause = error.cause,
+        }
+    );
 }
 
 } // namespace
@@ -112,14 +114,14 @@ std::expected<ShutdownReport, BackendError> BackendRunner::run(StopCondition& st
             auto stopped = stop_backend();
             if (!stopped) {
                 state_ = BackendState::Failed;
-                return std::unexpected(stop_failed_error(*request, stopped.error()));
+                return stop_failed_error(*request, stopped.error());
             }
 
             state_ = BackendState::Stopped;
             return ShutdownReport { .accepted_stop = *request };
         }
 
-        auto poll_result = backend_->poll_once();
+        auto poll_result = backend_->poll();
         if (!poll_result) {
             state_ = BackendState::Failed;
             BackendError original_error = std::move(poll_result.error());

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only OR Apache-2.0
 #include "config/toml_loader.h"
+#include <format>
 
 #define TOML_EXCEPTIONS 0
 #include <toml++/toml.hpp>
@@ -107,10 +108,8 @@ const toml::table* subtable(const toml::table& table, std::string_view key) {
 std::string join_key(std::string_view prefix, std::string_view key) {
     if (prefix.empty())
         return std::string(key);
-    std::string out(prefix);
-    out += ".";
-    out += key;
-    return out;
+
+    return std::format("{}.{}", prefix, key);
 }
 
 void warn_unknown_keys(
@@ -120,11 +119,10 @@ void warn_unknown_keys(
     DiagnosticSink& sink,
     const std::filesystem::path& path
 ) {
-    for (const auto& [key, node]: table) {
-        (void)node;
+    for (const auto& [key, _]: table) {
         const std::string_view key_view(key.str());
         if (!allowed.contains(key_view))
-            emit_warning(sink, path, "unknown key " + join_key(prefix, key_view));
+            emit_warning(sink, path, std::format("unknown key {}", join_key(prefix, key_view)));
     }
 }
 
@@ -132,7 +130,13 @@ void warn_unknown_keys(const toml::table& root, DiagnosticSink& sink, const std:
     warn_unknown_keys(root, "", { "backend", "ebpf", "dpdk", "cache" }, sink, path);
 
     if (const toml::table* ebpf = subtable(root, "ebpf"); ebpf != nullptr)
-        warn_unknown_keys(*ebpf, "ebpf", { "iface", "arena_pages", "cleanup_interval" }, sink, path);
+        warn_unknown_keys(
+            *ebpf,
+            "ebpf",
+            { "iface", "arena_pages", "cleanup_interval", "packet_poll_timeout" },
+            sink,
+            path
+        );
 
     if (const toml::table* dpdk = subtable(root, "dpdk"); dpdk != nullptr)
         warn_unknown_keys(*dpdk, "dpdk", { "client_port", "server_port" }, sink, path);
@@ -320,10 +324,37 @@ parse_ebpf_config(const toml::table& root, const std::filesystem::path& path, Di
         );
     }
 
+    std::chrono::milliseconds packet_poll_timeout(100);
+    if (has_key(*ebpf, "packet_poll_timeout")) {
+        auto timeout_text = string_value(*ebpf, "packet_poll_timeout");
+        if (!timeout_text.has_value()) {
+            return emit_error(
+                sink,
+                ConfigErrorCode::SchemaError,
+                path,
+                "invalid type for key ebpf.packet_poll_timeout"
+            );
+        }
+
+        auto parsed_timeout = parse_duration(*timeout_text);
+        if (!parsed_timeout.has_value() || *parsed_timeout < std::chrono::milliseconds(1)
+            || *parsed_timeout > std::chrono::seconds(1))
+        {
+            return emit_error(
+                sink,
+                ConfigErrorCode::ValidationError,
+                path,
+                "invalid ebpf.packet_poll_timeout: expected duration from 1ms through 1s"
+            );
+        }
+        packet_poll_timeout = *parsed_timeout;
+    }
+
     return EbpfConfig {
         .iface = *iface,
         .arena_pages = *arena_pages,
         .cleanup_interval = cleanup_interval.value(),
+        .packet_poll_timeout = packet_poll_timeout,
     };
 }
 

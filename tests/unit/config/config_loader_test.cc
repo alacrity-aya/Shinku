@@ -7,7 +7,6 @@
 #include <fstream>
 #include <string>
 #include <string_view>
-#include <variant>
 #include <vector>
 
 namespace {
@@ -22,7 +21,7 @@ public:
         messages_.push_back("error: " + error.message);
     }
 
-    const std::vector<std::string>& messages() const {
+    [[nodiscard]] const std::vector<std::string>& messages() const {
         return messages_;
     }
 
@@ -69,6 +68,7 @@ cache_negative = true
     CHECK(ebpf.iface == "eth0");
     CHECK(ebpf.arena_pages == 2112);
     CHECK(ebpf.cleanup_interval.count() == 10'000);
+    CHECK(ebpf.packet_poll_timeout.count() == 100);
     CHECK(result->cache.max_entries == 16384);
     CHECK(result->cache.max_response_bytes == 512);
     CHECK(result->cache.cache_negative);
@@ -184,6 +184,58 @@ cache_negative = true
     CHECK(result.error().message.find("ebpf.cleanup_interval") != std::string::npos);
 }
 
+TEST_CASE("eBPF packet poll timeout can override its default") {
+    const auto path = write_config(
+        "packet-poll-timeout.toml",
+        R"(backend = "ebpf"
+
+[ebpf]
+iface = "eth0"
+arena_pages = 2112
+cleanup_interval = "10s"
+packet_poll_timeout = "250ms"
+
+[cache]
+max_entries = 1024
+max_response_bytes = 512
+cache_negative = true
+)"
+    );
+
+    CapturingSink sink;
+    auto result = shinku::config::load_config(path, sink);
+
+    REQUIRE(result.has_value());
+    CHECK(std::get<shinku::config::EbpfConfig>(result->backend_config).packet_poll_timeout.count() == 250);
+    CHECK(sink.messages().empty());
+}
+
+TEST_CASE("eBPF packet poll timeout rejects out of range values") {
+    const auto path = write_config(
+        "packet-poll-timeout-too-large.toml",
+        R"(backend = "ebpf"
+
+[ebpf]
+iface = "eth0"
+arena_pages = 2112
+cleanup_interval = "10s"
+packet_poll_timeout = "2s"
+
+[cache]
+max_entries = 1024
+max_response_bytes = 512
+cache_negative = true
+)"
+    );
+
+    CapturingSink sink;
+    auto result = shinku::config::load_config(path, sink);
+
+    REQUIRE_FALSE(result.has_value());
+    CHECK(result.error().code == shinku::config::ConfigErrorCode::ValidationError);
+    CHECK(result.error().message.find("ebpf.packet_poll_timeout") != std::string::npos);
+}
+
 TEST_CASE("missing file maps to FileNotFound") {
     const auto path = std::filesystem::temp_directory_path() / "shinku_config_tests" / "missing.toml";
     std::filesystem::remove(path);
@@ -243,5 +295,5 @@ cache_negative = true
 
     REQUIRE_FALSE(result.has_value());
     CHECK(result.error().code == shinku::config::ConfigErrorCode::ValidationError);
-    CHECK(result.error().message.find("dpdk.server_port") != std::string::npos);
+    CHECK(result.error().message.contains("dpdk.server_port"));
 }

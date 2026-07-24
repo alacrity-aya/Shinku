@@ -95,7 +95,7 @@ core_src = files(
   'src/core/cache_segments.c',
   'src/core/cache_ops.c',
   'src/core/dns_parser.c',
-  'src/core/loader.c',
+  'src/core/loader_cache_bridge.c',
 
 )
 
@@ -112,7 +112,7 @@ backend_src = files(
 ebpf_backend_src = files(
   'src/backend/backend_creation.cc',
   'src/backend/ebpf/ebpf_backend.cc',
-  'src/backend/ebpf/ebpf_loader_ops.cc',
+  'src/backend/ebpf/ebpf_native_session.cc',
 )
 
 cli_src = files(
@@ -130,6 +130,7 @@ executable(
   dependencies: [libbpf_dep, libcap_dep, tomlplusplus_dep, argparse_dep],
   include_directories: inc_src,
   c_args: (bpf_log ? ['-DSHINKU_BPF_LOG_ENABLED=1'] : ['-DSHINKU_BPF_LOG_ENABLED=0']) + (ecs ? ['-DSHINKU_ECS_ENABLED=1'] : ['-DSHINKU_ECS_ENABLED=0']),
+  cpp_args: (bpf_log ? ['-DSHINKU_BPF_LOG_ENABLED=1'] : ['-DSHINKU_BPF_LOG_ENABLED=0']) + (ecs ? ['-DSHINKU_ECS_ENABLED=1'] : ['-DSHINKU_ECS_ENABLED=0']),
   install: true
 )
 
@@ -143,6 +144,10 @@ if build_benchmark_bin
     dependencies: [libbpf_dep, libcap_dep, tomlplusplus_dep, argparse_dep],
     include_directories: inc_src,
     c_args: [
+      '-O3',
+      '-DNDEBUG',
+    ] + (bpf_log ? ['-DSHINKU_BPF_LOG_ENABLED=1'] : ['-DSHINKU_BPF_LOG_ENABLED=0']) + (ecs ? ['-DSHINKU_ECS_ENABLED=1'] : ['-DSHINKU_ECS_ENABLED=0']),
+    cpp_args: [
       '-O3',
       '-DNDEBUG',
     ] + (bpf_log ? ['-DSHINKU_BPF_LOG_ENABLED=1'] : ['-DSHINKU_BPF_LOG_ENABLED=0']) + (ecs ? ['-DSHINKU_ECS_ENABLED=1'] : ['-DSHINKU_ECS_ENABLED=0']),

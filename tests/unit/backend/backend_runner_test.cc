@@ -50,6 +50,7 @@ public:
     std::expected<PollStatus, BackendError> poll_result = PollStatus::NoWork;
     std::vector<std::expected<void, BackendError>> stop_results;
 
+protected:
     std::expected<void, BackendError> probe() override {
         trace_->probe_calls++;
         trace_->calls.emplace_back("probe");
@@ -62,7 +63,7 @@ public:
         return start_result;
     }
 
-    std::expected<PollStatus, BackendError> poll_once() override {
+    std::expected<PollStatus, BackendError> poll() override {
         trace_->poll_calls++;
         trace_->calls.emplace_back("poll_once");
         return poll_result;

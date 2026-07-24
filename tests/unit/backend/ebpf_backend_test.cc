@@ -1,14 +1,16 @@
 // SPDX-License-Identifier: GPL-2.0-only OR Apache-2.0
 #include "backend/ebpf/ebpf_backend.h"
 #include "backend/backend_creation.h"
-#include "backend/ebpf/ebpf_loader_ops.h"
+#include "backend/backend_runner.h"
+#include "fake_ebpf_native_session.h"
 
 #include <catch2/catch_test_macros.hpp>
 
-#include <cerrno>
+#include <algorithm>
 #include <chrono>
 #include <expected>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -19,96 +21,20 @@
 namespace {
 
 using shinku::backend::BackendErrorCode;
-using shinku::backend::PollStatus;
-using shinku::backend::ebpf::CapabilityProbeResult;
+using shinku::backend::BackendRunner;
+using shinku::backend::BackendState;
+using shinku::backend::StopCondition;
+using shinku::backend::StopReason;
+using shinku::backend::StopRequest;
 using shinku::backend::ebpf::EbpfBackend;
-using shinku::backend::ebpf::EbpfLoaderConfig;
-using shinku::backend::ebpf::EbpfLoaderOps;
-
-struct FakeOpsState {
-    CapabilityProbeResult privilege_result = true;
-    CapabilityProbeResult interface_result = true;
-    CapabilityProbeResult arena_result = true;
-    int setup_result = 0;
-    int cleanup_thread_result = 0;
-    int log_poll_result = 0;
-    int packet_poll_result = 0;
-    int cleanup_calls = 0;
-    int packet_poll_calls = 0;
-    int log_timeout_ms = 0;
-    int packet_timeout_ms = 0;
-    uint32_t cleanup_interval_ms = 0;
-    std::string probed_iface;
-    EbpfLoaderConfig setup_config;
-    std::vector<std::string> calls;
-};
-
-FakeOpsState& state(void* context) {
-    return *static_cast<FakeOpsState*>(context);
-}
-
-CapabilityProbeResult probe_privileges(void* context) {
-    state(context).calls.emplace_back("probe_privileges");
-    return state(context).privilege_result;
-}
-
-CapabilityProbeResult probe_interface(void* context, std::string_view iface) {
-    state(context).calls.emplace_back("probe_interface");
-    state(context).probed_iface = iface;
-    return state(context).interface_result;
-}
-
-CapabilityProbeResult probe_arena(void* context) {
-    state(context).calls.emplace_back("probe_arena");
-    return state(context).arena_result;
-}
-
-int setup(void* context, [[maybe_unused]] bpf_ctx* bpf_context, const EbpfLoaderConfig& config) {
-    state(context).calls.emplace_back("setup");
-    state(context).setup_config = config;
-    return state(context).setup_result;
-}
-
-int start_cleanup_thread(void* context, [[maybe_unused]] bpf_ctx* bpf_context, uint32_t interval_ms) {
-    state(context).calls.emplace_back("start_cleanup_thread");
-    state(context).cleanup_interval_ms = interval_ms;
-    return state(context).cleanup_thread_result;
-}
-
-int poll_log_ring(void* context, [[maybe_unused]] bpf_ctx* bpf_context, int timeout_ms) {
-    state(context).calls.emplace_back("poll_log_ring");
-    state(context).log_timeout_ms = timeout_ms;
-    return state(context).log_poll_result;
-}
-
-int poll_packet_ring(void* context, [[maybe_unused]] bpf_ctx* bpf_context, int timeout_ms) {
-    state(context).calls.emplace_back("poll_packet_ring");
-    state(context).packet_poll_calls++;
-    state(context).packet_timeout_ms = timeout_ms;
-    return state(context).packet_poll_result;
-}
-
-void cleanup(void* context, [[maybe_unused]] bpf_ctx* bpf_context) {
-    state(context).calls.emplace_back("cleanup");
-    state(context).cleanup_calls++;
-}
-
-const EbpfLoaderOps kFakeOps = {
-    .has_required_privileges = probe_privileges,
-    .interface_exists = probe_interface,
-    .arena_supported = probe_arena,
-    .setup = setup,
-    .start_cleanup_thread = start_cleanup_thread,
-    .poll_log_ring = poll_log_ring,
-    .poll_packet_ring = poll_packet_ring,
-    .cleanup = cleanup,
-};
+using shinku::backend::ebpf::testing::FakeEbpfNativeSession;
+using namespace std::chrono_literals;
 
 shinku::config::EbpfConfig ebpf_config() {
     return shinku::config::EbpfConfig {
         .iface = "eth0",
         .arena_pages = 2112,
-        .cleanup_interval = std::chrono::milliseconds(10'000),
+        .cleanup_interval = 10'000ms,
     };
 }
 
@@ -120,193 +46,265 @@ shinku::config::CacheConfig cache_config() {
     };
 }
 
-std::unique_ptr<EbpfBackend> make_fake_backend(FakeOpsState& ops_state) {
-    return std::make_unique<EbpfBackend>(ebpf_config(), cache_config(), kFakeOps, &ops_state);
+class SequencedStopCondition final: public StopCondition {
+public:
+    explicit SequencedStopCondition(std::vector<std::optional<StopRequest>> results): results_(std::move(results)) {}
+
+    std::optional<StopRequest> poll() noexcept override {
+        if (next_ < results_.size())
+            return results_[next_++];
+        return StopRequest { .reason = StopReason::Manual };
+    }
+
+private:
+    std::vector<std::optional<StopRequest>> results_;
+    std::size_t next_ = 0;
+};
+
+struct BackendFixture {
+    FakeEbpfNativeSession* session = nullptr;
+    std::unique_ptr<BackendRunner> runner;
+
+    explicit BackendFixture(shinku::config::EbpfConfig config = ebpf_config()) {
+        auto fake = std::make_unique<FakeEbpfNativeSession>();
+        session = fake.get();
+        auto backend = std::make_unique<EbpfBackend>(std::move(config), cache_config(), std::move(fake));
+        runner = std::make_unique<BackendRunner>(std::move(backend));
+    }
+};
+
+bool called_after(const std::vector<std::string>& calls, std::string_view first, std::string_view second) {
+    const auto first_position = std::find(calls.begin(), calls.end(), first);
+    const auto second_position = std::find(calls.begin(), calls.end(), second);
+    return first_position != calls.end() && second_position != calls.end() && first_position < second_position;
 }
 
 } // namespace
 
-namespace shinku::backend::ebpf {
+TEST_CASE("EbpfBackend lifecycle is driven through BackendRunner") {
+    BackendFixture fixture;
+    fixture.session->packet_poll_results.emplace_back(1);
+    SequencedStopCondition stop_condition({ std::nullopt, std::nullopt, StopRequest { .reason = StopReason::Signal } });
 
-const EbpfLoaderOps& production_ebpf_loader_ops() noexcept {
-    return kFakeOps;
-}
-
-} // namespace shinku::backend::ebpf
-
-TEST_CASE("EbpfBackend probe preserves operation order") {
-    FakeOpsState ops_state;
-    auto backend = make_fake_backend(ops_state);
-
-    auto result = backend->probe();
+    auto result = fixture.runner->run(stop_condition);
 
     REQUIRE(result.has_value());
-    CHECK(ops_state.calls == std::vector<std::string> {
-                                 "probe_privileges",
-                                 "probe_interface",
-                                 "probe_arena",
-                             });
-    CHECK(ops_state.probed_iface == "eth0");
+    CHECK(result->accepted_stop.reason == StopReason::Signal);
+    CHECK(fixture.runner->state() == BackendState::Stopped);
+    CHECK(fixture.session->probed_interface == "eth0");
+    CHECK(fixture.session->indexed_interface == "eth0");
+    CHECK(fixture.session->configured_arena_pages == 2112);
+    CHECK(fixture.session->attached_ifindex == 7);
+    CHECK(fixture.session->log_poll_timeout_ms == 100);
+    CHECK(fixture.session->packet_poll_timeout_ms == 100);
+    CHECK(called_after(fixture.session->calls, "prepare_skeleton", "create_cache_bridge"));
+    CHECK(called_after(fixture.session->calls, "create_cache_bridge", "create_log_ring"));
+    CHECK(called_after(fixture.session->calls, "create_log_ring", "attach_xdp"));
+    CHECK(called_after(fixture.session->calls, "attach_tcx", "create_packet_ring"));
+    CHECK(called_after(fixture.session->calls, "create_packet_ring", "poll_packet_ring"));
+    CHECK(called_after(fixture.session->calls, "poll_packet_ring", "release"));
+    CHECK(std::count(fixture.session->calls.begin(), fixture.session->calls.end(), "cleanup_expired_entries") == 0);
 }
 
-TEST_CASE("EbpfBackend maps negative capability conclusions") {
+TEST_CASE("EbpfBackend maps capability conclusions without entering start") {
     SECTION("missing privileges") {
-        FakeOpsState ops_state;
-        ops_state.privilege_result = false;
-        auto backend = make_fake_backend(ops_state);
+        BackendFixture fixture;
+        fixture.session->privilege_result = false;
+        SequencedStopCondition stop_condition({ std::nullopt });
 
-        auto result = backend->probe();
+        auto result = fixture.runner->run(stop_condition);
 
         REQUIRE_FALSE(result.has_value());
         CHECK(result.error().code == BackendErrorCode::PermissionDenied);
-        CHECK_FALSE(result.error().cause.has_value());
-        CHECK(ops_state.calls == std::vector<std::string> { "probe_privileges" });
+        CHECK(fixture.session->calls == std::vector<std::string> { "probe_privileges" });
     }
 
     SECTION("missing interface") {
-        FakeOpsState ops_state;
-        ops_state.interface_result = false;
-        auto backend = make_fake_backend(ops_state);
+        BackendFixture fixture;
+        fixture.session->interface_result = false;
+        SequencedStopCondition stop_condition({ std::nullopt });
 
-        auto result = backend->probe();
+        auto result = fixture.runner->run(stop_condition);
 
         REQUIRE_FALSE(result.has_value());
         CHECK(result.error().code == BackendErrorCode::WrongConfig);
-        CHECK_FALSE(result.error().cause.has_value());
         CHECK(result.error().message.find("eth0") != std::string::npos);
     }
 
     SECTION("unsupported arena") {
-        FakeOpsState ops_state;
-        ops_state.arena_result = false;
-        auto backend = make_fake_backend(ops_state);
+        BackendFixture fixture;
+        fixture.session->arena_result = false;
+        SequencedStopCondition stop_condition({ std::nullopt });
 
-        auto result = backend->probe();
+        auto result = fixture.runner->run(stop_condition);
 
         REQUIRE_FALSE(result.has_value());
         CHECK(result.error().code == BackendErrorCode::Unsupported);
-        CHECK_FALSE(result.error().cause.has_value());
     }
 }
 
-TEST_CASE("EbpfBackend maps probe operation errors with causes") {
+TEST_CASE("EbpfBackend preserves probe operation causes") {
+    BackendFixture fixture;
     const auto cause = std::make_error_code(std::errc::io_error);
+    fixture.session->arena_result = std::unexpected(cause);
+    SequencedStopCondition stop_condition({ std::nullopt });
 
-    SECTION("privilege operation") {
-        FakeOpsState ops_state;
-        ops_state.privilege_result = std::unexpected(cause);
-        auto backend = make_fake_backend(ops_state);
-        auto result = backend->probe();
-        REQUIRE_FALSE(result.has_value());
-        CHECK(result.error().code == BackendErrorCode::ProbeFailed);
-        CHECK(result.error().cause == cause);
-    }
+    auto result = fixture.runner->run(stop_condition);
 
-    SECTION("interface operation") {
-        FakeOpsState ops_state;
-        ops_state.interface_result = std::unexpected(cause);
-        auto backend = make_fake_backend(ops_state);
-        auto result = backend->probe();
-        REQUIRE_FALSE(result.has_value());
-        CHECK(result.error().code == BackendErrorCode::ProbeFailed);
-        CHECK(result.error().cause == cause);
-    }
-
-    SECTION("arena operation") {
-        FakeOpsState ops_state;
-        ops_state.arena_result = std::unexpected(cause);
-        auto backend = make_fake_backend(ops_state);
-        auto result = backend->probe();
-        REQUIRE_FALSE(result.has_value());
-        CHECK(result.error().code == BackendErrorCode::ProbeFailed);
-        CHECK(result.error().cause == cause);
-    }
+    REQUIRE_FALSE(result.has_value());
+    CHECK(result.error().code == BackendErrorCode::ProbeFailed);
+    CHECK(result.error().cause == cause);
 }
 
-TEST_CASE("EbpfBackend setup failure keeps private loader code out of cause") {
-    FakeOpsState ops_state;
-    ops_state.setup_result = -3;
-    auto backend = make_fake_backend(ops_state);
+TEST_CASE("EbpfBackend leaves partial native session state for runner cleanup") {
+    BackendFixture fixture;
+    const auto cause = std::make_error_code(std::errc::not_enough_memory);
+    fixture.session->packet_ring_result = std::unexpected(cause);
+    SequencedStopCondition stop_condition({ std::nullopt });
 
-    auto result = backend->start();
+    auto result = fixture.runner->run(stop_condition);
 
     REQUIRE_FALSE(result.has_value());
     CHECK(result.error().code == BackendErrorCode::StartFailed);
-    CHECK(result.error().message.find("-3") != std::string::npos);
-    CHECK_FALSE(result.error().cause.has_value());
-    REQUIRE(backend->stop().has_value());
-    CHECK(ops_state.cleanup_calls == 0);
+    CHECK(result.error().cause == cause);
+    CHECK(fixture.runner->state() == BackendState::Failed);
+    CHECK(called_after(fixture.session->calls, "create_packet_ring", "release"));
 }
 
-TEST_CASE("EbpfBackend cleanup thread failure remains available for runner cleanup") {
-    FakeOpsState ops_state;
-    ops_state.cleanup_thread_result = -EAGAIN;
-    auto backend = make_fake_backend(ops_state);
+TEST_CASE("EbpfBackend treats log ring creation failure as fatal") {
+    BackendFixture fixture;
+    const auto cause = std::make_error_code(std::errc::not_enough_memory);
+    fixture.session->log_ring_result = std::unexpected(cause);
+    SequencedStopCondition stop_condition({ std::nullopt });
 
-    auto result = backend->start();
+    auto result = fixture.runner->run(stop_condition);
 
     REQUIRE_FALSE(result.has_value());
     CHECK(result.error().code == BackendErrorCode::StartFailed);
-    REQUIRE(result.error().cause.has_value());
-    CHECK(result.error().cause->value() == EAGAIN);
-    CHECK(ops_state.setup_config.iface == "eth0");
-    CHECK(ops_state.setup_config.arena_pages == 2112);
-    CHECK(ops_state.cleanup_interval_ms == 10'000);
-
-    REQUIRE(backend->stop().has_value());
-    CHECK(ops_state.cleanup_calls == 1);
+    CHECK(result.error().cause == cause);
+    CHECK(called_after(fixture.session->calls, "create_log_ring", "release"));
 }
 
-TEST_CASE("EbpfBackend preserves ring polling behavior") {
-    FakeOpsState ops_state;
-    auto backend = make_fake_backend(ops_state);
-    REQUIRE(backend->start().has_value());
+TEST_CASE("EbpfBackend owns XDP retry and backoff policy") {
+    BackendFixture fixture;
+    const auto busy = std::make_error_code(std::errc::device_or_resource_busy);
+    fixture.session->xdp_results = { std::unexpected(busy), std::unexpected(busy), {} };
+    SequencedStopCondition stop_condition({ std::nullopt, StopRequest { .reason = StopReason::Manual } });
 
-    ops_state.log_poll_result = 1;
-    auto work = backend->poll_once();
-    REQUIRE(work.has_value());
-    CHECK(*work == PollStatus::WorkDone);
-    CHECK(ops_state.log_timeout_ms == 100);
-    CHECK(ops_state.packet_timeout_ms == 100);
+    auto result = fixture.runner->run(stop_condition);
 
-    ops_state.log_poll_result = 0;
-    ops_state.packet_poll_result = 0;
-    auto no_work = backend->poll_once();
-    REQUIRE(no_work.has_value());
-    CHECK(*no_work == PollStatus::NoWork);
-
-    ops_state.log_poll_result = -EINTR;
-    const int packet_calls_before_log_interrupt = ops_state.packet_poll_calls;
-    auto interrupted_log = backend->poll_once();
-    REQUIRE(interrupted_log.has_value());
-    CHECK(*interrupted_log == PollStatus::NoWork);
-    CHECK(ops_state.packet_poll_calls == packet_calls_before_log_interrupt);
-
-    ops_state.log_poll_result = -EIO;
-    ops_state.packet_poll_result = 2;
-    auto nonfatal_log_error = backend->poll_once();
-    REQUIRE(nonfatal_log_error.has_value());
-    CHECK(*nonfatal_log_error == PollStatus::WorkDone);
-
-    ops_state.log_poll_result = 0;
-    ops_state.packet_poll_result = -EINTR;
-    auto interrupted_packet = backend->poll_once();
-    REQUIRE(interrupted_packet.has_value());
-    CHECK(*interrupted_packet == PollStatus::NoWork);
-
-    ops_state.packet_poll_result = -EIO;
-    auto packet_error = backend->poll_once();
-    REQUIRE_FALSE(packet_error.has_value());
-    CHECK(packet_error.error().code == BackendErrorCode::PollFailed);
-    REQUIRE(packet_error.error().cause.has_value());
-    CHECK(packet_error.error().cause->value() == EIO);
-
-    REQUIRE(backend->stop().has_value());
-    REQUIRE(backend->stop().has_value());
-    CHECK(ops_state.cleanup_calls == 1);
+    REQUIRE(result.has_value());
+    CHECK(fixture.session->waits == std::vector<std::chrono::milliseconds> { 50ms, 100ms });
+    CHECK(std::count(fixture.session->calls.begin(), fixture.session->calls.end(), "attach_xdp") == 3);
 }
 
-TEST_CASE("make_backend rejects mismatch and unavailable DPDK") {
+TEST_CASE("EbpfBackend falls back from unsupported TCX to legacy TC") {
+    BackendFixture fixture;
+    fixture.session->tcx_results = {
+        std::unexpected(std::make_error_code(std::errc::operation_not_supported)),
+    };
+    SequencedStopCondition stop_condition({ std::nullopt, StopRequest { .reason = StopReason::Manual } });
+
+    auto result = fixture.runner->run(stop_condition);
+
+    REQUIRE(result.has_value());
+    CHECK(called_after(fixture.session->calls, "attach_tcx", "attach_legacy_tc"));
+    CHECK(std::count(fixture.session->calls.begin(), fixture.session->calls.end(), "attach_legacy_tc") == 1);
+}
+
+TEST_CASE("EbpfBackend preserves packet ring polling behavior") {
+    SECTION("interrupted poll is no work") {
+        BackendFixture fixture;
+        fixture.session->packet_poll_results.emplace_back(
+            std::unexpected(std::make_error_code(std::errc::interrupted))
+        );
+        SequencedStopCondition stop_condition(
+            { std::nullopt, std::nullopt, StopRequest { .reason = StopReason::Manual } }
+        );
+
+        auto result = fixture.runner->run(stop_condition);
+
+        REQUIRE(result.has_value());
+        CHECK(fixture.runner->state() == BackendState::Stopped);
+    }
+
+    SECTION("other poll error fails the runner and releases the session") {
+        BackendFixture fixture;
+        const auto cause = std::make_error_code(std::errc::io_error);
+        fixture.session->packet_poll_results.emplace_back(std::unexpected(cause));
+        SequencedStopCondition stop_condition({ std::nullopt, std::nullopt });
+
+        auto result = fixture.runner->run(stop_condition);
+
+        REQUIRE_FALSE(result.has_value());
+        CHECK(result.error().code == BackendErrorCode::PollFailed);
+        CHECK(result.error().cause == cause);
+        CHECK(fixture.runner->state() == BackendState::Failed);
+        CHECK(
+            std::find(fixture.session->calls.begin(), fixture.session->calls.end(), "release")
+            != fixture.session->calls.end()
+        );
+    }
+}
+
+TEST_CASE("EbpfBackend uses the configured packet poll timeout") {
+    auto config = ebpf_config();
+    config.packet_poll_timeout = 250ms;
+    BackendFixture fixture(std::move(config));
+    SequencedStopCondition stop_condition({ std::nullopt, std::nullopt, StopRequest { .reason = StopReason::Manual } });
+
+    auto result = fixture.runner->run(stop_condition);
+
+    REQUIRE(result.has_value());
+    CHECK(fixture.session->packet_poll_timeout_ms == 250);
+}
+
+TEST_CASE("EbpfBackend preserves log ring polling behavior") {
+    SECTION("interrupted log poll short-circuits packet polling") {
+        BackendFixture fixture;
+        fixture.session->log_poll_results.emplace_back(std::unexpected(std::make_error_code(std::errc::interrupted)));
+        SequencedStopCondition stop_condition(
+            { std::nullopt, std::nullopt, StopRequest { .reason = StopReason::Manual } }
+        );
+
+        auto result = fixture.runner->run(stop_condition);
+
+        REQUIRE(result.has_value());
+        CHECK(fixture.session->log_poll_timeout_ms == 100);
+        CHECK(std::count(fixture.session->calls.begin(), fixture.session->calls.end(), "poll_packet_ring") == 0);
+    }
+
+    SECTION("other log poll errors do not prevent packet polling") {
+        BackendFixture fixture;
+        fixture.session->log_poll_results.emplace_back(std::unexpected(std::make_error_code(std::errc::io_error)));
+        fixture.session->packet_poll_results.emplace_back(1);
+        SequencedStopCondition stop_condition(
+            { std::nullopt, std::nullopt, StopRequest { .reason = StopReason::Manual } }
+        );
+
+        auto result = fixture.runner->run(stop_condition);
+
+        REQUIRE(result.has_value());
+        CHECK(std::count(fixture.session->calls.begin(), fixture.session->calls.end(), "poll_packet_ring") == 1);
+    }
+}
+
+TEST_CASE("EbpfBackend maps native session release failure") {
+    BackendFixture fixture;
+    const auto release_error = std::make_error_code(std::errc::io_error);
+    fixture.session->release_results.emplace_back(std::unexpected(release_error));
+    SequencedStopCondition stop_condition({ std::nullopt, StopRequest { .reason = StopReason::Manual } });
+
+    auto result = fixture.runner->run(stop_condition);
+
+    REQUIRE_FALSE(result.has_value());
+    CHECK(result.error().code == BackendErrorCode::StopFailed);
+    CHECK(result.error().cause == release_error);
+    CHECK(fixture.runner->state() == BackendState::Failed);
+    CHECK(std::count(fixture.session->calls.begin(), fixture.session->calls.end(), "release") == 1);
+}
+
+TEST_CASE("make_backend validates selection and assembles production eBPF backend") {
     const shinku::config::Config mismatch = {
         .backend = shinku::config::BackendKind::Ebpf,
         .backend_config = shinku::config::DpdkConfig { .client_port = 0, .server_port = 1 },
@@ -316,40 +314,12 @@ TEST_CASE("make_backend rejects mismatch and unavailable DPDK") {
     REQUIRE_FALSE(mismatched.has_value());
     CHECK(mismatched.error().code == BackendErrorCode::WrongConfig);
 
-    const shinku::config::Config dpdk = {
-        .backend = shinku::config::BackendKind::Dpdk,
-        .backend_config = shinku::config::DpdkConfig { .client_port = 0, .server_port = 1 },
-        .cache = cache_config(),
-    };
-    auto unavailable = shinku::backend::make_backend(dpdk);
-    REQUIRE_FALSE(unavailable.has_value());
-    CHECK(unavailable.error().code == BackendErrorCode::Unsupported);
-}
-
-TEST_CASE("make_backend constructs selected eBPF backend without probing") {
     const shinku::config::Config config = {
         .backend = shinku::config::BackendKind::Ebpf,
         .backend_config = ebpf_config(),
         .cache = cache_config(),
     };
-
     auto backend = shinku::backend::make_backend(config);
-
     REQUIRE(backend.has_value());
     CHECK(*backend != nullptr);
-}
-
-TEST_CASE("make_backend rejects cleanup intervals outside the C loader range") {
-    auto invalid_ebpf_config = ebpf_config();
-    invalid_ebpf_config.cleanup_interval = std::chrono::milliseconds(-1);
-    const shinku::config::Config config = {
-        .backend = shinku::config::BackendKind::Ebpf,
-        .backend_config = std::move(invalid_ebpf_config),
-        .cache = cache_config(),
-    };
-
-    auto backend = shinku::backend::make_backend(config);
-
-    REQUIRE_FALSE(backend.has_value());
-    CHECK(backend.error().code == BackendErrorCode::WrongConfig);
 }

@@ -242,13 +242,18 @@ test('Backend Runner Test', backend_runner_test_exe)
 # ====================
 ebpf_backend_test_exe = executable(
     'ebpf_backend_test',
-    'backend/ebpf_backend_test.cc',
     files(
-      '../../src/backend/backend_creation.cc',
-      '../../src/backend/ebpf/ebpf_backend.cc',
+      'backend/ebpf_backend_test.cc',
+      'backend/fake_ebpf_native_session_test.cc',
     ),
-    dependencies: catch2_with_main_dep,
+    backend_src,
+    ebpf_backend_src,
+    core_src,
+    bpf_skel,
+    dependencies: [catch2_with_main_dep, libbpf_dep, libcap_dep],
     include_directories: inc_src,
+    c_args: (bpf_log ? ['-DSHINKU_BPF_LOG_ENABLED=1'] : ['-DSHINKU_BPF_LOG_ENABLED=0']) + (ecs ? ['-DSHINKU_ECS_ENABLED=1'] : ['-DSHINKU_ECS_ENABLED=0']),
+    cpp_args: (bpf_log ? ['-DSHINKU_BPF_LOG_ENABLED=1'] : ['-DSHINKU_BPF_LOG_ENABLED=0']) + (ecs ? ['-DSHINKU_ECS_ENABLED=1'] : ['-DSHINKU_ECS_ENABLED=0']),
 )
 
 test('eBPF Backend Test', ebpf_backend_test_exe)

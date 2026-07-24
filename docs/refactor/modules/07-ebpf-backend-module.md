@@ -21,7 +21,7 @@ Scope:
 - `BackendRunner` is the only production lifecycle controller. Production code must not call concrete backend lifecycle methods directly.
 - `Backend` lifecycle methods are runner-owned implementation hooks. Direct concrete backend construction/calls are reserved for `make_backend()` implementation code and backend-specific tests.
 - Module 7 does not use friend-only constructors or passkey construction to enforce the production-only `make_backend()` rule. It relies on keeping `ebpf_backend.h` as an eBPF-private header and keeping production composition outside `make_backend()` on the abstract `Backend` API.
-- `BackendRunner` public API only exposes `run(StopCondition&)` and `state() const noexcept`. `probe()`, `start()`, `poll_once()`, and `stop()` are runner-private implementation details.
+- `BackendRunner` public API only exposes `run(StopCondition&)` and `state() const noexcept`. `probe()`, `start()`, `poll()`, and `stop()` are runner-private implementation details.
 - `BackendRunner::run()` is single-use per `BackendRunner` instance. A runner does not reset for a second production lifecycle.
 - `probe()` remains part of the `Backend` lifecycle interface and is called by `BackendRunner`; `make_backend(const Config&)` constructs the selected backend but does not perform host capability probing.
 - Do not introduce a cache base class in Module 7. Keep backend-neutral `CacheConfig` for shared DNS cache policy and use backend-specific config sections for storage/resource knobs.
@@ -29,7 +29,7 @@ Scope:
 - `EbpfBackend` relies on `BackendRunner` as the lifecycle state-machine authority. `EbpfBackend` performs only local resource-safety checks and must not duplicate the full runner state machine or own stop policy.
 - `BackendRunner` calls `Backend::stop()` after any `Backend::start()` failure. The runner does not inspect concrete backend resources; each backend uses its internal resource state to clean up everything acquired before the failure.
 - `Backend::stop()` must be safe after no start, partial start, successful start, and an earlier stop. With no acquired resources it returns success without calling loader cleanup; after partial start it releases only the resources that were acquired.
-- `Backend::probe()`, `start()`, `poll_once()`, and `stop()` remain non-`noexcept` virtual functions. Operational failures must still be returned through `std::expected`; throwing from a lifecycle hook violates the Backend contract.
+- `Backend::probe()`, `start()`, `poll()`, and `stop()` remain non-`noexcept` virtual functions. Operational failures must still be returned through `std::expected`; throwing from a lifecycle hook violates the Backend contract.
 - `BackendRunner` does not catch exceptions from Backend lifecycle hooks. Its `noexcept` destructor makes the documented best-effort stop call without a catch block, so an exception escaping `Backend::stop()` during destruction terminates the process.
 - `EbpfBackend` destructor does not call `stop()`. Lifecycle cleanup is runner-managed; the backend destructor only releases C++-owned memory that was not handed to the C loader lifecycle.
 - Module 7 preserves the legacy eBPF privilege baseline: root, or effective `CAP_BPF`, `CAP_NET_ADMIN`, and `CAP_SYS_ADMIN`. Missing required privileges map to `BackendErrorCode::PermissionDenied`.
@@ -50,11 +50,11 @@ Scope:
 - Delete the public `src/config/legacy_env_adapter.*` API after eBPF Backend owns eBPF lifecycle.
 - `EbpfBackend` owns the current C loader state through `std::unique_ptr<bpf_ctx>`, with the complete `bpf_ctx` definition included only from eBPF backend implementation files.
 - `bpf_ctx` and operations that traffic directly in it are transitional refactor targets. Module 7 hides them from public backend/runtime APIs; later eBPF loader refactors should replace this C loader state with C++ resource-owning structures.
-- `poll_once()` polls the BPF log ring and packet ring once per call, preserving the old loop's behavior as closely as possible.
-- Module 7 keeps the old poll pacing inside `EbpfBackend::poll_once()`: log ring timeout `100ms`, then packet ring timeout `100ms`.
-- If either log ring or packet ring polling returns a positive event count, `poll_once()` returns `PollStatus::WorkDone`.
+- `poll()` polls the BPF log ring and packet ring once per call, preserving the old loop's behavior as closely as possible.
+- Module 7 keeps the old poll pacing inside `EbpfBackend::poll()`: log ring timeout `100ms`, then packet ring timeout `100ms`.
+- If either log ring or packet ring polling returns a positive event count, `poll()` returns `PollStatus::WorkDone`.
 - Log ring `-EINTR` maps to `PollStatus::NoWork`.
-- BPF log ring poll errors are non-fatal: `EbpfBackend::poll_once()` logs a warning and continues to packet ring polling.
+- BPF log ring poll errors are non-fatal: `EbpfBackend::poll()` logs a warning and continues to packet ring polling.
 - Packet ring `-EINTR` maps to `PollStatus::NoWork`.
 - Packet ring negative errors other than `-EINTR` map to `BackendErrorCode::PollFailed`; `BackendRunner` then moves to `Failed`.
 - Preserve BPF build, skeleton generation, attach/detach, ring polling, cache cleanup, and existing behavior tests.
@@ -112,7 +112,7 @@ Scope:
 - If `run()` succeeds, `BackendRunner::state()` becomes `Stopped`.
 - If `stop()` fails after a `StopRequest`, `BackendRunner::state()` becomes `Failed`.
 - If `stop()` fails after a `StopRequest`, `BackendRunner::run()` returns `BackendErrorCode::StopFailed` with context for both the stop reason and stop failure.
-- If `poll_once()` returns a backend error, `BackendRunner::run()` does not poll `StopCondition` again; it performs best-effort `stop()` and returns the original backend error.
+- If `poll()` returns a backend error, `BackendRunner::run()` does not poll `StopCondition` again; it performs best-effort `stop()` and returns the original backend error.
 - If `start()` fails and the subsequent runner-owned `stop()` also fails, `run()` returns the original start error, keeps `state() == Failed`, and leaves `backend_active_` true. Module 7 does not replace the start error with `StopFailed` or attach the stop error as a suppressed error.
 - `run()` makes only one stop attempt for a given start or runtime failure. It does not immediately retry a failed stop; the destructor makes one additional best-effort attempt when `backend_active_` remains true, then destruction proceeds regardless of that result.
 - A backend runtime error determines the lifecycle outcome: `BackendRunner::state()` remains `Failed` after best-effort cleanup succeeds. Successful cleanup must not turn the outcome into `Stopped`.

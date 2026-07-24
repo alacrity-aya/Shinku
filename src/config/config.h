@@ -17,6 +17,7 @@ struct EbpfConfig {
     std::string iface;
     uint32_t arena_pages;
     std::chrono::milliseconds cleanup_interval;
+    std::chrono::milliseconds packet_poll_timeout { 100 };
 };
 
 struct DpdkConfig {

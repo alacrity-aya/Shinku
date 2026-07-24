@@ -21,7 +21,7 @@ Status: canonical execution plan entrypoint for the C++/DPDK refactor. The modul
 | 5 | [Process-control Module](refactor/modules/05-process-control-module.md) | complete | Move signal handling and shutdown request propagation out of CLI/backend code. |
 | 6 | [Backend Interface Module](refactor/modules/06-backend-interface-module.md) | complete | Introduce C++ Backend lifecycle interface and shared status/result types. |
 | 7 | [eBPF Backend Module](refactor/modules/07-ebpf-backend-module.md) | complete | Adapt existing eBPF loader behind the Backend interface and keep it runnable. |
-| 8 | [Cache/DNS Module](refactor/modules/08-cache-dns-module.md) | pending | Separate backend-neutral DNS/cache policy from eBPF storage details. |
+| 8 | [Cache/DNS Module](refactor/modules/08-cache-dns-module.md) | in progress (8A implemented) | Separate backend-neutral DNS/cache policy from eBPF storage details. |
 | 9 | [DPDK Backend Module](refactor/modules/09-dpdk-backend-module.md) | pending | Implement the DPDK backend after common interfaces are stable. |
 | 10 | [Runtime Diagnostics/Logging](refactor/modules/10-runtime-diagnostics-logging.md) | pending | Centralize operator-facing diagnostics, warnings, and runtime logging after backend boundaries stabilize. |
 | 11 | [Test Suite Rewrite](refactor/modules/11-test-suite-rewrite.md) | pending | Rewrite unreliable legacy tests into module-focused regression tests as refactored modules stabilize. |
@@ -29,6 +29,8 @@ Status: canonical execution plan entrypoint for the C++/DPDK refactor. The modul
 Current active module:
 
 - [Module 8: Cache/DNS Module](refactor/modules/08-cache-dns-module.md)
+- Completed slice: 8A eBPF Resource Ownership (`EbpfNativeSession` design).
+- Next slice: 8B Backend-neutral Cache Domain.
 
 ## Test Policy During Refactor
 

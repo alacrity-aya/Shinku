@@ -8,7 +8,7 @@ Scope:
 
 - Place the first backend abstraction in `src/backend/`.
 - Use the minimum file split for Module 6: `backend.h`, `backend_error.h`, `backend_runner.h`, and `backend_runner.cc`.
-- Interface uses `probe()`, `start()`, `poll_once()`, and `stop()`.
+- Interface uses `probe()`, `start()`, `poll()`, and `stop()`.
 - Public interface uses a normal pure virtual `Backend` class. CRTP is not part of the public abstraction; it may be used later only as an implementation helper if it removes real duplication.
 - `BackendRunner` owns the common lifecycle state machine. Backend implementations own resource actions, not state sequencing policy.
 - `BackendRunner` exposes `BackendState state() const noexcept` as the read-only lifecycle state query.
@@ -22,8 +22,8 @@ Scope:
 - `BackendRunner::probe()` is invalid while running and returns `InvalidState`.
 - If `BackendRunner::start()` gets any probe error, the runner enters `Failed` and propagates the same `BackendError`.
 - Module 6 initially defines explicit `BackendRunner::stop()` from `Failed` to call backend `stop()` best-effort and transition to `Stopped` if cleanup succeeds. Module 7 supersedes this state outcome for errors handled inside `run()`: cleanup and lifecycle outcome are tracked separately, and a runtime failure remains `Failed` after successful cleanup.
-- `poll_once()` must return quickly. If no work exists, return `NoWork`.
-- `poll_once()` returns `std::expected<PollStatus, BackendError>`.
+- `poll()` must return quickly. If no work exists, return `NoWork`.
+- `poll()` returns `std::expected<PollStatus, BackendError>`.
 - `PollFailed` moves `BackendRunner` into `Failed` for the MVP.
 - `stop()` is idempotent. Calling `stop()` when already stopped returns success.
 - Construction receives a `BackendConfig` variant.

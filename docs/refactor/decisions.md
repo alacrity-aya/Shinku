@@ -229,14 +229,14 @@ Constraint:
 
 Decisions:
 
-1. The first C++ `Backend` interface is synchronous: `start()`, `poll_once()`, and `stop()`.
+1. The first C++ `Backend` interface is synchronous: `start()`, `poll()`, and `stop()`.
 2. Backend construction receives one `BackendConfig` variant that contains either `EbpfConfig` or `DpdkConfig`.
-3. Backends do not own hidden background threads in the first interface. The Host Runtime drives progress by calling `poll_once()`.
+3. Backends do not own hidden background threads in the first interface. The Host Runtime drives progress by calling `poll()`.
 4. `probe()` returns success only when the selected Backend is supported; unsupported capability, permission, wrong-config, and probe execution failures return `BackendError` with human-readable messages.
 5. Backend abstraction files live in `src/backend/`.
 6. The public `Backend` interface is a pure virtual class. CRTP is not used as the public interface because backend selection is runtime-configured; CRTP may be used later only as a private implementation helper.
 7. `BackendRunner` owns lifecycle sequencing for `Created -> Running -> Stopped -> Failed`; backend implementations only perform backend-specific resource actions.
-8. `poll_once()` returns `std::expected<PollStatus, BackendError>`, where `PollStatus` includes `WorkDone` and `NoWork`.
+8. `poll()` returns `std::expected<PollStatus, BackendError>`, where `PollStatus` includes `WorkDone` and `NoWork`.
 9. `stop()` is idempotent and returns success if the backend is already stopped.
 10. Module 6 uses a minimal file layout: `backend.h`, `backend_error.h`, `backend_runner.h`, and `backend_runner.cc`.
 11. `BackendError` uses a typed enum, message, and optional `std::error_code` cause.
@@ -259,7 +259,7 @@ Decisions:
 
 Constraint:
 
-- A synchronous `poll_once()` keeps lifecycle ownership visible while the eBPF backend is being adapted and the DPDK backend is still new.
+- A synchronous `poll()` keeps lifecycle ownership visible while the eBPF backend is being adapted and the DPDK backend is still new.
 - `BackendConfig` variant is selected from the validated top-level `Config`; backend implementations must reject the wrong variant as a typed programmer/configuration error instead of reading raw TOML.
 - `BackendRunner` is the single place that enforces invalid lifecycle transitions. This prevents eBPF and DPDK implementations from drifting into different state-machine behavior.
 
@@ -275,16 +275,16 @@ Probe role:
 
 Decisions:
 
-1. The first Host Runtime loop is a simple blocking loop that repeatedly calls `poll_once()` until shutdown.
-2. `poll_once()` is the canonical backend step name.
-3. `poll_once()` must return quickly. If there is no backend work to process, it returns `NoWork`.
+1. The first Host Runtime loop is a simple blocking loop that repeatedly calls `poll()` until shutdown.
+2. `poll()` is the canonical backend step name.
+3. `poll()` must return quickly. If there is no backend work to process, it returns `NoWork`.
 4. Signal handling lives in a separate small process-control module.
 
 Constraint:
 
-- The Host Runtime loop owns backend sequencing: `probe()`, `start()`, repeated `poll_once()`, then `stop()`.
+- The Host Runtime loop owns backend sequencing: `probe()`, `start()`, repeated `poll()`, then `stop()`.
 - The process-control module only turns process signals into shutdown requests. It must not own Config loading, Backend selection, Backend lifecycle, or Backend diagnostics.
-- Backend implementations must not hide blocking waits inside `poll_once()`. Waiting policy, if needed later, belongs to the Host Runtime loop or a later explicit module design.
+- Backend implementations must not hide blocking waits inside `poll()`. Waiting policy, if needed later, belongs to the Host Runtime loop or a later explicit module design.
 - `NoWork` is a normal poll result, not an error.
 
 ### Segment 12: Process-control Module
@@ -341,7 +341,7 @@ Decisions:
 7. `ShutdownReport` preserves the accepted `StopRequest` for normal successful shutdown.
 8. A successful `ShutdownReport` can carry `Signal`, `Manual`, or `Timeout`; all three are normal shutdown reasons rather than backend failures.
 9. If `stop()` fails after an accepted Stop Request, `BackendRunner::state()` becomes `Failed`.
-10. If `poll_once()` returns a backend error, `BackendRunner::run()` does not poll `StopCondition` again; it performs best-effort `stop()` and returns the original backend error.
+10. If `poll()` returns a backend error, `BackendRunner::run()` does not poll `StopCondition` again; it performs best-effort `stop()` and returns the original backend error.
 11. If `BackendRunner::run()` is called while the runner state is not `Created`, it returns `BackendErrorCode::InvalidState`.
 12. If a Stop Request already exists before backend startup, `BackendRunner::run()` returns `ShutdownReport` without starting the backend and sets `state()` to `Stopped`.
 13. Module 7 production composition stays in `main.cc`: load Config, call `make_backend(const Config&)`, construct `BackendRunner`, and call `run(process_control)`.
@@ -360,7 +360,7 @@ Decisions:
 26. `EbpfLoaderOps` may expose `bpf_ctx*` in function signatures, but only inside the private eBPF backend boundary.
 27. `EbpfLoaderConfig` is a temporary private adapter shape with only `iface`, `arena_pages`, and `cleanup_interval_ms`.
 28. Module 7 treats `loader_cleanup_bpf()` as successful because the current C API returns `void`; typed cleanup failure is deferred to the eBPF loader resource/RAII refactor.
-29. `EbpfBackend::poll_once()` owns warnings for non-fatal BPF log-ring poll errors and then continues packet-ring polling.
+29. `EbpfBackend::poll()` owns warnings for non-fatal BPF log-ring poll errors and then continues packet-ring polling.
 30. Production code outside `make_backend()` does not directly construct `EbpfBackend`; eBPF-specific tests may directly construct it with fake `EbpfLoaderOps`.
 31. Module 7 does not use friend-only constructors or passkey construction to enforce the production-only `make_backend()` rule.
 32. `EbpfLoaderOps` is a static-storage function table, and `EbpfBackend` stores a non-owning pointer or reference to it.
@@ -407,3 +407,45 @@ Decisions:
 Constraint:
 
 - Runtime diagnostics/logging must not become a replacement for typed `std::expected` errors, and it must not reintroduce the deleted Observability Surface unless that future surface is explicitly scoped.
+
+### Segment 16: Module 8A eBPF Resource Ownership
+
+Decisions:
+
+1. Module 8 starts with a hard prerequisite slice, 8A: eBPF Resource Ownership.
+2. 8A removes the transitional `EbpfLoaderOps` + `void* context` + central `bpf_ctx` ownership boundary before introducing backend-neutral DNS/cache policy.
+3. `EbpfBackend` remains the sole eBPF lifecycle object; a separate `EbpfRuntime` would duplicate the `Backend` contract without an independent consumer or lifetime.
+4. `EbpfBackend` owns one `std::unique_ptr<EbpfNativeSession>`. This ownership is indirect but exclusive; no other production object shares or borrows the Session.
+5. `ProductionEbpfNativeSession` is a stateful C++ wrapper around the C/libbpf API. One private `NativeResources` aggregate owns the generated skeleton, manual XDP and TCX links, legacy TC state, packet and log rings, and the temporary cache/parser bridge.
+6. Native pointers and C structs remain private to `ProductionEbpfNativeSession`; the Session interface does not expose raw pointers, generated skeleton types, opaque resource handles, type-erased handle state, or a resource registry.
+7. `EbpfNativeSession` exposes native actions only: capability probes, interface lookup, fixed skeleton preparation, one attach attempt, ring creation and polling, expired-entry cleanup, retry waiting, and aggregate release.
+8. `EbpfNativeSession` must not expose `start()`, `stop()`, `run()`, `setup_backend()`, Backend state, retry policy, fallback policy, or cleanup scheduling.
+9. `prepare_skeleton()` may combine the fixed native sequence of installing the libbpf print callback, opening the generated skeleton, configuring the arena, disabling auto-attach for manually owned programs, loading, and attaching generated programs. It does not make Backend policy decisions.
+10. `EbpfBackend` owns lifecycle orchestration, error context and mapping, XDP retry, TCX-to-legacy fallback, ring polling semantics, packet timeout policy, and cleanup-worker scheduling.
+11. The Backend lifecycle remains `probe -> start -> repeated poll -> stop`; `start()` does not enter the long-running poll loop, and no separate `init()` phase is introduced.
+12. `BackendRunner` remains the only lifecycle state authority and caller. Backend lifecycle hooks are protected and Runner-owned; tests drive concrete Backends through `BackendRunner`.
+13. Start failure leaves cleanup owed. `BackendRunner` invokes `stop()` for partial startup resources, while Session destruction provides a final `noexcept` best-effort release path.
+14. The cleanup loop belongs to a private Backend-owned `CleanupWorker` using `std::jthread` and stop-aware C++ wait primitives. It waits one full configured interval before the first cleanup pass and is joined before Session release.
+15. `ProductionEbpfNativeSession::release()` owns native dependency order: close packet and log rings, detach manual links, detach legacy TC, destroy only a clsact created by this Session, release the bridge, then destroy the skeleton.
+16. Session release attempts every independent native release, returns the first error, and preserves still-owned resources plus their dependencies for a later cleanup attempt when a native operation does not consume them.
+17. XDP and TCX auto-attach are disabled before generated skeleton attachment. Manually attached XDP and TCX links are owned only by the Session's dedicated raw-pointer fields and are not written into generated skeleton link fields.
+18. Legacy TC tracks whether this Session created clsact. A pre-existing clsact is never destroyed, including when filter attachment fails.
+19. The intentional `void*` values are confined to libbpf and legacy C callback trampolines inside the production Session implementation. `bpf_ctx` is not retained as a Host Runtime ownership object.
+20. Session methods return `std::expected<T, std::error_code>`. Errno-style failures use `std::generic_category()` only where the wrapped API has an errno-style contract; `EbpfBackend` adds stable Backend error semantics and operation context.
+21. Production and tests implement the same private `EbpfNativeSession` interface. `make_backend(const Config&)` injects `ProductionEbpfNativeSession`, while focused tests inject `FakeEbpfNativeSession`.
+22. `FakeEbpfNativeSession` uses independent result queues and an explicit call trace. It does not allocate fake native pointers or reproduce production resource-handle state.
+23. The old `EbpfPlatform`, per-resource opaque Handle hierarchy, private type-erased Handle implementations, and `dynamic_cast`-based production extraction are removed.
+24. 8A preserves the attach sequence: generated skeleton attachment, optional log ring, XDP retry, TCX retry with legacy TC fallback, packet ring creation, then cleanup-worker startup.
+25. 8A preserves ring behavior: log-ring `EINTR` returns `NoWork` before packet polling, other log-ring failures are non-fatal warnings, packet-ring `EINTR` returns `NoWork`, and other packet-ring failures return `PollFailed`.
+26. The TCX fallback loop remains Backend policy: each unsupported TCX result triggers one legacy TC attempt; after a failed legacy attempt the Backend waits and retries TCX for at most five rounds with the existing backoff.
+27. The existing BPF log callback remains in `ProductionEbpfNativeSession`; the general diagnostics/logging boundary remains deferred to Module 10.
+28. The optional `ebpf.packet_poll_timeout` is materialized as `100ms` when absent, validated from `1ms` through `1s`, and applies only to packet-ring polling. Log-ring polling keeps a private `100ms` timeout.
+29. Module 8B/8C do not depend on `EbpfNativeSession`. Module 8D may request only the narrow native storage binding needed by the cache implementation; cache and DNS policy must not move into the Session.
+30. `make_backend(const Config&)` remains the production assembly entry point. A `BackendFactory` type is deferred until multiple construction sources, registry discovery, or injected construction policy create a concrete need.
+
+Constraint:
+
+- This slice must preserve the eBPF Operational Loops: BPF attach/detach, packet ring polling, cleanup scheduling, signal-driven shutdown through `BackendRunner`, and cleanup after partial startup.
+- The 8A test boundary should let unit tests cover lifecycle sequencing and error mapping without root, real interfaces, BPF attachment, or specific kernel feature availability.
+- See [ADR-0011](../adr/0011-ebpf-runtime-resource-ownership.md).
+- See [ADR-0012](../adr/0012-runner-exclusive-backend-lifecycle.md).

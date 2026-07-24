@@ -8,6 +8,8 @@
 
 namespace shinku::backend {
 
+class BackendRunner;
+
 enum class BackendState : uint8_t {
     Created,
     Running,
@@ -20,22 +22,23 @@ enum class PollStatus : uint8_t {
     NoWork,
 };
 
-// TODO: Backend is on hot path, CRTP maybe better?
 class Backend {
 public:
+    friend class BackendRunner;
+
     Backend(const Backend&) = delete;
     Backend& operator=(const Backend&) = delete;
     Backend(Backend&&) = delete;
     Backend& operator=(Backend&&) = delete;
     virtual ~Backend() = default;
 
-    [[nodiscard]] virtual std::expected<void, BackendError> probe() = 0;
-    [[nodiscard]] virtual std::expected<void, BackendError> start() = 0;
-    [[nodiscard]] virtual std::expected<PollStatus, BackendError> poll_once() = 0;
-    [[nodiscard]] virtual std::expected<void, BackendError> stop() = 0;
-
 protected:
     Backend() = default;
+
+    [[nodiscard]] virtual std::expected<void, BackendError> probe() = 0;
+    [[nodiscard]] virtual std::expected<void, BackendError> start() = 0;
+    [[nodiscard]] virtual std::expected<PollStatus, BackendError> poll() = 0;
+    [[nodiscard]] virtual std::expected<void, BackendError> stop() = 0;
 };
 
 } // namespace shinku::backend

@@ -10,7 +10,7 @@ Scope:
 - Add C++ build support.
 - Use `toml++`.
 - Support default path `./shinku.toml`.
-- Do not provide TOML field defaults in the MVP.
+- Do not provide TOML field defaults in the MVP, except for the later-added optional `ebpf.packet_poll_timeout`, which defaults to `100ms` to preserve existing eBPF configurations.
 - Validate `backend`, selected backend section, backend-neutral `[cache]`, and duration strings.
 - Unknown keys warn and are ignored.
 - Config Loader owns diagnostics through injectable `DiagnosticSink`.
@@ -45,6 +45,7 @@ API contract:
 - If TOML parse fails, there is no AST to scan, so Config Loader emits only the parse error.
 - During hard validation, Config Loader returns on the first hard error. It does not collect all validation errors in the MVP.
 - Config diagnostics for schema and validation issues must include the TOML field path, such as `ebpf.cleanup_interval`.
+- The eBPF `packet_poll_timeout` field is optional; when absent, Config Loader materializes `100ms`.
 
 Config error API:
 
@@ -88,6 +89,7 @@ backend = "ebpf"
 iface = "eth0"
 arena_pages = 1024
 cleanup_interval = "10s"
+packet_poll_timeout = "100ms"
 
 [cache]
 max_entries = 65536
@@ -113,7 +115,7 @@ Schema note:
 - Both examples are valid Config Module inputs.
 - During the legacy adapter phase, only the eBPF example can continue into the old loader path. The DPDK example parses as Config but returns `UnsupportedBackend` when converted through `to_legacy_env()`.
 - The only default in this phase is the Config File path `./shinku.toml`, selected by the CLI Module.
-- TOML fields have no defaults in the MVP. Required fields must be written explicitly.
+- TOML fields have no defaults in the MVP except optional `ebpf.packet_poll_timeout`, which defaults to `100ms`; all other required fields must be written explicitly.
 - Unselected backend tables are allowed to exist and are not required to be complete.
 - Unknown keys inside any known table, including an unselected backend table, produce warnings and are ignored.
 - Unselected backend tables must not change the effective Config for the selected backend.
@@ -130,6 +132,7 @@ Minimum hard validation:
 - `[cache]` must exist and contain its required fields.
 - `ebpf.arena_pages` must be at least `1024`.
 - `ebpf.cleanup_interval` must be greater than zero and use only `ms`, `s`, or `m`.
+- `ebpf.packet_poll_timeout`, when present, must be between `1ms` and `1s`.
 - `dpdk.client_port` and `dpdk.server_port` must be in `0..65535` and must not be equal.
 - `cache.max_entries` must be greater than zero.
 - `cache.max_response_bytes` must be greater than zero.
@@ -144,7 +147,7 @@ Diagnostic format examples:
 
 Verification:
 
-- Config unit tests for valid eBPF config, valid DPDK config, missing required fields, no field-default synthesis, bad duration, diagnostic field paths, direct-open file failure mapping, `ConfigError` path retention, unknown-key warning before missing-field error, first-hard-error behavior, unselected incomplete backend table, unsupported backend through the legacy adapter, and legacy eBPF adapter mapping.
+- Config unit tests for valid eBPF config, valid DPDK config, missing required fields, packet poll timeout default and bounds, no-default behavior for other fields, bad duration, diagnostic field paths, direct-open file failure mapping, `ConfigError` path retention, unknown-key warning before missing-field error, first-hard-error behavior, unselected incomplete backend table, unsupported backend through the legacy adapter, and legacy eBPF adapter mapping.
 - Config unit tests must assert that unselected backend config is not retained in the returned `Config`.
 - `meson compile -C build`
 - `meson test -C build`

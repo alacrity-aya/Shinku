@@ -7,6 +7,8 @@
 #include "process_control/process_control.h"
 #include "version.h"
 
+#include <cstdio>
+#include <exception>
 #include <print>
 #include <utility>
 
@@ -17,9 +19,7 @@ void print_cli_error(const shinku::cli::CliError& error) {
     std::print(stderr, "{}", shinku::cli::usage_text());
 }
 
-} // namespace
-
-int main(int argc, char** argv) {
+int run_application(int argc, char** argv) {
     auto cli_result = shinku::cli::parse_cli(argc, argv);
     if (!cli_result) {
         print_cli_error(cli_result.error());
@@ -68,4 +68,23 @@ int main(int argc, char** argv) {
     }
 
     return 0;
+}
+
+void print_fatal_error(const char* message) noexcept {
+    std::fputs("fatal error: ", stderr);
+    std::fputs(message, stderr);
+    std::fputc('\n', stderr);
+}
+
+} // namespace
+
+int main(int argc, char** argv) {
+    try {
+        return run_application(argc, argv);
+    } catch (const std::exception& error) {
+        print_fatal_error(error.what());
+    } catch (...) {
+        print_fatal_error("unknown exception");
+    }
+    return 1;
 }
