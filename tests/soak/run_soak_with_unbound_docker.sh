@@ -203,6 +203,8 @@ start_shinku() {
         echo 'max_entries = 16384'
         echo 'max_response_bytes = 512'
         echo 'cache_negative = true'
+        echo 'max_pending_queries = 8192'
+        echo 'pending_query_timeout = "2s"'
     } > "$config_file"
 
     "$SHINKU_BIN" run --config "$config_file" >"$RUN_DIR/shinku.log" 2>&1 &

@@ -85,7 +85,7 @@ Deliverable:
 
 Cacheable Query Profile:
 
-- Accept IPv4/UDP standard `QUERY` opcode messages with exactly one `A/IN` question, `RD=1`, `CD=0`, and `ARCOUNT=0`. A cacheable positive Response may contain a CNAME chain ending in A, and `NXDOMAIN` or `NODATA` for the same profile remains subject to Negative Cache Admission.
+- Accept IPv4/UDP standard `QUERY` opcode messages with exactly one `A/IN` question, `RD=1`, `CD=0`, `AD=0`, and `ARCOUNT=0`. A cacheable Response may contain CNAME or other upstream-selected RR types; Shinku does not resolve those records to prove that they answer the Question. `NXDOMAIN` and `NODATA` remain subject to Negative Cache Admission.
 - Bypass every Query with an Additional Section, including EDNS, DNSSEC signaling, and ECS, plus `AAAA`, `SRV`, `TXT`, `MX`, `PTR`, multi-question messages, and TCP.
 - Bypass a Response with `ARCOUNT != 0`, mirroring the Query rule. This also keeps the patch plan safe, because an OPT pseudo-record's TTL field carries an extended RCODE and flags rather than a TTL.
 - Bypass a truncated Response. The legacy TC-fallback entry is not carried forward.
@@ -96,10 +96,10 @@ Cacheable Query Profile:
 Cache Key identity:
 
 - Compose `CacheKey` from `CacheNamespace`, the canonical question name, question type, question class, and every other admitted semantic that can change the answer.
-- Derive `CacheNamespace` from the original Query destination IPv4 address and UDP port, and keep it a field of the key rather than a Store parameter or a per-instance property. A Store may still shard its internal representation by namespace.
+- Derive `CacheNamespace` from the original Query destination IPv4 address and UDP port, store both fields in host byte order, and keep it a field of the key rather than a Store parameter or a per-instance property. Packet-event composition converts explicitly named network-order fields into the Domain value. A Store may still shard its internal representation by namespace.
 - Represent the canonical question name as a fixed-capacity, allocation-free DNS wire name: lowercase labels, no compression pointers, a terminating root label, and the DNS 255-byte limit.
 - Treat the 32-bit FNV hash as neither the domain identity nor an acceptable Backend representation. Concrete Stores derive their own physical keys.
-- Permit a physical key of plaintext `CacheNamespace` plus a 128-bit keyed fingerprint over the canonical name, type, and class. The fingerprint must be a keyed PRF with a per-process random secret; unkeyed 128-bit hashes are rejected because they restore an offline collision-construction primitive.
+- Permit a physical key of plaintext network-order `CacheNamespace` (`__be32` destination IPv4, `__be16` destination port, explicit zeroed padding) plus a 128-bit keyed fingerprint over the canonical name, type, and class. The eBPF Store converts from the host-order Domain value; XDP copies packet fields directly without hot-path byte swaps. The fingerprint must be a keyed PRF with a per-process random secret; unkeyed 128-bit hashes are rejected because they restore an offline collision-construction primitive.
 
 Cache Candidate:
 
@@ -120,7 +120,8 @@ Response Template:
 Cache Entry Lifetime:
 
 - Define Cache Entry Lifetime as the minimum original TTL across every RR in the verbatim message, so the Authority and Additional Sections participate. The whole entry expires at that point, while Hit processing still ages every retained RR individually.
-- Derive negative Cache Entry Lifetime from `min(SOA.TTL, SOA MINIMUM)` per RFC 2308 section 5, and Bypass a negative Response with no SOA in its Authority Section.
+- Derive every Cache Entry Lifetime, including negative entries, from the minimum wire TTL across every retained RR. Trust the DNS Service Endpoint to have emitted the effective RFC 2308 negative lifetime in the Authority SOA TTL rather than parsing `SOA.MINIMUM` again.
+- Classify `NXDOMAIN` from RCODE and classify `NOERROR` with an Authority `IN/SOA` as `NoData`; neither classification proves SOA relevance or CNAME terminal identity. A Response with no RR TTL cannot obtain a lifetime and is a Bypass.
 - Drop the legacy five-second negative floor, which kept serving answers past their authorization, and the legacy 600-second ceiling, which is an undocumented judgment that conflicts with TTL-only Freshness. A ceiling, if ever needed, becomes an explicit `[cache]` field with its own ADR.
 - Keep this correctness lifetime distinct from the legacy minimum-TTL admission threshold, which is not part of the contract.
 
@@ -201,18 +202,105 @@ Testing:
 - `FakeCacheStore`, which exists to prove the conformance suite is executable rather than to act as a reference implementation.
 - Language-neutral Cache Hit vectors under `tests/vectors/cache_hit/`, plus a C++ reference applier. Coverage includes sub-second residence rounding, multi-section TTL aging with an Authority SOA, case-different question echo, Transaction ID rebinding, and both sides of the expiry boundary. Module 8D runs the same vectors against the XDP hit path.
 
-See [ADR-0013](../../adr/0013-cache-contract-excludes-hit-path.md), [ADR-0014](../../adr/0014-verbatim-response-template.md), and [ADR-0015](../../adr/0015-keyed-fingerprint-cache-key.md).
+Implementation result:
+
+- Added the six header-only `shinku::cache` contract files under `src/cache/`: the explicit Cache Time domain, allocation-free canonical wire names, complete logical Cache Keys, borrowed Cache Candidates, the fill/cleanup-only Cache Store interface, and stable Store errors.
+- Extended required `[cache]` configuration with `max_pending_queries` and `pending_query_timeout`, enforced the documented capacity and duration rules, and tightened `max_response_bytes` to `[128, 512]`. Benchmark and soak-generated Config Files now supply the required fields.
+- Added focused value-type tests, a reusable Store conformance adapter and suite exercised by `FakeCacheStore`, and four TOML Cache Hit vectors consumed by the C++ reference applier.
+- Kept the legacy C parser/cache bridge and the runnable eBPF Backend unchanged; no concrete production Store, hit lookup interface, Pending Query domain type, worker, queue, or Backend-specific dependency was introduced.
+- `meson compile -C build` and the focused Cache Domain, Config Loader, and eBPF Backend tests pass. The full non-root Meson run passes 10 of 13 tests; the two arena tests still require root and the legacy C Cache Store test retains its documented no-map failures.
+- `meson compile -C build tidy` still reports pre-existing Host Runtime and legacy C diagnostics; the new Cache Domain is header-only and compiles successfully through its focused test target.
+
+See [ADR-0013](../../adr/0013-cache-contract-excludes-hit-path.md), [ADR-0014](../../adr/0014-verbatim-response-template.md), [ADR-0015](../../adr/0015-keyed-fingerprint-cache-key.md), and [ADR-0016](../../adr/0016-correlated-verbatim-packet-cache-policy.md).
 
 ### 8C: DNS Policy Engine
 
 Purpose:
 
-- Move DNS response parsing, validation, negative caching, TTL selection, CNAME behavior, and TC/malformed bypass decisions into a backend-neutral C++ policy engine.
-- Classify each Query before correlation state is created. Only an eligible Cache Miss may establish a Pending Query; Bypass Queries never create state that could authorize a later Cache Fill.
+- Implement a backend-neutral Correlated Verbatim Packet Cache Policy: validate complete-message wire safety, correlated identity, TTL patchability, negative lifetime, and cache-profile admission while trusting the upstream DNS Service Endpoint's answer semantics.
+- Implement a new bounded C++ DNS wire parser rather than adapting the legacy C parser. Keep the legacy parser unchanged until the 8E cutover deletes it.
+- Separate structural wire parsing from DNS Policy judgment with an explicit `ParsedResponse` contract. Structural failures return `ParseError`; valid parsed facts are judged as either a `CacheCandidate` or a reasoned Bypass. Keep `classify_response()` as the production facade that composes both layers.
+- Keep parsing and classification allocation-free and `noexcept`. `ParsedResponse` owns Header and canonical Question facts, an optional minimum RR TTL, and an Authority `IN/SOA` presence bit, and borrows the input message plus the active TTL-offset scratch range. No per-Answer or per-Authority fact arrays remain.
+- Structurally traverse every Header-declared RR owner, fixed RR header, RDLENGTH, and RDATA boundary while retaining the original bytes. Record every non-OPT TTL offset and compute the minimum wire TTL, but do not interpret any RDATA. An RR owner scanner accepts ordinary labels with valid encoding and bounds or a complete two-octet compression pointer that terminates the encoded owner; it does not follow the pointer or validate its target.
+- Treat a structurally valid compressed Response Question as `BypassReason::UnsupportedQuestionEncoding`. Cache Fill requires an uncompressed Question so Cache Hit substitution preserves message length, stored offsets, and compression-pointer targets.
+- Require the cacheable Response Profile to have `QR=1`, standard `QUERY` opcode, `QDCOUNT=1`, `TC=0`, `ARCOUNT=0`, `RD=1`, `CD=0`, reserved `Z=0`, an `A/IN` Question, and base RCODE `NOERROR` or `NXDOMAIN`. Preserve `AA`, `RA`, and `AD` verbatim on Cache Hit. Additional must be empty. Structurally valid Answer and Authority RR types are not rejected merely because 8C does not interpret their semantics.
+- Do not validate a CNAME chain, require a terminal A, reject unrelated Answer records, or prove that the upstream Response semantically answers the Question. Query Correlation and Question parsing establish cache identity; verbatim replay preserves the upstream answer.
+- Classify `NXDOMAIN` from RCODE, `NOERROR` plus at least one Authority `IN/SOA` as `NoData`, and other admitted `NOERROR` responses as `Positive`. Apply Negative Cache Admission to the first two kinds. Lifetime is the minimum wire RR TTL for every kind; do not select an SOA or parse `SOA.MINIMUM`.
+- Deliver the Response side only. `classify_response()` is the production entry point; there is no `classify_query()`, because the eBPF Backend classifies Queries in XDP to decide hit or miss and no Host Runtime object would call one.
+- Keep Cacheable Query Profile membership on the Query side a backend-neutral rule set verified by shared vectors, in the manner of Cache Hit Semantics. Only a Query inside the profile may establish a Pending Query; Bypass Queries never create state that could authorize a later Cache Fill.
+- Store Query Eligibility vectors as Backend-neutral DNS message TOML files under `tests/vectors/query_eligibility/`. Record wire bytes, expected eligibility, and eligible logical Question fields; let each Backend add its own packet envelope and test transport-specific behavior separately.
+- Cover the Query Profile with one valid baseline and one-condition mutations. Do not add a production C++ Query classifier or put physical fingerprints, packet bytes, or Query-side Bypass reasons into the shared vector contract.
 - Construct a Cache Candidate only from a Response matched to a live Pending Query. Inherit the Cache Namespace and Query eligibility from that correlation result rather than inferring final cache identity from the Response payload alone.
+- Trust the TC Query Correlation result rather than passing Pending fingerprint or original Question into `classify_response()` for duplicate comparison. Still parse the Response Question independently for Response Profile checks, `CanonicalDnsName`, and `CacheKey`; do not use it as the root of a second Answer-resolution algorithm.
+- Keep public cache-admission API in `src/cache/dns_policy.{h,cc}` and `src/cache/bypass_reason.h` under `shinku::cache`. Isolate wire parser internals in `src/cache/dns/` under `shinku::cache::dns`; do not introduce a general `src/dns/` module without a non-cache consumer.
+- Let the wire parser construct `CanonicalDnsName` and extract Question type/class into `ParsedResponse`. Let DNS Policy add the correlated `CacheNamespace` and construct `CacheKey` only for an accepted Candidate; parser and Backend composition do not construct complete keys.
 - Classify an ECS-bearing Query and its correlated Response as ECS Pass-through. Do not perform a non-ECS Cache Key lookup for that Query and do not construct a Cache Candidate from that Response.
+- Represent ECS Pass-through only through existing Bypass behavior. Do not add ECS-specific C++ types or reasons and do not parse EDNS options: Query `ARCOUNT != 0` Bypasses before Pending creation, and an unexpected correlated Response with an Additional Section uses generic `AdditionalSectionPresent`.
+- Test the wire parser, policy judgment, and production facade as separate deterministic layers. Add coverage-guided fuzz targets for the parser and facade, with termination, memory-safety, determinism, and successful-result offset invariants.
+- Use Clang compiler-rt libFuzzer through an optional, separate Clang build. Add no fuzzing dependency or subproject, keep targets disabled by default, preserve the normal GCC/AddressSanitizer build, and retain minimized failures in a committed regression corpus.
 - Produce a verbatim Response Template plus its complete TTL patch plan on every cacheable non-ECS path, including CNAME responses. There is no normalization step and therefore no legacy raw-packet CNAME shortcut to retain: every cacheable path stores the same verbatim bytes. A Response that does not fit the Cache Response Limit is a Bypass.
+- Require the parser to consume every Question and RR declared by the DNS Header. Retain any remaining bytes inside the validated UDP payload as an opaque trailing suffix in the verbatim Response Template, matching dnsdist; do not parse that suffix as RRs or generate TTL offsets for it.
+- Make each `DnsPolicy` instance single-caller and non-thread-safe. A successful `CacheCandidate` borrows the packet-event response bytes and the Policy's TTL-offset scratch, so Backend composition must call `CacheStore::store()` synchronously before the packet callback returns and before the next `classify_response()` call on that Policy instance. Give each concurrent worker its own `DnsPolicy`; do not add a mutex to the Cache Fill Path.
+- Defer asynchronous Cache Fill. A future asynchronous path must copy the response and TTL offsets into an owned, bounded `FillWork` allocation before the packet callback returns; pool exhaustion drops only that fill attempt rather than extending the borrowed lifetime or blocking the callback.
 - Own the Cacheable Query Profile checks, Cache Entry Lifetime derivation including the RFC 2308 negative rule, and the Bypass rules for truncation, `ARCOUNT != 0`, zero lifetime, and oversize, so that a Cache Candidate is valid by construction.
+
+Design review findings:
+
+- Resolved after superseding the old scratch design: `ParsedResponse` retains only Header and canonical Question facts, an optional minimum wire RR TTL, an Authority `IN/SOA` presence bit, the message view, and the active TTL-offset range. Separate expanded `ParsedAnswer` and `ParsedAuthority` arrays are removed with CNAME judgment.
+- Resolved: keep the direct `classify_response(message, cache_namespace)` signature. Its API comment states that the message must come from a successful Query Correlation result; Backend composition and TC-to-Host integration tests enforce that precondition instead of an additional wrapper or capability type.
+- Resolved: TC derives the exact DNS payload from UDP Length, publishes only complete payloads no larger than the 512-byte event capacity, and never truncates. The 8C facade alone applies configured `max_response_bytes`; the parser completely traverses every Header-declared RR and retains any remaining payload bytes as an opaque verbatim suffix.
+- Resolved after superseding the resolver-style design: a CNAME-plus-negative Response remains one verbatim entry keyed by the original Question, but 8C does not follow the CNAME target or prove SOA ancestry. `NXDOMAIN` comes from RCODE, while `NOERROR` plus any Authority `IN/SOA` becomes `NoData`; all kinds use the minimum wire RR TTL.
+- Resolved: wire-parser tests and fuzzing retain detailed `ParseError` values, while the production facade maps every structural failure to `BypassReason::MalformedResponse`. Public reasons remain Policy-level categories with a stable stage order rather than mirroring parser internals.
+- Resolved in part: Query `AD=1` Bypasses before Pending creation because it can change a validating resolver's Response `AD` signal without appearing in the current Cache Key. A cacheable Response requires `RD=1`, `CD=0`, reserved `Z=0`, and `ARCOUNT=0`, and preserves `AA/RA/AD` verbatim. The old Answer/Authority RR-type whitelist is superseded; generic structurally valid RRs may be retained.
+- Resolved: treat the correlated local DNS forwarder as trusted for DNS answer correctness, but validate every invariant required to construct and replay a `CacheCandidate`. Checks are limited to parser memory safety and the correctness of `CacheKey`, `CacheEntryKind`, lifetime, TTL patch plan, and verbatim-template boundaries; 8C does not reimplement recursive-resolver, DNSSEC, address-policy, or upstream-authority validation.
+- Resolved: RR owner compression pointers are never followed because policy does not extract owner identity. The scanner requires only a complete two-octet pointer at a safe wire boundary and does not validate target range, direction, label boundaries, or cycles. The Response Question remains uncompressed because it supplies Cache Key identity and is rebound on Cache Hit.
+- Resolved: logical `CacheNamespace` uses host order. Packet events and the physical eBPF key use explicitly named network-order fields; Backend composition and Store adapters own conversion, while XDP copies packet fields directly.
+- Resolved: under RFC 2181, interpret any wire TTL with its high bit set as the entire value zero, not as the low 31 bits and not as `0x7fffffff`. The resulting minimum lifetime is zero, so the whole verbatim Response is a `ZeroLifetime` Bypass rather than a `ParseError`; `SOA.MINIMUM` is not parsed.
+- Resolved: each `DnsPolicy` instance is single-caller and non-thread-safe. Backend composition consumes a successful borrowed Candidate synchronously through `CacheStore::store()` before the packet callback returns and before the next classification on that instance. Concurrent workers own separate Policy instances; asynchronous fill requires a future bounded owned-work abstraction.
+
+Decision queue:
+
+| # | Branch | Status |
+| --- | --- | --- |
+| 1 | C++ DNS Policy Query-side API versus Response-only API | Resolved: Response-only production API; Query eligibility uses shared vectors |
+| 2 | `classify_response()` input type | Resolved after review: keep message plus Namespace and document successful Correlation as a caller precondition |
+| 3 | Whether Bypass output carries a reason | Resolved: return stable `BypassReason` |
+| 4 | Parser ownership and parse/judge separation | Resolved: new C++ parser with explicit `ParsedResponse`; legacy C is deleted in 8E |
+| 5 | DNS compression-pointer validation strategy | Resolved: uncompressed Question; RR owners validate only encoded skip safety and never follow or validate pointer targets |
+| 6 | Validation depth for CNAME chains, RCODE, `QR`, and opcode | Resolved: strict Header/Question profile and wire safety, but no CNAME-chain or Answer-relevance validation |
+| 7 | Whether C++ repeats Response Question consistency validation after TC correlation | Resolved: trust TC correlation; C++ validates the Response Question but does not compare it to Pending identity again |
+| 8 | Source directory layout and C++ namespace | Resolved: public Cache Policy in `shinku::cache`; parser internals in `src/cache/dns/` and `shinku::cache::dns` |
+| 9 | Query Eligibility shared-vector schema and coverage | Resolved: Backend-neutral DNS message TOML vectors with Backend-specific packet wrapping and single-condition coverage |
+| 10 | Ownership of `CacheKey` and `CanonicalDnsName` construction | Resolved: parser constructs canonical Question identity; Policy combines it with correlated Namespace into `CacheKey` |
+| 11 | Type-level representation of ECS Pass-through | Resolved: no ECS-specific type or reason; use generic Additional Section Bypass behavior |
+| 12 | Parser, policy, fuzz, vector, and composition test strategy | Resolved: layered deterministic tests plus optional Clang libFuzzer targets and committed regressions |
+| 13 | Concrete `ParsedResponse` and parser-scratch representation | Resolved: Header/Question, optional minimum wire TTL, Authority IN/SOA presence, message view, and TTL-offset scratch only |
+| 14 | Complete-message framing across TC, ring event, and parser | Resolved: complete UDP-length event, complete declared-RR traversal, and opaque verbatim retention of trailing bytes |
+| 15 | Negative SOA relevance, multiplicity, Authority NS interaction, and lifetime composition | Resolved: no SOA selection or RDATA parse; Authority IN/SOA signals NoData and all kinds use minimum wire RR TTL |
+| 16 | `ParseError` to `BypassReason` mapping, stable reason set, and precedence | Resolved: detailed internal ParseError, facade MalformedResponse, Policy-level reasons, stage-order precedence |
+| 17 | Remaining Query/Response flags and exact RR schema | Resolved: flags and empty Additional remain strict; Answer/Authority use generic RR traversal instead of a semantic type whitelist |
+| 18 | `CacheNamespace` byte order and boundary conversion | Resolved: host-order Domain, network-order event/physical key, explicit Backend-boundary conversion, no XDP byte swap |
+| 19 | TTL values above RFC 2181's 31-bit maximum | Resolved: interpret as zero and apply whole-template ZeroLifetime Bypass |
+| 20 | `DnsPolicy` concurrency and borrowed-result lifetime | Resolved: one Policy per concurrent worker; synchronously store before callback return and next classification; future async fill must materialize bounded owned work |
+| 21 | Identity of a CNAME-bearing negative result | Resolved: one combined verbatim entry under the original Question; terminal CNAME identity is not parsed or validated |
+| 22 | Trust boundary and validation depth for upstream Responses | Resolved: trust DNS answer correctness; validate only Cache Candidate construction/replay invariants |
+| 23 | Correlated verbatim packet-cache positioning | Resolved: no CNAME-chain or Answer-relevance validation; retain strict wire, identity, TTL, and negative-lifetime checks |
+| 24 | dnsdist-compatible admission semantics | Resolved: adopt its correlation and opaque-Answer model, but require a complete fill-time TTL patch plan rather than best-effort partial parsing |
+
+RFC basis for negative-response decisions:
+
+- [RFC 2308 sections 1, 2.1, and 2.2](https://www.rfc-editor.org/rfc/rfc2308.html#section-2) permit CNAME records in negative Answers and define the terminal CNAME target as the negative `QNAME`. Shinku deliberately does not reconstruct that resolver fact: it retains one correlated verbatim response under the original Question and must derive negative admission from bounded packet facts.
+- NXDOMAIN is distinguished from a referral by RCODE regardless of Authority NS/SOA contents; for NODATA, an Authority SOA distinguishes a negative response from an NS-only referral. SOA plus NS is a valid type-1 negative response, although authoritative servers are recommended to emit type 2 for compatibility.
+- [RFC 2308 sections 3 and 5](https://www.rfc-editor.org/rfc/rfc2308.html#section-5) define negative TTL as `min(SOA.TTL, SOA.MINIMUM)` and require the authoritative sender to place that effective value in the SOA TTL of the negative response. Like dnsdist, Shinku trusts the correlated DNS Service Endpoint's emitted wire TTL instead of parsing SOA RDATA again.
+- [RFC 2181 section 8](https://www.rfc-editor.org/rfc/rfc2181.html#section-8) limits positive TTL values to `0x7fffffff` and requires a received TTL with the high bit set to be treated as zero. Shinku applies that interpretation before computing the minimum whole-template lifetime.
+- [RFC 1034 section 4.2.1](https://www.rfc-editor.org/rfc/rfc1034.html#section-4.2.1) describes one SOA RR at a zone origin, and [RFC 2181 section 5.5](https://www.rfc-editor.org/rfc/rfc2181.html#section-5.5) calls an SOA RRset a single-RR RRset. Multiple SOAs are therefore not an ordinary negative-response case that the MVP must reconcile.
+- RFC resolvers can cache and expire the CNAME, negative SOA, and other RRsets independently. Shinku's minimum across every retained RR is an additional consequence of storing and replaying one verbatim Response Template: the whole entry must expire when any retained component can no longer be replayed safely.
+
+RFC basis for Header-flag decisions:
+
+- [RFC 1035 section 4.1.1](https://www.rfc-editor.org/rfc/rfc1035.html#section-4.1.1) requires the Response to copy `RD` from the Query and requires the then-reserved `Z` field to be zero. Later standards assigned two of those bits to `AD` and `CD`, leaving one reserved bit that must remain zero.
+- [RFC 4035 section 3.2.2](https://www.rfc-editor.org/rfc/rfc4035.html#section-3.2.2) requires a security-aware name server to copy `CD` from Query to Response.
+- [RFC 6840 sections 5.7 and 5.8](https://www.rfc-editor.org/rfc/rfc6840.html#section-5.7) defines Query `AD=1` as interest in authenticated-data signaling and recommends setting Response `AD` only when the request had `DO=1` or `AD=1`. Query `AD` can therefore change a Response even when the Query has no EDNS Additional Section.
 
 ### 8D: eBPF Cache Store
 
@@ -228,7 +316,7 @@ Purpose:
 - Preserve the current Query Question Section on a Cache Hit. Copy the cached response header and the bytes after the question around the existing QNAME/QTYPE/QCLASS instead of overwriting and recopying the question; DNS Policy guarantees that the canonical question and wire length match the Cache Key.
 - Patch the cached response Transaction ID with the current Query ID on every eBPF Cache Hit. The eBPF Store may retain the upstream ID physically, but it is never replayed as the ID of a later query.
 - Obtain only the narrow native storage binding required from `EbpfNativeSession`; do not move cache policy into the Session.
-- Build the physical key from a plaintext `CacheNamespace` plus a 128-bit keyed fingerprint over the canonical name, type, and class, using a keyed PRF with a per-process random secret. Implement the fingerprint once in a shared `static __always_inline` header and define the key struct once in the shared `types.h`, with explicit padding and mandatory zero-initialization.
+- Build the physical key from a plaintext network-order `CacheNamespace` plus a 128-bit keyed fingerprint over the canonical name, type, and class, using a keyed PRF with a per-process random secret. Implement the fingerprint once in a shared `static __always_inline` header and define the key struct once in the shared `types.h`, using `__be32`/`__be16`, explicit padding, and mandatory zero-initialization. Convert the host-order Domain value only in the Store adapter; XDP uses packet address and port fields directly.
 - Derive the arena slot size from `max_response_bytes` rather than the hardcoded `ARENA_ENTRY_SIZE`.
 - Verify BPF verifier complexity for the fingerprint and the TTL patch loop at the start of the slice. The documented fallback is using the complete logical key as the BPF map key.
 - Write the hash secret into `.rodata` between skeleton open and load. This is the one place 8D extends the 8A Session signature. Do not pin maps without revisiting secret lifetime.
@@ -240,6 +328,7 @@ Purpose:
 Purpose:
 
 - Wire packet-ring callbacks through the backend-neutral DNS/cache policy and the eBPF cache store.
+- Derive DNS event length from the validated UDP Length. Publish only a complete payload that fits the 512-byte ring-event capacity, never cap or truncate a larger Response, and let 8C apply the configured Cache Response Limit to complete events.
 - Preserve the Query and Response network metadata required by Query Correlation instead of reducing a packet event to an unqualified DNS payload. Response metadata supplies a candidate endpoint; successful correlation supplies the authoritative Cache Namespace for Cache Fill.
 - Require the eBPF MVP Cache Point to observe tuple-symmetric IPv4/UDP Query and Response traffic. Do not add conntrack integration or weaken correlation when NAT or proxying changes the endpoint identity between observations.
 - Keep Pending Query state bounded and short-lived. Missing, expired, mismatched, or unavailable state suppresses Cache Fill for that exchange while Query and Response forwarding remain Fail-open.
@@ -253,11 +342,13 @@ Purpose:
 Verification:
 
 - DNS parser tests.
+- Layered DNS wire-parser, policy, and `classify_response()` facade tests, plus optional Clang libFuzzer targets whose minimized failures become committed regressions.
 - Cache store tests.
 - DNS hash tests.
 - Focused tests proving that every Query with `ARCOUNT != 0`, including ECS-bearing Queries, passes through without a non-ECS Cache Hit or Cache Fill.
 - Query-correlation tests proving that Bypass, unsolicited, expired, and mismatched Responses cannot create Cache Entries; a matching eligible Cache Miss can; and Pending Query exhaustion remains Fail-open.
 - Query-correlation tests proving that Question mismatch does not consume a still-live Pending Query, while the first complete match does and a duplicate Response cannot trigger another Cache Fill.
+- Query Eligibility vector tests proving that every Backend applies the same DNS-level profile while retaining Backend-specific packet-envelope coverage.
 - A Pending Query representation benchmark comparing LRU eviction with explicit bounded cleanup using identical correctness semantics, capacities, timeouts, and traffic traces. Report throughput, p99 latency, CPU cost, correlation success, and pressure-induced skips or evictions.
 - A benchmark matrix comparing a reference DNS service with and without its native cache against the same service with Shinku, including the combined-cache case. Report single-node throughput, p99 latency, and DNS-service CPU use for the same hot `A/IN` workload.
 - eBPF Backend remains runnable throughout the cutover.

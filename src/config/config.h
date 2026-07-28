@@ -29,6 +29,8 @@ struct CacheConfig {
     uint32_t max_entries;
     uint32_t max_response_bytes;
     bool cache_negative;
+    uint32_t max_pending_queries;
+    std::chrono::milliseconds pending_query_timeout;
 };
 
 using BackendConfig = std::variant<EbpfConfig, DpdkConfig>;

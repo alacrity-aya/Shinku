@@ -14,3 +14,14 @@ CompileFlags:
     - "-D__TARGET_ARCH_x86"
     - "-I./src"
     - "-I./build"
+
+---
+
+If:
+  PathMatch: src/cache/.*\.h
+
+CompileFlags:
+  Compiler: clang++
+  Add:
+    - "-xc++"
+    - "-std=c++23"

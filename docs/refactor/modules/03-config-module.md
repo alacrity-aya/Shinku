@@ -93,8 +93,10 @@ packet_poll_timeout = "100ms"
 
 [cache]
 max_entries = 65536
-max_response_bytes = 4096
+max_response_bytes = 512
 cache_negative = true
+max_pending_queries = 8192
+pending_query_timeout = "2s"
 ```
 
 ```toml
@@ -106,8 +108,10 @@ server_port = 1
 
 [cache]
 max_entries = 65536
-max_response_bytes = 4096
+max_response_bytes = 512
 cache_negative = true
+max_pending_queries = 8192
+pending_query_timeout = "2s"
 ```
 
 Schema note:
@@ -135,8 +139,10 @@ Minimum hard validation:
 - `ebpf.packet_poll_timeout`, when present, must be between `1ms` and `1s`.
 - `dpdk.client_port` and `dpdk.server_port` must be in `0..65535` and must not be equal.
 - `cache.max_entries` must be greater than zero.
-- `cache.max_response_bytes` must be greater than zero.
+- `cache.max_response_bytes` must be from 128 through 512 bytes.
 - `cache.cache_negative` must be a boolean.
+- `cache.max_pending_queries` must be greater than zero.
+- `cache.pending_query_timeout` must be a duration from 100ms through 10s.
 - Unknown keys produce warnings and are ignored; they are not hard validation failures.
 
 Diagnostic format examples:

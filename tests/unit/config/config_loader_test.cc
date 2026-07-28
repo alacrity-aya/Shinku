@@ -54,6 +54,8 @@ cleanup_interval = "10s"
 max_entries = 16384
 max_response_bytes = 512
 cache_negative = true
+max_pending_queries = 8192
+pending_query_timeout = "2s"
 )"
     );
 
@@ -72,6 +74,8 @@ cache_negative = true
     CHECK(result->cache.max_entries == 16384);
     CHECK(result->cache.max_response_bytes == 512);
     CHECK(result->cache.cache_negative);
+    CHECK(result->cache.max_pending_queries == 8192);
+    CHECK(result->cache.pending_query_timeout.count() == 2'000);
     CHECK(sink.messages().empty());
 }
 
@@ -88,6 +92,8 @@ server_port = 1
 max_entries = 1024
 max_response_bytes = 512
 cache_negative = false
+max_pending_queries = 256
+pending_query_timeout = "100ms"
 )"
     );
 
@@ -120,6 +126,8 @@ client_port = 0
 max_entries = 1024
 max_response_bytes = 512
 cache_negative = true
+max_pending_queries = 256
+pending_query_timeout = "10s"
 )"
     );
 
@@ -145,6 +153,8 @@ leanup_interval = "10s"
 max_entries = 1024
 max_response_bytes = 512
 cache_negative = true
+max_pending_queries = 256
+pending_query_timeout = "2s"
 )"
     );
 
@@ -173,6 +183,8 @@ cleanup_interval = "10h"
 max_entries = 1024
 max_response_bytes = 512
 cache_negative = true
+max_pending_queries = 256
+pending_query_timeout = "2s"
 )"
     );
 
@@ -199,6 +211,8 @@ packet_poll_timeout = "250ms"
 max_entries = 1024
 max_response_bytes = 512
 cache_negative = true
+max_pending_queries = 256
+pending_query_timeout = "2s"
 )"
     );
 
@@ -225,6 +239,8 @@ packet_poll_timeout = "2s"
 max_entries = 1024
 max_response_bytes = 512
 cache_negative = true
+max_pending_queries = 256
+pending_query_timeout = "2s"
 )"
     );
 
@@ -263,6 +279,8 @@ cleanup_interval = "0s"
 max_entries = 0
 max_response_bytes = 0
 cache_negative = true
+max_pending_queries = 0
+pending_query_timeout = "10ms"
 )"
     );
 
@@ -287,6 +305,8 @@ server_port = 7
 max_entries = 1024
 max_response_bytes = 512
 cache_negative = true
+max_pending_queries = 256
+pending_query_timeout = "2s"
 )"
     );
 
@@ -296,4 +316,82 @@ cache_negative = true
     REQUIRE_FALSE(result.has_value());
     CHECK(result.error().code == shinku::config::ConfigErrorCode::ValidationError);
     CHECK(result.error().message.contains("dpdk.server_port"));
+}
+
+TEST_CASE("cache response limit enforces the DNS profile range") {
+    const auto path = write_config(
+        "bad-response-limit.toml",
+        R"(backend = "dpdk"
+
+[dpdk]
+client_port = 0
+server_port = 1
+
+[cache]
+max_entries = 1
+max_response_bytes = 513
+cache_negative = true
+max_pending_queries = 1
+pending_query_timeout = "2s"
+)"
+    );
+
+    CapturingSink sink;
+    auto result = shinku::config::load_config(path, sink);
+
+    REQUIRE_FALSE(result.has_value());
+    CHECK(result.error().code == shinku::config::ConfigErrorCode::ValidationError);
+    CHECK(result.error().message.contains("cache.max_response_bytes"));
+}
+
+TEST_CASE("pending query capacity must be positive") {
+    const auto path = write_config(
+        "bad-pending-capacity.toml",
+        R"(backend = "dpdk"
+
+[dpdk]
+client_port = 0
+server_port = 1
+
+[cache]
+max_entries = 1
+max_response_bytes = 128
+cache_negative = true
+max_pending_queries = 0
+pending_query_timeout = "2s"
+)"
+    );
+
+    CapturingSink sink;
+    auto result = shinku::config::load_config(path, sink);
+
+    REQUIRE_FALSE(result.has_value());
+    CHECK(result.error().code == shinku::config::ConfigErrorCode::ValidationError);
+    CHECK(result.error().message.contains("cache.max_pending_queries"));
+}
+
+TEST_CASE("pending query timeout enforces its inclusive range") {
+    const auto path = write_config(
+        "bad-pending-timeout.toml",
+        R"(backend = "dpdk"
+
+[dpdk]
+client_port = 0
+server_port = 1
+
+[cache]
+max_entries = 1
+max_response_bytes = 128
+cache_negative = true
+max_pending_queries = 1
+pending_query_timeout = "11s"
+)"
+    );
+
+    CapturingSink sink;
+    auto result = shinku::config::load_config(path, sink);
+
+    REQUIRE_FALSE(result.has_value());
+    CHECK(result.error().code == shinku::config::ConfigErrorCode::ValidationError);
+    CHECK(result.error().message.contains("cache.pending_query_timeout"));
 }

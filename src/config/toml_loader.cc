@@ -142,7 +142,13 @@ void warn_unknown_keys(const toml::table& root, DiagnosticSink& sink, const std:
         warn_unknown_keys(*dpdk, "dpdk", { "client_port", "server_port" }, sink, path);
 
     if (const toml::table* cache = subtable(root, "cache"); cache != nullptr)
-        warn_unknown_keys(*cache, "cache", { "max_entries", "max_response_bytes", "cache_negative" }, sink, path);
+        warn_unknown_keys(
+            *cache,
+            "cache",
+            { "max_entries", "max_response_bytes", "cache_negative", "max_pending_queries", "pending_query_timeout" },
+            sink,
+            path
+        );
 }
 
 template<typename T>
@@ -274,12 +280,12 @@ parse_cache_config(const toml::table& root, const std::filesystem::path& path, D
         require_unsigned<uint32_t>(*cache, "max_response_bytes", "cache.max_response_bytes", path, sink);
     if (!max_response_bytes)
         return std::unexpected(max_response_bytes.error());
-    if (*max_response_bytes == 0) {
+    if (*max_response_bytes < 128 || *max_response_bytes > 512) {
         return emit_error(
             sink,
             ConfigErrorCode::ValidationError,
             path,
-            "invalid cache.max_response_bytes: must be greater than zero"
+            "invalid cache.max_response_bytes: expected value from 128 through 512"
         );
     }
 
@@ -287,10 +293,42 @@ parse_cache_config(const toml::table& root, const std::filesystem::path& path, D
     if (!cache_negative)
         return std::unexpected(cache_negative.error());
 
+    auto max_pending_queries =
+        require_unsigned<uint32_t>(*cache, "max_pending_queries", "cache.max_pending_queries", path, sink);
+    if (!max_pending_queries)
+        return std::unexpected(max_pending_queries.error());
+    if (*max_pending_queries == 0) {
+        return emit_error(
+            sink,
+            ConfigErrorCode::ValidationError,
+            path,
+            "invalid cache.max_pending_queries: must be greater than zero"
+        );
+    }
+
+    auto pending_query_timeout_text =
+        require_string(*cache, "pending_query_timeout", "cache.pending_query_timeout", path, sink);
+    if (!pending_query_timeout_text)
+        return std::unexpected(pending_query_timeout_text.error());
+
+    auto pending_query_timeout = parse_duration(*pending_query_timeout_text);
+    if (!pending_query_timeout.has_value() || *pending_query_timeout < std::chrono::milliseconds(100)
+        || *pending_query_timeout > std::chrono::seconds(10))
+    {
+        return emit_error(
+            sink,
+            ConfigErrorCode::ValidationError,
+            path,
+            "invalid cache.pending_query_timeout: expected duration from 100ms through 10s"
+        );
+    }
+
     return CacheConfig {
         .max_entries = *max_entries,
         .max_response_bytes = *max_response_bytes,
         .cache_negative = *cache_negative,
+        .max_pending_queries = *max_pending_queries,
+        .pending_query_timeout = *pending_query_timeout,
     };
 }
 

@@ -1,0 +1,10 @@
+name = "entry misses exactly at expiry"
+stored_response_hex = "123485800001000100000000076578616d706c6503636f6d0000010001c00c000100010000012c000401020304"
+query_hex = "beef01000001000000000000074578416d506c4503436f4d0000010001"
+question_offset = 12
+question_size = 17
+ttl_offsets = [35]
+stored_at_ns = 0
+hit_at_ns = 300000000000
+lifetime_seconds = 300
+expected_hit = false

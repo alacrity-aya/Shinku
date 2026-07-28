@@ -197,6 +197,25 @@ config_loader_test_exe = executable(
 test('Config Loader Test', config_loader_test_exe)
 
 # ====================
+# C++ Cache Domain Contract Tests
+# ====================
+cache_domain_test_exe = executable(
+    'cache_domain_test',
+    files(
+      'cache/cache_domain_test.cc',
+      'cache/fake_cache_store_test.cc',
+      'cache/cache_hit_vector_test.cc',
+    ),
+    dependencies: [tomlplusplus_dep, catch2_with_main_dep, dependency('threads')],
+    include_directories: inc_src,
+    cpp_args: [
+      '-DCACHE_HIT_VECTOR_DIR="' + meson.project_source_root() / 'tests/vectors/cache_hit' + '"',
+    ],
+)
+
+test('Cache Domain Contract Test', cache_domain_test_exe)
+
+# ====================
 # C++ CLI Parser Test
 # ====================
 cli_parser_test_exe = executable(

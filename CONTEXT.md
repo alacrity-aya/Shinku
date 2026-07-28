@@ -183,7 +183,7 @@ The set of DNS query semantics that the Cache Hit Path can interpret without cha
 _Avoid_: Supported packet, Cache Key
 
 **Cache Candidate**:
-A validated DNS response that DNS Policy has found eligible for caching, but which has not yet passed Store Admission or become a Cache Entry.
+A correlated DNS response that DNS Policy has found structurally safe and eligible for whole-message caching, but which has not yet passed Store Admission or become a Cache Entry. Eligibility does not assert that the upstream resolver's answer is semantically correct.
 _Avoid_: Cache entry, ring event, stored response
 
 **Cache Entry**:
@@ -191,7 +191,7 @@ The published stored form of one Cache Candidate. It occupies one unit of Cache 
 _Avoid_: Cache Candidate, storage container
 
 **Cache Entry Kind**:
-The mutually exclusive DNS meaning of a Cache Candidate or Cache Entry: Positive, NXDOMAIN, or NODATA.
+The mutually exclusive packet-cache classification of a Cache Candidate or Cache Entry: Positive is a `NOERROR` response without an Authority `IN/SOA`, NXDOMAIN comes from the Response RCODE, and NODATA is a `NOERROR` response with an Authority `IN/SOA`. NODATA records the upstream response shape; it does not assert that Shinku independently proved record non-existence.
 _Avoid_: Store flags, response flags, truncated fallback
 
 **Cache Entry Lifetime**:
@@ -231,8 +231,16 @@ _Avoid_: Arena write, admission attempt
 ### DNS Policy and Data Paths
 
 **DNS Policy**:
-The backend-neutral rules that validate an upstream DNS response and decide whether it becomes a Bypass or a Cache Candidate.
+The backend-neutral rules that validate cache-safety invariants of a correlated upstream DNS response and decide whether it becomes a Bypass or a Cache Candidate.
 _Avoid_: DNS parser, Store Admission
+
+**Correlated Verbatim Packet Cache Policy**:
+The DNS Policy that admits only responses matched to an eligible outstanding Query, verifies that the complete response can be stored, aged, rebound, and replayed safely, and otherwise trusts the upstream DNS Service Endpoint's answer semantics.
+_Avoid_: Recursive resolver, RRset cache, opaque byte cache
+
+**Parsed Response**:
+The structural facts extracted from a DNS Response before DNS Policy decides whether that Response is a Bypass or a Cache Candidate.
+_Avoid_: Cache Candidate, policy decision, rebuilt response
 
 **Negative Cache Admission**:
 The DNS Policy setting that decides whether NXDOMAIN or NODATA responses may become Cache Candidates.

@@ -15,7 +15,6 @@
 #include <string_view>
 #include <system_error>
 #include <utility>
-#include <variant>
 #include <vector>
 
 namespace {
@@ -43,6 +42,8 @@ shinku::config::CacheConfig cache_config() {
         .max_entries = 16'384,
         .max_response_bytes = 512,
         .cache_negative = true,
+        .max_pending_queries = 8'192,
+        .pending_query_timeout = 2'000ms,
     };
 }
 
@@ -58,7 +59,7 @@ public:
 
 private:
     std::vector<std::optional<StopRequest>> results_;
-    std::size_t next_ = 0;
+    size_t next_ = 0;
 };
 
 struct BackendFixture {
