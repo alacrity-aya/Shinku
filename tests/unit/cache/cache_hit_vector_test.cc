@@ -6,13 +6,11 @@
 #define TOML_EXCEPTIONS 0
 #include <toml++/toml.hpp>
 
-#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
-#include <filesystem>
 #include <span>
 #include <string>
 #include <string_view>
@@ -54,29 +52,30 @@ std::expected<std::vector<std::byte>, std::string> decode_hex(std::string_view t
 } // namespace
 
 TEST_CASE("language-neutral Cache Hit vectors satisfy the reference semantics") {
-    std::vector<std::filesystem::path> vector_paths;
-    for (const auto& entry: std::filesystem::directory_iterator(CACHE_HIT_VECTOR_DIR)) {
-        if (entry.path().extension() == ".toml")
-            vector_paths.push_back(entry.path());
-    }
-    std::ranges::sort(vector_paths);
-    REQUIRE(vector_paths.size() == 4);
+    toml::parse_result parsed = toml::parse_file(CACHE_HIT_VECTOR_FILE);
+    REQUIRE(parsed);
+    toml::table document = std::move(parsed).table();
 
-    for (const auto& path: vector_paths) {
-        INFO("vector: " << path.string());
-        toml::parse_result parsed = toml::parse_file(path.string());
-        REQUIRE(parsed);
-        toml::table table = std::move(parsed).table();
+    CHECK(document["format_version"].value<int64_t>() == 1);
+    CHECK(document["generator"].value<std::string>() == "tests/vectors/cache_hit/generate.py");
 
-        const auto name = table["name"].value<std::string>();
-        const auto response_hex = table["stored_response_hex"].value<std::string>();
-        const auto query_hex = table["query_hex"].value<std::string>();
-        const auto question_offset = table["question_offset"].value<int64_t>();
-        const auto question_size = table["question_size"].value<int64_t>();
-        const auto stored_at_ns = table["stored_at_ns"].value<int64_t>();
-        const auto hit_at_ns = table["hit_at_ns"].value<int64_t>();
-        const auto lifetime_seconds = table["lifetime_seconds"].value<int64_t>();
-        const auto expected_hit = table["expected_hit"].value<bool>();
+    const toml::array* vectors = document["vectors"].as_array();
+    REQUIRE(vectors != nullptr);
+    REQUIRE(vectors->size() == 4);
+
+    for (const toml::node& node: *vectors) {
+        const toml::table* vector = node.as_table();
+        REQUIRE(vector != nullptr);
+
+        const auto name = (*vector)["name"].value<std::string>();
+        const auto response_hex = (*vector)["stored_response_hex"].value<std::string>();
+        const auto query_hex = (*vector)["query_hex"].value<std::string>();
+        const auto question_offset = (*vector)["question_offset"].value<int64_t>();
+        const auto question_size = (*vector)["question_size"].value<int64_t>();
+        const auto stored_at_ns = (*vector)["stored_at_ns"].value<int64_t>();
+        const auto hit_at_ns = (*vector)["hit_at_ns"].value<int64_t>();
+        const auto lifetime_seconds = (*vector)["lifetime_seconds"].value<int64_t>();
+        const auto expected_hit = (*vector)["expected_hit"].value<bool>();
         REQUIRE(name.has_value());
         REQUIRE(response_hex.has_value());
         REQUIRE(query_hex.has_value());
@@ -93,7 +92,7 @@ TEST_CASE("language-neutral Cache Hit vectors satisfy the reference semantics") 
         REQUIRE(response.has_value());
         REQUIRE(query.has_value());
 
-        const toml::array* offsets_array = table["ttl_offsets"].as_array();
+        const toml::array* offsets_array = (*vector)["ttl_offsets"].as_array();
         REQUIRE(offsets_array != nullptr);
         std::vector<uint16_t> ttl_offsets;
         for (const toml::node& node: *offsets_array) {
@@ -118,7 +117,7 @@ TEST_CASE("language-neutral Cache Hit vectors satisfy the reference semantics") 
         REQUIRE(actual.has_value());
         CHECK(actual->has_value() == *expected_hit);
         if (*expected_hit) {
-            auto expected_hex = table["expected_response_hex"].value<std::string>();
+            auto expected_hex = (*vector)["expected_response_hex"].value<std::string>();
             REQUIRE(expected_hex.has_value());
             auto expected = decode_hex(*expected_hex);
             REQUIRE(expected.has_value());

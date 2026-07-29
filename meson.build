@@ -14,6 +14,7 @@ project('shinku', 'c', 'cpp',
 bpf_log = get_option('bpf_log')
 build_benchmark_bin = get_option('build_benchmark_bin')
 ecs = get_option('ecs')
+dns_fuzzing = get_option('dns_fuzzing')
 
 cares_dep = dependency('libcares', fallback : ['c-ares', 'cares_dep'])
 libbpf_dep = dependency('libbpf')
@@ -26,6 +27,7 @@ tomlplusplus_dep = dependency(
 argparse_dep = dependency('argparse', fallback : ['argparse', 'argparse_dep'])
 clang = find_program('clang')
 bpftool = find_program('bpftool')
+python3 = find_program('python3')
 
 version_conf = configuration_data()
 version_conf.set('SHINKU_VERSION', meson.project_version())
@@ -109,6 +111,12 @@ backend_src = files(
   'src/backend/stop_condition.cc',
 )
 
+cache_dns_policy_src = files(
+  'src/cache/dns_policy.cc',
+  'src/cache/dns/response_policy.cc',
+  'src/cache/dns/wire_parser.cc',
+)
+
 ebpf_backend_src = files(
   'src/backend/backend_creation.cc',
   'src/backend/ebpf/ebpf_backend.cc',
@@ -119,7 +127,7 @@ cli_src = files(
   'src/cli/main.cc',
   'src/cli/cli.cc',
   'src/config/toml_loader.cc',
-) + process_control_src + backend_src + ebpf_backend_src
+) + process_control_src + backend_src + cache_dns_policy_src + ebpf_backend_src
 
 executable(
   'shinku',
@@ -165,6 +173,10 @@ endif
 # Tests
 # ====================
 subdir('tests/unit')
+
+if dns_fuzzing
+  subdir('tests/fuzz')
+endif
 
 # ====================
 # Static Analysis (clang-tidy)

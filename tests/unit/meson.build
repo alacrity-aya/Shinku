@@ -199,6 +199,12 @@ test('Config Loader Test', config_loader_test_exe)
 # ====================
 # C++ Cache Domain Contract Tests
 # ====================
+cache_hit_vector_file = configure_file(
+    input: '../vectors/cache_hit/generate.py',
+    output: 'cache_hit_vectors.toml',
+    command: [python3, '@INPUT@', '@OUTPUT@'],
+)
+
 cache_domain_test_exe = executable(
     'cache_domain_test',
     files(
@@ -209,11 +215,39 @@ cache_domain_test_exe = executable(
     dependencies: [tomlplusplus_dep, catch2_with_main_dep, dependency('threads')],
     include_directories: inc_src,
     cpp_args: [
-      '-DCACHE_HIT_VECTOR_DIR="' + meson.project_source_root() / 'tests/vectors/cache_hit' + '"',
+      '-DCACHE_HIT_VECTOR_FILE="' + meson.current_build_dir() / 'cache_hit_vectors.toml' + '"',
     ],
 )
 
 test('Cache Domain Contract Test', cache_domain_test_exe)
+
+# ====================
+# C++ DNS Policy Engine Tests
+# ====================
+query_eligibility_vector_file = configure_file(
+    input: '../vectors/query_eligibility/generate.py',
+    output: 'query_eligibility_vectors.toml',
+    command: [python3, '@INPUT@', '@OUTPUT@'],
+)
+
+dns_policy_test_exe = executable(
+    'dns_policy_test',
+    files(
+      'cache/dns_policy_test.cc',
+      'cache/fuzz_input_test.cc',
+      'cache/query_eligibility_vector_test.cc',
+      'cache/dns_response_policy_test.cc',
+      'cache/dns_wire_parser_test.cc',
+    ),
+    cache_dns_policy_src,
+    dependencies: [tomlplusplus_dep, catch2_with_main_dep],
+    include_directories: [inc_src, include_directories('../fuzz')],
+    cpp_args: [
+      '-DQUERY_ELIGIBILITY_VECTOR_FILE="' + meson.current_build_dir() / 'query_eligibility_vectors.toml' + '"',
+    ],
+)
+
+test('DNS Policy Engine Test', dns_policy_test_exe)
 
 # ====================
 # C++ CLI Parser Test

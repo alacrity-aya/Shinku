@@ -6,3 +6,6 @@ option('build_benchmark_bin', type : 'boolean', value : false,
 
 option('ecs', type : 'boolean', value : false,
        description : 'Compile in EDNS Client Subnet (ECS) support')
+
+option('dns_fuzzing', type : 'boolean', value : false,
+       description : 'Build optional Clang libFuzzer targets for the DNS policy engine')

@@ -4,6 +4,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <array>
 #include <chrono>
 #include <concepts>
 #include <cstddef>
@@ -15,7 +16,10 @@
 namespace {
 
 using namespace std::chrono_literals;
+using shinku::cache::CacheCandidate;
+using shinku::cache::CacheEntryKind;
 using shinku::cache::CacheKey;
+using shinku::cache::CacheLifetime;
 using shinku::cache::CacheNamespace;
 using shinku::cache::CacheTime;
 using shinku::cache::CanonicalDnsName;
@@ -119,6 +123,41 @@ TEST_CASE("CacheKey identity includes namespace name type and class") {
     CHECK_FALSE(baseline == other_name);
     CHECK_FALSE(baseline == other_type);
     CHECK_FALSE(baseline == other_class);
+}
+
+TEST_CASE("CacheCandidate equality compares borrowed span contents") {
+    const CacheKey key {
+        .cache_namespace = CacheNamespace { .destination_ipv4 = 0x0a000001, .destination_port = 53 },
+        .question_name = name({ 1, 'a', 0 }),
+        .question_type = 1,
+        .question_class = 1,
+    };
+    auto first_response = wire({ 1, 2, 3 });
+    auto second_response = first_response;
+    std::array<uint16_t, 2> first_offsets { 4, 12 };
+    std::array<uint16_t, 2> second_offsets = first_offsets;
+    const CacheCandidate first {
+        .key = key,
+        .kind = CacheEntryKind::Positive,
+        .lifetime = CacheLifetime { 30s },
+        .response = first_response,
+        .ttl_offsets = first_offsets,
+    };
+    CacheCandidate second {
+        .key = key,
+        .kind = CacheEntryKind::Positive,
+        .lifetime = CacheLifetime { 30s },
+        .response = second_response,
+        .ttl_offsets = second_offsets,
+    };
+
+    CHECK(first == second);
+
+    second_response.back() = std::byte { 4 };
+    CHECK(first != second);
+    second_response.back() = std::byte { 3 };
+    second_offsets.back() = 13;
+    CHECK(first != second);
 }
 
 TEST_CASE("CacheTime is strongly separated from standard clock domains") {
