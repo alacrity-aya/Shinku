@@ -118,12 +118,12 @@ std::expected<void, BackendError> EbpfBackend::probe() {
         ));
     }
 
-    auto interface = native_session_->interface_exists(config_.iface);
+    auto interface = native_session_->interface_exists(config_.iface());
     if (!interface)
         return std::unexpected(operation_error(BackendErrorCode::ProbeFailed, "interface probe", interface.error()));
     if (!*interface) {
         return std::unexpected(
-            make_error(BackendErrorCode::WrongConfig, std::format("eBPF interface does not exist: {}", config_.iface))
+            make_error(BackendErrorCode::WrongConfig, std::format("eBPF interface does not exist: {}", config_.iface()))
         );
     }
 
@@ -143,11 +143,11 @@ std::expected<void, BackendError> EbpfBackend::probe() {
 }
 
 std::expected<void, BackendError> EbpfBackend::start() {
-    auto ifindex = native_session_->interface_index(config_.iface);
+    auto ifindex = native_session_->interface_index(config_.iface());
     if (!ifindex)
         return std::unexpected(operation_error(BackendErrorCode::StartFailed, "interface lookup", ifindex.error()));
 
-    if (auto result = native_session_->prepare_skeleton(config_.arena_pages); !result)
+    if (auto result = native_session_->prepare_skeleton(config_.arena_pages()); !result)
         return std::unexpected(operation_error(BackendErrorCode::StartFailed, "skeleton preparation", result.error()));
     if (auto result = native_session_->create_cache_bridge(); !result)
         return std::unexpected(operation_error(BackendErrorCode::StartFailed, "cache bridge creation", result.error()));
@@ -208,9 +208,8 @@ std::expected<void, BackendError> EbpfBackend::start() {
         return std::unexpected(operation_error(BackendErrorCode::StartFailed, "packet ring creation", result.error()));
 
     cleanup_worker_ = std::make_unique<CleanupWorker>();
-    if (auto result = cleanup_worker_->start(*native_session_, config_.cleanup_interval); !result)
-        return std::unexpected(
-            operation_error(BackendErrorCode::StartFailed, "cleanup thread startup", result.error())
+    if (auto result = cleanup_worker_->start(*native_session_, config_.cleanup_interval()); !result)
+        return std::unexpected(operation_error(BackendErrorCode::StartFailed, "cleanup thread startup", result.error())
         );
 
     return {};
@@ -227,7 +226,7 @@ std::expected<PollStatus, BackendError> EbpfBackend::poll() {
         log_work = *log_result;
     }
 
-    auto packet_result = native_session_->poll_packet_ring(static_cast<int>(config_.packet_poll_timeout.count()));
+    auto packet_result = native_session_->poll_packet_ring(static_cast<int>(config_.packet_poll_timeout().count()));
     if (!packet_result) {
         if (is_interrupted(packet_result.error()))
             return PollStatus::NoWork;

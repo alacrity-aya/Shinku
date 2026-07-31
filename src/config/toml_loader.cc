@@ -43,6 +43,63 @@ emit_error(DiagnosticSink& sink, ConfigErrorCode code, const std::filesystem::pa
     return std::unexpected(error);
 }
 
+std::unexpected<ConfigError>
+emit_validation_error(DiagnosticSink& sink, const std::filesystem::path& path, ConfigValidationError error) {
+    switch (error) {
+        case ConfigValidationError::EbpfArenaPagesTooSmall:
+            return emit_error(
+                sink,
+                ConfigErrorCode::ValidationError,
+                path,
+                "invalid ebpf.arena_pages: minimum is 1024"
+            );
+        case ConfigValidationError::EbpfCleanupIntervalNotPositive:
+            return emit_error(
+                sink,
+                ConfigErrorCode::ValidationError,
+                path,
+                "invalid duration ebpf.cleanup_interval: expected positive duration with unit ms, s, or m"
+            );
+        case ConfigValidationError::EbpfPacketPollTimeoutOutOfRange:
+            return emit_error(
+                sink,
+                ConfigErrorCode::ValidationError,
+                path,
+                "invalid ebpf.packet_poll_timeout: expected duration from 1ms through 1s"
+            );
+        case ConfigValidationError::CacheMaxEntriesZero:
+            return emit_error(
+                sink,
+                ConfigErrorCode::ValidationError,
+                path,
+                "invalid cache.max_entries: must be greater than zero"
+            );
+        case ConfigValidationError::CacheMaxResponseBytesOutOfRange:
+            return emit_error(
+                sink,
+                ConfigErrorCode::ValidationError,
+                path,
+                "invalid cache.max_response_bytes: expected value from 128 through 512"
+            );
+        case ConfigValidationError::CacheMaxPendingQueriesZero:
+            return emit_error(
+                sink,
+                ConfigErrorCode::ValidationError,
+                path,
+                "invalid cache.max_pending_queries: must be greater than zero"
+            );
+        case ConfigValidationError::CachePendingQueryTimeoutOutOfRange:
+            return emit_error(
+                sink,
+                ConfigErrorCode::ValidationError,
+                path,
+                "invalid cache.pending_query_timeout: expected duration from 100ms through 10s"
+            );
+    }
+
+    return emit_error(sink, ConfigErrorCode::ValidationError, path, "invalid configuration");
+}
+
 void emit_warning(DiagnosticSink& sink, const std::filesystem::path& path, std::string message) {
     sink.warning(
         ConfigWarning {
@@ -230,7 +287,7 @@ std::optional<std::chrono::milliseconds> parse_duration(std::string_view text) {
     const auto* begin = number_part.data();
     const auto* end = number_part.data() + number_part.size();
     auto [ptr, ec] = std::from_chars(begin, end, amount);
-    if (ec != std::errc() || ptr != end || amount == 0)
+    if (ec != std::errc() || ptr != end)
         return std::nullopt;
 
     const auto max_count = static_cast<uint64_t>(std::numeric_limits<std::chrono::milliseconds::rep>::max());
@@ -268,26 +325,11 @@ parse_cache_config(const toml::table& root, const std::filesystem::path& path, D
     auto max_entries = require_unsigned<uint32_t>(*cache, "max_entries", "cache.max_entries", path, sink);
     if (!max_entries)
         return std::unexpected(max_entries.error());
-    if (*max_entries == 0)
-        return emit_error(
-            sink,
-            ConfigErrorCode::ValidationError,
-            path,
-            "invalid cache.max_entries: must be greater than zero"
-        );
 
     auto max_response_bytes =
         require_unsigned<uint32_t>(*cache, "max_response_bytes", "cache.max_response_bytes", path, sink);
     if (!max_response_bytes)
         return std::unexpected(max_response_bytes.error());
-    if (*max_response_bytes < 128 || *max_response_bytes > 512) {
-        return emit_error(
-            sink,
-            ConfigErrorCode::ValidationError,
-            path,
-            "invalid cache.max_response_bytes: expected value from 128 through 512"
-        );
-    }
 
     auto cache_negative = require_bool(*cache, "cache_negative", "cache.cache_negative", path, sink);
     if (!cache_negative)
@@ -297,14 +339,6 @@ parse_cache_config(const toml::table& root, const std::filesystem::path& path, D
         require_unsigned<uint32_t>(*cache, "max_pending_queries", "cache.max_pending_queries", path, sink);
     if (!max_pending_queries)
         return std::unexpected(max_pending_queries.error());
-    if (*max_pending_queries == 0) {
-        return emit_error(
-            sink,
-            ConfigErrorCode::ValidationError,
-            path,
-            "invalid cache.max_pending_queries: must be greater than zero"
-        );
-    }
 
     auto pending_query_timeout_text =
         require_string(*cache, "pending_query_timeout", "cache.pending_query_timeout", path, sink);
@@ -312,9 +346,7 @@ parse_cache_config(const toml::table& root, const std::filesystem::path& path, D
         return std::unexpected(pending_query_timeout_text.error());
 
     auto pending_query_timeout = parse_duration(*pending_query_timeout_text);
-    if (!pending_query_timeout.has_value() || *pending_query_timeout < std::chrono::milliseconds(100)
-        || *pending_query_timeout > std::chrono::seconds(10))
-    {
+    if (!pending_query_timeout.has_value()) {
         return emit_error(
             sink,
             ConfigErrorCode::ValidationError,
@@ -323,13 +355,16 @@ parse_cache_config(const toml::table& root, const std::filesystem::path& path, D
         );
     }
 
-    return CacheConfig {
+    auto cache_config = CacheConfig::create({
         .max_entries = *max_entries,
         .max_response_bytes = *max_response_bytes,
         .cache_negative = *cache_negative,
         .max_pending_queries = *max_pending_queries,
         .pending_query_timeout = *pending_query_timeout,
-    };
+    });
+    if (!cache_config)
+        return emit_validation_error(sink, path, cache_config.error());
+    return std::move(*cache_config);
 }
 
 std::expected<EbpfConfig, ConfigError>
@@ -345,8 +380,6 @@ parse_ebpf_config(const toml::table& root, const std::filesystem::path& path, Di
     auto arena_pages = require_unsigned<uint32_t>(*ebpf, "arena_pages", "ebpf.arena_pages", path, sink);
     if (!arena_pages)
         return std::unexpected(arena_pages.error());
-    if (*arena_pages < 1024)
-        return emit_error(sink, ConfigErrorCode::ValidationError, path, "invalid ebpf.arena_pages: minimum is 1024");
 
     auto cleanup_interval_text = require_string(*ebpf, "cleanup_interval", "ebpf.cleanup_interval", path, sink);
     if (!cleanup_interval_text)
@@ -362,7 +395,7 @@ parse_ebpf_config(const toml::table& root, const std::filesystem::path& path, Di
         );
     }
 
-    std::chrono::milliseconds packet_poll_timeout(100);
+    auto packet_poll_timeout = EbpfConfig::kDefaultPacketPollTimeout;
     if (has_key(*ebpf, "packet_poll_timeout")) {
         auto timeout_text = string_value(*ebpf, "packet_poll_timeout");
         if (!timeout_text.has_value()) {
@@ -375,9 +408,7 @@ parse_ebpf_config(const toml::table& root, const std::filesystem::path& path, Di
         }
 
         auto parsed_timeout = parse_duration(*timeout_text);
-        if (!parsed_timeout.has_value() || *parsed_timeout < std::chrono::milliseconds(1)
-            || *parsed_timeout > std::chrono::seconds(1))
-        {
+        if (!parsed_timeout.has_value()) {
             return emit_error(
                 sink,
                 ConfigErrorCode::ValidationError,
@@ -388,12 +419,15 @@ parse_ebpf_config(const toml::table& root, const std::filesystem::path& path, Di
         packet_poll_timeout = *parsed_timeout;
     }
 
-    return EbpfConfig {
+    auto ebpf_config = EbpfConfig::create({
         .iface = *iface,
         .arena_pages = *arena_pages,
         .cleanup_interval = cleanup_interval.value(),
         .packet_poll_timeout = packet_poll_timeout,
-    };
+    });
+    if (!ebpf_config)
+        return emit_validation_error(sink, path, ebpf_config.error());
+    return std::move(*ebpf_config);
 }
 
 std::expected<DpdkConfig, ConfigError>

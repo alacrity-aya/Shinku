@@ -7,6 +7,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <cassert>
 #include <chrono>
 #include <expected>
 #include <memory>
@@ -30,21 +31,25 @@ using shinku::backend::ebpf::testing::FakeEbpfNativeSession;
 using namespace std::chrono_literals;
 
 shinku::config::EbpfConfig ebpf_config() {
-    return shinku::config::EbpfConfig {
+    auto result = shinku::config::EbpfConfig::create({
         .iface = "eth0",
         .arena_pages = 2112,
         .cleanup_interval = 10'000ms,
-    };
+    });
+    assert(result.has_value());
+    return std::move(*result);
 }
 
 shinku::config::CacheConfig cache_config() {
-    return shinku::config::CacheConfig {
+    auto result = shinku::config::CacheConfig::create({
         .max_entries = 16'384,
         .max_response_bytes = 512,
         .cache_negative = true,
         .max_pending_queries = 8'192,
         .pending_query_timeout = 2'000ms,
-    };
+    });
+    assert(result.has_value());
+    return std::move(*result);
 }
 
 class SequencedStopCondition final: public StopCondition {
@@ -249,9 +254,14 @@ TEST_CASE("EbpfBackend preserves packet ring polling behavior") {
 }
 
 TEST_CASE("EbpfBackend uses the configured packet poll timeout") {
-    auto config = ebpf_config();
-    config.packet_poll_timeout = 250ms;
-    BackendFixture fixture(std::move(config));
+    auto config = shinku::config::EbpfConfig::create({
+        .iface = "eth0",
+        .arena_pages = 2112,
+        .cleanup_interval = 10'000ms,
+        .packet_poll_timeout = 250ms,
+    });
+    REQUIRE(config.has_value());
+    BackendFixture fixture(std::move(*config));
     SequencedStopCondition stop_condition({ std::nullopt, std::nullopt, StopRequest { .reason = StopReason::Manual } });
 
     auto result = fixture.runner->run(stop_condition);

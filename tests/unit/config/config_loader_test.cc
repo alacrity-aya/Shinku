@@ -1,15 +1,20 @@
 // SPDX-License-Identifier: GPL-2.0-only OR Apache-2.0
+#include "config/config.h"
 #include "config/toml_loader.h"
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace {
+
+using namespace std::chrono_literals;
 
 class CapturingSink final: public shinku::config::DiagnosticSink {
 public:
@@ -40,6 +45,123 @@ std::filesystem::path write_config(std::string_view name, std::string_view body)
 
 } // namespace
 
+TEST_CASE("CacheConfig enforces its invariants at construction") {
+    const auto valid_params = [] {
+        return shinku::config::CacheConfig::Params {
+            .max_entries = 1,
+            .max_response_bytes = 128,
+            .cache_negative = true,
+            .max_pending_queries = 1,
+            .pending_query_timeout = 100ms,
+        };
+    };
+
+    auto valid = shinku::config::CacheConfig::create(valid_params());
+    REQUIRE(valid.has_value());
+    CHECK(valid->max_entries() == 1);
+    CHECK(valid->max_response_bytes() == 128);
+
+    SECTION("entry capacity") {
+        auto params = valid_params();
+        params.max_entries = 0;
+        auto result = shinku::config::CacheConfig::create(params);
+        REQUIRE_FALSE(result);
+        CHECK(result.error() == shinku::config::ConfigValidationError::CacheMaxEntriesZero);
+    }
+
+    SECTION("response size") {
+        SECTION("below minimum") {
+            auto params = valid_params();
+            params.max_response_bytes = 127;
+            auto result = shinku::config::CacheConfig::create(params);
+            REQUIRE_FALSE(result);
+            CHECK(result.error() == shinku::config::ConfigValidationError::CacheMaxResponseBytesOutOfRange);
+        }
+
+        SECTION("above maximum") {
+            auto params = valid_params();
+            params.max_response_bytes = 513;
+            auto result = shinku::config::CacheConfig::create(params);
+            REQUIRE_FALSE(result);
+            CHECK(result.error() == shinku::config::ConfigValidationError::CacheMaxResponseBytesOutOfRange);
+        }
+    }
+
+    SECTION("pending query capacity") {
+        auto params = valid_params();
+        params.max_pending_queries = 0;
+        auto result = shinku::config::CacheConfig::create(params);
+        REQUIRE_FALSE(result);
+        CHECK(result.error() == shinku::config::ConfigValidationError::CacheMaxPendingQueriesZero);
+    }
+
+    SECTION("pending query timeout") {
+        SECTION("below minimum") {
+            auto params = valid_params();
+            params.pending_query_timeout = 99ms;
+            auto result = shinku::config::CacheConfig::create(params);
+            REQUIRE_FALSE(result);
+            CHECK(result.error() == shinku::config::ConfigValidationError::CachePendingQueryTimeoutOutOfRange);
+        }
+
+        SECTION("above maximum") {
+            auto params = valid_params();
+            params.pending_query_timeout = 10'001ms;
+            auto result = shinku::config::CacheConfig::create(params);
+            REQUIRE_FALSE(result);
+            CHECK(result.error() == shinku::config::ConfigValidationError::CachePendingQueryTimeoutOutOfRange);
+        }
+    }
+}
+
+TEST_CASE("EbpfConfig enforces its invariants at construction") {
+    const auto valid_params = [] {
+        return shinku::config::EbpfConfig::Params {
+            .iface = "eth0",
+            .arena_pages = 1024,
+            .cleanup_interval = 1ms,
+        };
+    };
+
+    auto valid = shinku::config::EbpfConfig::create(valid_params());
+    REQUIRE(valid.has_value());
+    CHECK(valid->packet_poll_timeout() == 100ms);
+
+    SECTION("arena pages") {
+        auto params = valid_params();
+        params.arena_pages = 1023;
+        auto result = shinku::config::EbpfConfig::create(std::move(params));
+        REQUIRE_FALSE(result);
+        CHECK(result.error() == shinku::config::ConfigValidationError::EbpfArenaPagesTooSmall);
+    }
+
+    SECTION("cleanup interval") {
+        auto params = valid_params();
+        params.cleanup_interval = 0ms;
+        auto result = shinku::config::EbpfConfig::create(std::move(params));
+        REQUIRE_FALSE(result);
+        CHECK(result.error() == shinku::config::ConfigValidationError::EbpfCleanupIntervalNotPositive);
+    }
+
+    SECTION("packet poll timeout") {
+        SECTION("below minimum") {
+            auto params = valid_params();
+            params.packet_poll_timeout = 0ms;
+            auto result = shinku::config::EbpfConfig::create(std::move(params));
+            REQUIRE_FALSE(result);
+            CHECK(result.error() == shinku::config::ConfigValidationError::EbpfPacketPollTimeoutOutOfRange);
+        }
+
+        SECTION("above maximum") {
+            auto params = valid_params();
+            params.packet_poll_timeout = 1001ms;
+            auto result = shinku::config::EbpfConfig::create(std::move(params));
+            REQUIRE_FALSE(result);
+            CHECK(result.error() == shinku::config::ConfigValidationError::EbpfPacketPollTimeoutOutOfRange);
+        }
+    }
+}
+
 TEST_CASE("valid eBPF config loads") {
     const auto path = write_config(
         "valid-ebpf.toml",
@@ -67,15 +189,15 @@ pending_query_timeout = "2s"
     CHECK(result->backend_config.index() == 0);
 
     const auto& ebpf = std::get<shinku::config::EbpfConfig>(result->backend_config);
-    CHECK(ebpf.iface == "eth0");
-    CHECK(ebpf.arena_pages == 2112);
-    CHECK(ebpf.cleanup_interval.count() == 10'000);
-    CHECK(ebpf.packet_poll_timeout.count() == 100);
-    CHECK(result->cache.max_entries == 16384);
-    CHECK(result->cache.max_response_bytes == 512);
-    CHECK(result->cache.cache_negative);
-    CHECK(result->cache.max_pending_queries == 8192);
-    CHECK(result->cache.pending_query_timeout.count() == 2'000);
+    CHECK(ebpf.iface() == "eth0");
+    CHECK(ebpf.arena_pages() == 2112);
+    CHECK(ebpf.cleanup_interval().count() == 10'000);
+    CHECK(ebpf.packet_poll_timeout().count() == 100);
+    CHECK(result->cache.max_entries() == 16384);
+    CHECK(result->cache.max_response_bytes() == 512);
+    CHECK(result->cache.cache_negative());
+    CHECK(result->cache.max_pending_queries() == 8192);
+    CHECK(result->cache.pending_query_timeout().count() == 2'000);
     CHECK(sink.messages().empty());
 }
 
@@ -136,7 +258,7 @@ pending_query_timeout = "10s"
 
     REQUIRE(result.has_value());
     CHECK(result->backend_config.index() == 0);
-    CHECK(std::get<shinku::config::EbpfConfig>(result->backend_config).cleanup_interval.count() == 100);
+    CHECK(std::get<shinku::config::EbpfConfig>(result->backend_config).cleanup_interval().count() == 100);
 }
 
 TEST_CASE("unknown key warning is emitted before first hard error") {
@@ -220,7 +342,7 @@ pending_query_timeout = "2s"
     auto result = shinku::config::load_config(path, sink);
 
     REQUIRE(result.has_value());
-    CHECK(std::get<shinku::config::EbpfConfig>(result->backend_config).packet_poll_timeout.count() == 250);
+    CHECK(std::get<shinku::config::EbpfConfig>(result->backend_config).packet_poll_timeout().count() == 250);
     CHECK(sink.messages().empty());
 }
 
