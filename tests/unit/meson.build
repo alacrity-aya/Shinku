@@ -250,6 +250,68 @@ dns_policy_test_exe = executable(
 test('DNS Policy Engine Test', dns_policy_test_exe)
 
 # ====================
+# C++ eBPF Cache Store Tests
+# ====================
+ebpf_cache_store_test_exe = executable(
+    'ebpf_cache_store_test',
+    files(
+      'backend/ebpf_cache_store_test.cc',
+      '../../src/backend/ebpf/cache/ebpf_cache_map.cc',
+      '../../src/backend/ebpf/cache/ebpf_cache_secret.cc',
+      '../../src/backend/ebpf/cache/ebpf_cache_storage_layout.cc',
+      '../../src/backend/ebpf/cache/ebpf_cache_store.cc',
+    ),
+    dependencies: [libbpf_dep, catch2_with_main_dep, dependency('threads')],
+    include_directories: inc_src,
+)
+
+test('eBPF Cache Store Test', ebpf_cache_store_test_exe)
+
+ebpf_cache_verifier_bpf_obj = custom_target(
+  'ebpf_cache_verifier.bpf.o',
+  input: 'backend/ebpf_cache_verifier.bpf.c',
+  output: 'ebpf_cache_verifier.bpf.o',
+  depends: vmlinux_h,
+  depend_files: files(
+    '../../src/include/ebpf_cache_abi.h',
+    '../../src/include/ebpf_cache_fingerprint.h',
+    '../../src/bpf/arena/bpf_arena_common.h',
+  ),
+  command: [
+    clang, '-g', '-O2', '-target', 'bpf',
+    '-D__BPF__=1',
+    '-I' + meson.project_build_root(),
+    '-I' + meson.project_source_root() + '/src/include',
+    '-I' + meson.project_source_root() + '/src',
+    '-c', '@INPUT@', '-o', '@OUTPUT@'
+  ]
+)
+
+ebpf_cache_verifier_skel = custom_target(
+  'ebpf_cache_verifier.skel.h',
+  input: ebpf_cache_verifier_bpf_obj,
+  output: 'ebpf_cache_verifier.skel.h',
+  command: [bpftool, 'gen', 'skeleton', '@INPUT@'],
+  capture: true
+)
+
+ebpf_cache_verifier_test_exe = executable(
+    'ebpf_cache_verifier_test',
+    files(
+      'backend/ebpf_cache_verifier_test.cc',
+      '../../src/backend/ebpf/cache/ebpf_cache_map.cc',
+      '../../src/backend/ebpf/cache/ebpf_cache_storage_layout.cc',
+      '../../src/backend/ebpf/cache/ebpf_cache_store.cc',
+    ),
+    ebpf_cache_verifier_skel,
+    dependencies: [libbpf_dep, dependency('threads')],
+    include_directories: inc_src,
+    override_options: ['b_sanitize=none'],
+)
+
+test('eBPF Cache Verifier Gate', ebpf_cache_verifier_test_exe)
+
+# ====================
 # C++ CLI Parser Test
 # ====================
 cli_parser_test_exe = executable(

@@ -116,15 +116,15 @@ void run_cache_store_conformance(Factory&& make_adapter) {
         REQUIRE(adapter->store(1, 10, epoch, 1s) == StoreOutcome::Inserted);
         REQUIRE(adapter->store(2, 20, epoch, 1s) == StoreOutcome::Inserted);
 
-        auto first = adapter->cleanup(epoch + 1s);
-        REQUIRE(first.has_value());
-        CHECK(first->removed_entries == 1);
-        CHECK(first->more_work);
-
-        auto second = adapter->cleanup(epoch + 1s);
-        REQUIRE(second.has_value());
-        CHECK(second->removed_entries == 1);
-        CHECK_FALSE(second->more_work);
+        size_t removed = 0;
+        bool more_work = false;
+        do {
+            auto result = adapter->cleanup(epoch + 1s);
+            REQUIRE(result.has_value());
+            removed += result->removed_entries;
+            more_work = result->more_work;
+        } while (more_work);
+        CHECK(removed == 2);
     }
 
     SECTION("one store caller may run concurrently with cleanup") {

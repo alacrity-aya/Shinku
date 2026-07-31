@@ -1,0 +1,337 @@
+// SPDX-License-Identifier: GPL-2.0-only OR Apache-2.0
+#include "backend/ebpf/cache/ebpf_cache_store.h"
+
+#include "cache/cache_candidate.h"
+#include "cache/cache_key.h"
+#include "cache/cache_store_error.h"
+#include "cache/cache_time.h"
+#include "ebpf_cache_fingerprint.h"
+#include "safe_arithmetic.h"
+
+#include <algorithm>
+#include <atomic>
+#include <cassert>
+#include <chrono>
+#include <cstring>
+#include <memory>
+#include <netinet/in.h>
+#include <new>
+#include <optional>
+#include <span>
+#include <utility>
+
+namespace shinku::backend::ebpf {
+namespace {
+
+using cache::CacheStoreError;
+using cache::CacheStoreErrorCode;
+
+CacheStoreError storage_error(std::error_code cause) noexcept {
+    return { .code = CacheStoreErrorCode::StorageUnavailable, .cause = cause };
+}
+
+CacheStoreError write_error(std::error_code cause) noexcept {
+    return { .code = CacheStoreErrorCode::WriteFailed, .cause = cause };
+}
+
+CacheStoreError cleanup_error(std::error_code cause) noexcept {
+    return { .code = CacheStoreErrorCode::CleanupFailed, .cause = cause };
+}
+
+std::optional<std::pair<uint64_t, uint64_t>> timestamps(cache::CacheTime now, cache::CacheLifetime lifetime) noexcept {
+    const auto stored_count = now.time_since_epoch().count();
+    const auto lifetime_count = lifetime.count();
+
+    assert(stored_count >= 0);
+    assert(lifetime_count > 0);
+
+    constexpr uint64_t nanoseconds_per_second = 1'000'000'000ULL;
+    const auto stored_at = static_cast<uint64_t>(stored_count);
+    const auto seconds = static_cast<uint64_t>(lifetime_count);
+    const auto lifetime_ns = safe_mul(seconds, nanoseconds_per_second);
+    if (!lifetime_ns)
+        return std::nullopt;
+    const auto expires_at = safe_add(stored_at, *lifetime_ns);
+    if (!expires_at)
+        return std::nullopt;
+    return std::pair { stored_at, *expires_at };
+}
+
+ebpf_cache_publication publication(uint32_t slot_index, uint64_t generation) noexcept {
+    return {
+        .slot_index = slot_index,
+        .reserved = 0,
+        .generation = generation,
+    };
+}
+
+} // namespace
+
+EbpfCacheStore::EbpfCacheStore(
+    EbpfCacheStorageLayout layout,
+    EbpfNativeStorageBinding binding,
+    ebpf_cache_secret secret,
+    std::unique_ptr<EbpfCacheMap> map
+):
+    layout_(layout),
+    binding_(std::move(binding)),
+    secret_(secret),
+    map_(std::move(map)),
+    slots_(layout.entry_capacity) {
+    // Backend composition owns these invariants; verifier/test bindings mirror them before the 8E cutover.
+    assert(binding_.cache_map_fd() >= 0);
+    assert(binding_.arena().size() >= layout_.required_arena_bytes);
+    assert(reinterpret_cast<uintptr_t>(binding_.arena().data()) % SHINKU_EBPF_CACHE_SLOT_ALIGNMENT == 0);
+    assert(layout_.slot_stride <= rollback_scratch_.size());
+    assert(map_ != nullptr);
+
+    // Start each Header lifetime without clearing inactive slot body or tail bytes.
+    for (uint32_t slot_index = 0; slot_index < layout_.entry_capacity; ++slot_index) {
+        auto* const header = reinterpret_cast<ebpf_cache_slot_header*>(
+            binding_.arena().data() + (static_cast<size_t>(slot_index) * layout_.slot_stride)
+        );
+        std::construct_at(header);
+    }
+}
+
+std::expected<std::unique_ptr<EbpfCacheStore>, std::error_code> EbpfCacheStore::create(
+    EbpfCacheStorageLayout layout,
+    EbpfNativeStorageBinding binding,
+    ebpf_cache_secret secret
+) noexcept {
+    auto map = make_production_ebpf_cache_map(binding.cache_map_fd());
+    if (!map)
+        return std::unexpected(map.error());
+    return create_for_testing(layout, std::move(binding), secret, std::move(*map));
+}
+
+std::expected<std::unique_ptr<EbpfCacheStore>, std::error_code> EbpfCacheStore::create_for_testing(
+    EbpfCacheStorageLayout layout,
+    EbpfNativeStorageBinding binding,
+    ebpf_cache_secret secret,
+    std::unique_ptr<EbpfCacheMap> map
+) noexcept {
+    try {
+        return std::unique_ptr<EbpfCacheStore>(new EbpfCacheStore(layout, std::move(binding), secret, std::move(map)));
+    } catch (const std::bad_alloc&) {
+        return std::unexpected(std::make_error_code(std::errc::not_enough_memory));
+    }
+}
+
+ebpf_cache_physical_key EbpfCacheStore::physical_key(const cache::CacheKey& key) const noexcept {
+    const auto name = key.question_name.wire();
+    return {
+        .destination_ipv4 = htonl(key.cache_namespace.destination_ipv4),
+        .destination_port = htons(key.cache_namespace.destination_port),
+        .reserved = 0,
+        .fingerprint = shinku_ebpf_cache_fingerprint(
+            reinterpret_cast<const __u8*>(name.data()),
+            static_cast<__u32>(name.size()),
+            key.question_type,
+            key.question_class,
+            &secret_
+        ),
+    };
+}
+
+std::byte* EbpfCacheStore::slot(uint32_t slot_index) noexcept {
+    assert(slot_index < layout_.entry_capacity);
+    return binding_.arena().data() + (static_cast<size_t>(slot_index) * layout_.slot_stride);
+}
+
+uint64_t EbpfCacheStore::next_generation() noexcept {
+    const uint64_t result = next_generation_++;
+    if (next_generation_ == 0)
+        next_generation_ = 1;
+    return result;
+}
+
+uint32_t EbpfCacheStore::allocate_slot() noexcept {
+    if (free_head_ != kNoSlot) {
+        const uint32_t result = free_head_;
+        free_head_ = slots_[result].next_free;
+        slots_[result].next_free = kNoSlot;
+        return result;
+    }
+    if (next_unused_slot_ < layout_.entry_capacity)
+        return next_unused_slot_++;
+
+    const uint32_t result = replacement_cursor_;
+    assert(slots_[result].generation != 0);
+    return result;
+}
+
+void EbpfCacheStore::reclaim_slot(uint32_t slot_index) noexcept {
+    SlotRecord& record = slots_[slot_index];
+    record.key = {};
+    record.generation = 0;
+    record.expires_at_ns = 0;
+    record.next_free = free_head_;
+    free_head_ = slot_index;
+}
+
+void EbpfCacheStore::write_slot(
+    uint32_t slot_index,
+    const cache::CacheCandidate& candidate,
+    uint64_t stored_at_ns,
+    uint64_t expires_at_ns,
+    uint64_t generation
+) noexcept {
+    std::byte* const bytes = slot(slot_index);
+    auto* const header = reinterpret_cast<ebpf_cache_slot_header*>(bytes);
+    const std::atomic_ref sequence(header->sequence);
+    const uint32_t old_sequence = sequence.fetch_add(1, std::memory_order_acq_rel);
+    assert((old_sequence & 1U) == 0);
+
+    header->response_size = static_cast<uint16_t>(candidate.response.size());
+    header->ttl_offset_count = static_cast<uint16_t>(candidate.ttl_offsets.size());
+    header->generation = generation;
+    header->stored_at_ns = stored_at_ns;
+    header->expires_at_ns = expires_at_ns;
+
+    std::memcpy(bytes + sizeof(*header), candidate.response.data(), candidate.response.size());
+    const size_t offset_table = ebpf_cache_offset_table_offset(candidate.response.size());
+    if (offset_table > sizeof(*header) + candidate.response.size())
+        bytes[offset_table - 1U] = std::byte { 0 };
+    if (!candidate.ttl_offsets.empty())
+        std::memcpy(bytes + offset_table, candidate.ttl_offsets.data(), candidate.ttl_offsets.size_bytes());
+    sequence.fetch_add(1, std::memory_order_release);
+}
+
+void EbpfCacheStore::restore_slot_body(uint32_t slot_index, size_t body_size) noexcept {
+    std::byte* const bytes = slot(slot_index);
+    auto* const header = reinterpret_cast<ebpf_cache_slot_header*>(bytes);
+    const std::atomic_ref sequence(header->sequence);
+    const uint32_t old_sequence = sequence.fetch_add(1, std::memory_order_acq_rel);
+    assert((old_sequence & 1U) == 0);
+    std::memcpy(bytes + sizeof(uint32_t), rollback_scratch_.data(), body_size);
+    sequence.fetch_add(1, std::memory_order_release);
+}
+
+std::expected<cache::StoreOutcome, cache::CacheStoreError>
+EbpfCacheStore::store(const cache::CacheCandidate& candidate, cache::CacheTime now) noexcept {
+    // Fast reject: the candidate must fit within the arena slot's fixed capacities.
+    if (candidate.response.size() > layout_.response_capacity
+        || candidate.ttl_offsets.size() > layout_.ttl_offset_capacity)
+        return cache::StoreOutcome::Rejected;
+
+    // Derive stored_at / expires_at; overflow while scaling the lifetime to
+    // nanoseconds makes the candidate unrepresentable.
+    const auto times = timestamps(now, candidate.lifetime);
+    if (!times)
+        return cache::StoreOutcome::Rejected;
+    const auto [stored_at, expires_at] = *times;
+
+    std::scoped_lock lock(mutex_);
+
+    // The physical key is the hash-map key; the publication it maps to points
+    // at the arena slot where the response bytes live.
+    const ebpf_cache_physical_key key = physical_key(candidate.key);
+    auto existing = map_->lookup(key);
+    if (!existing)
+        return std::unexpected(storage_error(existing.error()));
+
+    if (*existing) {
+        // Update-in-place path: the key is already published to a live slot.
+        const ebpf_cache_publication old_publication = **existing;
+        SlotRecord& owner = slots_[old_publication.slot_index];
+
+        // Backup the current entry's active bytes (everything after the seqlock
+        // `sequence` word) so a failed map update can roll the slot back.
+        const auto* old_header = reinterpret_cast<const ebpf_cache_slot_header*>(slot(old_publication.slot_index));
+        const size_t old_active_size =
+            ebpf_cache_active_slot_size(old_header->response_size, old_header->ttl_offset_count);
+
+        // Host-side bookkeeping and the BPF-published metadata must agree.
+        assert(old_publication.slot_index < layout_.entry_capacity);
+        assert(owner.generation == old_publication.generation);
+        assert(owner.key == key);
+        assert(old_active_size <= layout_.slot_stride);
+
+        // The `sequence` word is the seqlock marker; the body is bytes[4, active).
+        const size_t old_body_size = old_active_size - sizeof(uint32_t);
+        std::memcpy(rollback_scratch_.data(), slot(old_publication.slot_index) + sizeof(uint32_t), old_body_size);
+
+        // Write the arena slot first (reversible), then publish to the BPF map.
+        // The fresh generation makes in-flight readers of the old entry miss.
+        const uint64_t generation = next_generation();
+        write_slot(old_publication.slot_index, candidate, stored_at, expires_at, generation);
+        auto published =
+            map_->update(key, publication(old_publication.slot_index, generation), EbpfCacheMapUpdateMode::Update);
+        if (!published) {
+            // The map still references the old generation; restore the old bytes
+            // so the arena matches the publication again.
+            restore_slot_body(old_publication.slot_index, old_body_size);
+            return std::unexpected(write_error(published.error()));
+        }
+
+        owner.generation = generation;
+        owner.expires_at_ns = expires_at;
+        return cache::StoreOutcome::Updated;
+    }
+
+    // Insert path: allocate a slot (free list, then never-used slots, then the
+    // replacement cursor that evicts an existing occupant).
+    const uint32_t slot_index = allocate_slot();
+    SlotRecord& owner = slots_[slot_index];
+    const bool occupied = owner.generation != 0;
+    const bool expired_victim = occupied && owner.expires_at_ns <= stored_at;
+    if (occupied) {
+        // Evict: drop the old key from the map before reusing its slot.
+        auto erased = map_->erase(owner.key);
+        if (!erased)
+            return std::unexpected(write_error(erased.error()));
+        replacement_cursor_ = (slot_index + 1U) % layout_.entry_capacity;
+    }
+
+    const uint64_t generation = next_generation();
+    write_slot(slot_index, candidate, stored_at, expires_at, generation);
+    auto published = map_->update(key, publication(slot_index, generation), EbpfCacheMapUpdateMode::Insert);
+    if (!published) {
+        // Undo the slot allocation so the failed insert leaves no trace.
+        reclaim_slot(slot_index);
+        return std::unexpected(write_error(published.error()));
+    }
+
+    owner.key = key;
+    owner.generation = generation;
+    owner.expires_at_ns = expires_at;
+    owner.next_free = kNoSlot;
+    // Inserted: brand-new slot, or we evicted an already-expired victim.
+    // Replaced: we evicted a still-live entry to make room.
+    if (!occupied || expired_victim)
+        return cache::StoreOutcome::Inserted;
+    return cache::StoreOutcome::Replaced;
+}
+
+std::expected<cache::CleanupResult, cache::CacheStoreError> EbpfCacheStore::cleanup(cache::CacheTime now) noexcept {
+    const auto time = now.time_since_epoch().count();
+    assert(time >= 0);
+    const auto now_ns = static_cast<uint64_t>(time);
+
+    std::scoped_lock lock(mutex_);
+    if (cleanup_remaining_ == 0)
+        cleanup_remaining_ = layout_.entry_capacity;
+
+    size_t removed = 0;
+    const auto count = std::min<size_t>(cleanup_remaining_, kCleanupBatchSize);
+    for (size_t scanned = 0; scanned < count; ++scanned) {
+        SlotRecord& owner = slots_[cleanup_cursor_];
+        if (owner.generation != 0 && owner.expires_at_ns <= now_ns) {
+            auto erased = map_->erase(owner.key);
+            if (!erased)
+                return std::unexpected(cleanup_error(erased.error()));
+            reclaim_slot(cleanup_cursor_);
+            ++removed;
+        }
+        cleanup_cursor_ = (cleanup_cursor_ + 1U) % layout_.entry_capacity;
+        --cleanup_remaining_;
+    }
+
+    return cache::CleanupResult {
+        .removed_entries = removed,
+        .more_work = cleanup_remaining_ != 0,
+    };
+}
+
+} // namespace shinku::backend::ebpf
