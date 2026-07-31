@@ -14,7 +14,8 @@ Scope:
 - Validate `backend`, selected backend section, backend-neutral `[cache]`, and duration strings.
 - Unknown keys warn and are ignored.
 - Config Loader owns diagnostics through injectable `DiagnosticSink`.
-- Produce a validated C++ `Config`; do not expose raw TOML nodes to CLI or backend code.
+- Produce a validated C++ `Config`; `CacheConfig` and `EbpfConfig` are validated value objects whose factories own
+  their numeric and duration invariants. Do not expose raw TOML nodes to CLI or backend code.
 
 File layout:
 
@@ -44,6 +45,8 @@ API contract:
 - After TOML parse succeeds, Config Loader runs an unknown-key warning pass before hard validation.
 - If TOML parse fails, there is no AST to scan, so Config Loader emits only the parse error.
 - During hard validation, Config Loader returns on the first hard error. It does not collect all validation errors in the MVP.
+- Config Loader owns TOML schema, text parsing, and diagnostics. It delegates parsed `CacheConfig` and `EbpfConfig`
+  values to their factories and maps typed validation failures back to field-specific diagnostics.
 - Config diagnostics for schema and validation issues must include the TOML field path, such as `ebpf.cleanup_interval`.
 - The eBPF `packet_poll_timeout` field is optional; when absent, Config Loader materializes `100ms`.
 
@@ -161,6 +164,8 @@ Verification:
 Implementation result:
 
 - Added C++23 `src/config/` with typed `Config`, selected-backend-only `BackendConfig`, typed `ConfigError`, injectable diagnostics, TOML loader, and temporary `to_legacy_env()` adapter.
+- Hardened `CacheConfig` and `EbpfConfig` as factory-constructed value objects, centralizing their numeric and duration
+  invariants while keeping TOML syntax and diagnostic formatting in Config Loader.
 - Added `tomlplusplus` Meson fallback wrap.
 - Added `tests/unit/config/config_loader_test.cc` using Catch2 through `catch2-with-main`.
 - Focused verification passes with LeakSanitizer disabled in this managed environment: `ASAN_OPTIONS=detect_leaks=0 build/tests/unit/config_loader_test`.
