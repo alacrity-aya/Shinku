@@ -24,3 +24,7 @@ tests/soak/results/
 # Generated documentation
 docs/dns-packet-processing.md
 
+# AI configuration file
+.claude
+.agents
+skills-lock.json
