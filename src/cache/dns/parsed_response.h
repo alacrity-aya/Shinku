@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <tuple>
 
 namespace shinku::cache::dns {
 
@@ -26,13 +27,24 @@ struct ParsedResponse {
     bool authority_has_in_soa;
     std::span<const uint16_t> ttl_offsets;
 
+    [[nodiscard]] auto members() const {
+        return std::tie(
+            flags,
+            question_count,
+            answer_count,
+            authority_count,
+            additional_count,
+            question_name,
+            question_type,
+            question_class,
+            question_is_compressed,
+            minimum_ttl,
+            authority_has_in_soa
+        );
+    }
+
     friend bool operator==(const ParsedResponse& lhs, const ParsedResponse& rhs) {
-        return std::ranges::equal(lhs.message, rhs.message) && lhs.flags == rhs.flags
-            && lhs.question_count == rhs.question_count && lhs.answer_count == rhs.answer_count
-            && lhs.authority_count == rhs.authority_count && lhs.additional_count == rhs.additional_count
-            && lhs.question_name == rhs.question_name && lhs.question_type == rhs.question_type
-            && lhs.question_class == rhs.question_class && lhs.question_is_compressed == rhs.question_is_compressed
-            && lhs.minimum_ttl == rhs.minimum_ttl && lhs.authority_has_in_soa == rhs.authority_has_in_soa
+        return std::ranges::equal(lhs.message, rhs.message) && lhs.members() == rhs.members()
             && std::ranges::equal(lhs.ttl_offsets, rhs.ttl_offsets);
     }
 };
