@@ -196,7 +196,6 @@ start_shinku() {
         echo
         echo '[ebpf]'
         echo "iface = \"$VETH_HOST\""
-        echo 'arena_pages = 2112'
         echo 'cleanup_interval = "10s"'
         echo
         echo '[cache]'
