@@ -2,17 +2,50 @@ If:
   PathMatch: .*\.bpf\.c
 
 CompileFlags:
-  Remove: 
-    - "-fsanitize=address"
+  Compiler: clang
+  Remove:
+    - "-fsanitize=*"
     - "-fno-omit-frame-pointer"
+    - "-std=*"
 
-  Add: 
-    # - "-target"
-    # - "bpf"
+  Add:
+    - "-xc"
+    - "-target"
+    - "bpf"
     - "-O2"
     - "-g"
     - "-D__TARGET_ARCH_x86"
+    - "-DSHINKU_BPF_LOG_ENABLED=0"
+    - "-I."
     - "-I./src"
+    - "-I./src/include"
+    - "-I./build"
+
+---
+
+If:
+  PathMatch: src/bpf/cache_bpf_.*\.h
+
+CompileFlags:
+  Compiler: clang
+  Remove:
+    - "-fsanitize=*"
+    - "-fno-omit-frame-pointer"
+    - "-std=*"
+    - "-x"
+    - "c++*"
+
+  Add:
+    - "-xc"
+    - "-target"
+    - "bpf"
+    - "-O2"
+    - "-g"
+    - "-D__TARGET_ARCH_x86"
+    - "-DSHINKU_BPF_LOG_ENABLED=0"
+    - "-I."
+    - "-I./src"
+    - "-I./src/include"
     - "-I./build"
 
 ---

@@ -206,6 +206,14 @@ _Avoid_: Normalized response, rebuilt message, immutable replay bytes
 A monotonic timestamp in the clock domain shared by a concrete Backend's Cache Fill, cleanup, and Cache Hit paths. It has no wall-clock meaning and may be chosen explicitly in tests.
 _Avoid_: Wall time, DNS TTL
 
+**Response Observation Time**:
+The Cache Time at which a correlated upstream Response is accepted by a Backend for Cache Fill consideration. DNS TTL residence begins at this time and includes any later delivery or admission delay.
+_Avoid_: Host admission time, wall time
+
+**Store Admission Time**:
+The Cache Time at which a Cache Store evaluates whether to publish a Cache Candidate and whether a resident victim is currently live. It does not replace Response Observation Time as the start of DNS TTL residence.
+_Avoid_: Response Observation Time, Cache Entry insertion time
+
 **TTL-only Freshness**:
 The policy in which Cache Entry validity is determined only from retained DNS TTLs and elapsed Cache Time. External systems do not push invalidations into the cache.
 _Avoid_: Kubernetes watch, active purge
@@ -268,9 +276,17 @@ _Avoid_: Best effort
 
 ### Query Correlation
 
+**Query Eligibility**:
+The determination that a DNS Query belongs to the Cacheable Query Profile and may participate in Cache lookup and, on a miss, establish a Pending Query. An ineligible Query has no cache lookup or Pending Query side effects.
+_Avoid_: Cache Hit, Response admission
+
 **Pending Query**:
 A bounded, short-lived record of an eligible Cache Miss Query's exchange identity and Cache Namespace, retained only long enough to decide whether the corresponding Response may enter the Cache Fill Path.
 _Avoid_: Cache Entry, response cache
+
+**Claimed Pending Query**:
+A Pending Query that has already authorized one Response to enter the Cache Fill Path and remains temporarily as a consumed-exchange marker. It cannot authorize another Response or be refreshed by another observation of the Query.
+_Avoid_: Active Pending Query, Cache Entry
 
 **Pending Query Capacity**:
 The configured maximum number of Pending Queries that one Shinku instance may retain concurrently. It bounds correlation state independently of Cache Capacity.

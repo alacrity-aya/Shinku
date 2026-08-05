@@ -4,6 +4,7 @@ build*/
 
 # Editor/tool artifacts
 AGENTS.md
+CLAUDE.md
 __pycache__/
 .ruff_cache/
 
@@ -28,3 +29,6 @@ docs/dns-packet-processing.md
 .claude
 .agents
 skills-lock.json
+
+# Local Playwright tooling artifacts
+.playwright-cli/
