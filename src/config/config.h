@@ -16,7 +16,6 @@ enum class BackendKind : uint8_t {
 };
 
 enum class ConfigValidationError : uint8_t {
-    EbpfArenaPagesTooSmall,
     EbpfCleanupIntervalNotPositive,
     EbpfPacketPollTimeoutOutOfRange,
     CacheMaxEntriesZero,
@@ -27,21 +26,17 @@ enum class ConfigValidationError : uint8_t {
 
 class EbpfConfig {
 public:
-    static constexpr uint32_t kMinimumArenaPages = 1024;
     static constexpr std::chrono::milliseconds kDefaultPacketPollTimeout { 100 };
     static constexpr std::chrono::milliseconds kMinimumPacketPollTimeout { 1 };
     static constexpr std::chrono::milliseconds kMaximumPacketPollTimeout { 1000 };
 
     struct Params {
         std::string iface;
-        uint32_t arena_pages;
         std::chrono::milliseconds cleanup_interval;
         std::chrono::milliseconds packet_poll_timeout { kDefaultPacketPollTimeout };
     };
 
     [[nodiscard]] static std::expected<EbpfConfig, ConfigValidationError> create(Params params) noexcept {
-        if (params.arena_pages < kMinimumArenaPages)
-            return std::unexpected(ConfigValidationError::EbpfArenaPagesTooSmall);
         if (params.cleanup_interval <= std::chrono::milliseconds::zero())
             return std::unexpected(ConfigValidationError::EbpfCleanupIntervalNotPositive);
         if (params.packet_poll_timeout < kMinimumPacketPollTimeout
@@ -56,9 +51,6 @@ public:
     [[nodiscard]] const std::string& iface() const noexcept {
         return iface_;
     }
-    [[nodiscard]] uint32_t arena_pages() const noexcept {
-        return arena_pages_;
-    }
     [[nodiscard]] std::chrono::milliseconds cleanup_interval() const noexcept {
         return cleanup_interval_;
     }
@@ -69,12 +61,10 @@ public:
 private:
     explicit EbpfConfig(Params params) noexcept:
         iface_(std::move(params.iface)),
-        arena_pages_(params.arena_pages),
         cleanup_interval_(params.cleanup_interval),
         packet_poll_timeout_(params.packet_poll_timeout) {}
 
     std::string iface_;
-    uint32_t arena_pages_;
     std::chrono::milliseconds cleanup_interval_;
     std::chrono::milliseconds packet_poll_timeout_;
 };

@@ -46,13 +46,6 @@ emit_error(DiagnosticSink& sink, ConfigErrorCode code, const std::filesystem::pa
 std::unexpected<ConfigError>
 emit_validation_error(DiagnosticSink& sink, const std::filesystem::path& path, ConfigValidationError error) {
     switch (error) {
-        case ConfigValidationError::EbpfArenaPagesTooSmall:
-            return emit_error(
-                sink,
-                ConfigErrorCode::ValidationError,
-                path,
-                "invalid ebpf.arena_pages: minimum is 1024"
-            );
         case ConfigValidationError::EbpfCleanupIntervalNotPositive:
             return emit_error(
                 sink,
@@ -101,12 +94,10 @@ emit_validation_error(DiagnosticSink& sink, const std::filesystem::path& path, C
 }
 
 void emit_warning(DiagnosticSink& sink, const std::filesystem::path& path, std::string message) {
-    sink.warning(
-        ConfigWarning {
-            .path = path,
-            .message = std::move(message),
-        }
-    );
+    sink.warning(ConfigWarning {
+        .path = path,
+        .message = std::move(message),
+    });
 }
 
 std::expected<toml::table, ConfigError>
@@ -187,13 +178,7 @@ void warn_unknown_keys(const toml::table& root, DiagnosticSink& sink, const std:
     warn_unknown_keys(root, "", { "backend", "ebpf", "dpdk", "cache" }, sink, path);
 
     if (const toml::table* ebpf = subtable(root, "ebpf"); ebpf != nullptr)
-        warn_unknown_keys(
-            *ebpf,
-            "ebpf",
-            { "iface", "arena_pages", "cleanup_interval", "packet_poll_timeout" },
-            sink,
-            path
-        );
+        warn_unknown_keys(*ebpf, "ebpf", { "iface", "cleanup_interval", "packet_poll_timeout" }, sink, path);
 
     if (const toml::table* dpdk = subtable(root, "dpdk"); dpdk != nullptr)
         warn_unknown_keys(*dpdk, "dpdk", { "client_port", "server_port" }, sink, path);
@@ -364,7 +349,7 @@ parse_cache_config(const toml::table& root, const std::filesystem::path& path, D
     });
     if (!cache_config)
         return emit_validation_error(sink, path, cache_config.error());
-    return std::move(*cache_config);
+    return *cache_config;
 }
 
 std::expected<EbpfConfig, ConfigError>
@@ -376,10 +361,6 @@ parse_ebpf_config(const toml::table& root, const std::filesystem::path& path, Di
     auto iface = require_string(*ebpf, "iface", "ebpf.iface", path, sink);
     if (!iface)
         return std::unexpected(iface.error());
-
-    auto arena_pages = require_unsigned<uint32_t>(*ebpf, "arena_pages", "ebpf.arena_pages", path, sink);
-    if (!arena_pages)
-        return std::unexpected(arena_pages.error());
 
     auto cleanup_interval_text = require_string(*ebpf, "cleanup_interval", "ebpf.cleanup_interval", path, sink);
     if (!cleanup_interval_text)
@@ -421,7 +402,6 @@ parse_ebpf_config(const toml::table& root, const std::filesystem::path& path, Di
 
     auto ebpf_config = EbpfConfig::create({
         .iface = *iface,
-        .arena_pages = *arena_pages,
         .cleanup_interval = cleanup_interval.value(),
         .packet_poll_timeout = packet_poll_timeout,
     });

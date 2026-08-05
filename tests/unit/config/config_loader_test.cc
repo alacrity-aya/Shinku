@@ -118,7 +118,6 @@ TEST_CASE("EbpfConfig enforces its invariants at construction") {
     const auto valid_params = [] {
         return shinku::config::EbpfConfig::Params {
             .iface = "eth0",
-            .arena_pages = 1024,
             .cleanup_interval = 1ms,
         };
     };
@@ -126,14 +125,6 @@ TEST_CASE("EbpfConfig enforces its invariants at construction") {
     auto valid = shinku::config::EbpfConfig::create(valid_params());
     REQUIRE(valid.has_value());
     CHECK(valid->packet_poll_timeout() == 100ms);
-
-    SECTION("arena pages") {
-        auto params = valid_params();
-        params.arena_pages = 1023;
-        auto result = shinku::config::EbpfConfig::create(std::move(params));
-        REQUIRE_FALSE(result);
-        CHECK(result.error() == shinku::config::ConfigValidationError::EbpfArenaPagesTooSmall);
-    }
 
     SECTION("cleanup interval") {
         auto params = valid_params();
@@ -169,7 +160,6 @@ TEST_CASE("valid eBPF config loads") {
 
 [ebpf]
 iface = "eth0"
-arena_pages = 2112
 cleanup_interval = "10s"
 
 [cache]
@@ -190,7 +180,6 @@ pending_query_timeout = "2s"
 
     const auto& ebpf = std::get<shinku::config::EbpfConfig>(result->backend_config);
     CHECK(ebpf.iface() == "eth0");
-    CHECK(ebpf.arena_pages() == 2112);
     CHECK(ebpf.cleanup_interval().count() == 10'000);
     CHECK(ebpf.packet_poll_timeout().count() == 100);
     CHECK(result->cache.max_entries() == 16384);
@@ -238,7 +227,6 @@ TEST_CASE("unselected backend can be incomplete and is not retained") {
 
 [ebpf]
 iface = "eth0"
-arena_pages = 2112
 cleanup_interval = "100ms"
 
 [dpdk]
@@ -268,7 +256,6 @@ TEST_CASE("unknown key warning is emitted before first hard error") {
 
 [ebpf]
 iface = "eth0"
-arena_pages = 2112
 leanup_interval = "10s"
 
 [cache]
@@ -298,7 +285,6 @@ TEST_CASE("invalid duration is a validation error") {
 
 [ebpf]
 iface = "eth0"
-arena_pages = 2112
 cleanup_interval = "10h"
 
 [cache]
@@ -325,7 +311,6 @@ TEST_CASE("eBPF packet poll timeout can override its default") {
 
 [ebpf]
 iface = "eth0"
-arena_pages = 2112
 cleanup_interval = "10s"
 packet_poll_timeout = "250ms"
 
@@ -353,7 +338,6 @@ TEST_CASE("eBPF packet poll timeout rejects out of range values") {
 
 [ebpf]
 iface = "eth0"
-arena_pages = 2112
 cleanup_interval = "10s"
 packet_poll_timeout = "2s"
 
@@ -394,7 +378,6 @@ TEST_CASE("first hard error stops validation") {
 
 [ebpf]
 iface = "eth0"
-arena_pages = 64
 cleanup_interval = "0s"
 
 [cache]
@@ -410,7 +393,7 @@ pending_query_timeout = "10ms"
     auto result = shinku::config::load_config(path, sink);
 
     REQUIRE_FALSE(result.has_value());
-    CHECK(result.error().message.find("ebpf.arena_pages") != std::string::npos);
+    CHECK(result.error().message.find("ebpf.cleanup_interval") != std::string::npos);
     REQUIRE(sink.messages().size() == 1);
 }
 
