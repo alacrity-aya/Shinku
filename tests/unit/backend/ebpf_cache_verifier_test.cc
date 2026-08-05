@@ -44,25 +44,16 @@ int run_cross_boundary_hit(ebpf_cache_verifier_bpf* skeleton) {
         std::println(stderr, "failed to construct verifier config");
         return 1;
     }
-    auto layout = make_ebpf_cache_storage_layout(*config, 4096);
-    if (!layout) {
-        std::println(stderr, "failed to calculate verifier layout");
-        return 1;
-    }
+    const auto layout = make_ebpf_cache_storage_layout(*config, 4096);
 
     auto store = EbpfCacheStore::create(
-        *layout,
+        layout,
         EbpfNativeStorageBinding(
             bpf_map__fd(skeleton->maps.verifier_cache_map),
             std::as_writable_bytes(std::span(skeleton->arena->verifier_slots))
         ),
         skeleton->rodata->verifier_secret
     );
-    if (!store) {
-        std::println(stderr, "failed to construct verifier Store: {}", store.error().message());
-        return 1;
-    }
-
     const std::array question_name {
         std::byte { 12 },  std::byte { 'v' }, std::byte { 'e' }, std::byte { 'r' }, std::byte { 'i' },
         std::byte { 'f' }, std::byte { 'i' }, std::byte { 'e' }, std::byte { 'r' }, std::byte { 't' },
@@ -90,7 +81,8 @@ int run_cross_boundary_hit(ebpf_cache_verifier_bpf* skeleton) {
         .response = response,
         .ttl_offsets = ttl_offsets,
     };
-    auto stored = (*store)->store(candidate, boot_time());
+    const auto observed_at = boot_time();
+    auto stored = store->store(candidate, observed_at, observed_at);
     if (!stored) {
         std::println(stderr, "failed to write verifier candidate");
         return 1;

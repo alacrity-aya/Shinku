@@ -6,8 +6,6 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <expected>
-#include <system_error>
 
 namespace shinku::backend::ebpf {
 
@@ -25,7 +23,7 @@ struct EbpfCacheStorageLayout {
     bool operator==(const EbpfCacheStorageLayout&) const = default;
 };
 
-[[nodiscard]] std::expected<EbpfCacheStorageLayout, std::error_code>
+[[nodiscard]] EbpfCacheStorageLayout
 make_ebpf_cache_storage_layout(const config::CacheConfig& config, size_t page_size) noexcept;
 
 [[nodiscard]] constexpr size_t ebpf_cache_offset_table_offset(size_t response_size) noexcept {

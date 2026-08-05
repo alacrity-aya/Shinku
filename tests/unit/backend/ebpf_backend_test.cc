@@ -33,7 +33,6 @@ using namespace std::chrono_literals;
 shinku::config::EbpfConfig ebpf_config() {
     auto result = shinku::config::EbpfConfig::create({
         .iface = "eth0",
-        .arena_pages = 2112,
         .cleanup_interval = 10'000ms,
     });
     assert(result.has_value());
@@ -99,17 +98,20 @@ TEST_CASE("EbpfBackend lifecycle is driven through BackendRunner") {
     CHECK(fixture.runner->state() == BackendState::Stopped);
     CHECK(fixture.session->probed_interface == "eth0");
     CHECK(fixture.session->indexed_interface == "eth0");
-    CHECK(fixture.session->configured_arena_pages == 2112);
+    REQUIRE(fixture.session->configured_skeleton.has_value());
+    CHECK(fixture.session->configured_skeleton->cache_layout.entry_capacity == 16'384);
+    CHECK(fixture.session->configured_skeleton->cache_layout.response_capacity == 512);
+    CHECK(fixture.session->configured_skeleton->pending_capacity == 8'192);
+    CHECK(fixture.session->configured_skeleton->pending_timeout_ns == 2'000'000'000ULL);
     CHECK(fixture.session->attached_ifindex == 7);
-    CHECK(fixture.session->log_poll_timeout_ms == 100);
+    CHECK(fixture.session->log_poll_timeout_ms == 0);
     CHECK(fixture.session->packet_poll_timeout_ms == 100);
-    CHECK(called_after(fixture.session->calls, "prepare_skeleton", "create_cache_bridge"));
-    CHECK(called_after(fixture.session->calls, "create_cache_bridge", "create_log_ring"));
+    CHECK(called_after(fixture.session->calls, "prepare_skeleton", "create_log_ring"));
     CHECK(called_after(fixture.session->calls, "create_log_ring", "attach_xdp"));
     CHECK(called_after(fixture.session->calls, "attach_tcx", "create_packet_ring"));
     CHECK(called_after(fixture.session->calls, "create_packet_ring", "poll_packet_ring"));
-    CHECK(called_after(fixture.session->calls, "poll_packet_ring", "release"));
-    CHECK(std::count(fixture.session->calls.begin(), fixture.session->calls.end(), "cleanup_expired_entries") == 0);
+    CHECK(called_after(fixture.session->calls, "poll_packet_ring", "close_packet_ring"));
+    CHECK(called_after(fixture.session->calls, "close_packet_ring", "release"));
 }
 
 TEST_CASE("EbpfBackend maps capability conclusions without entering start") {
@@ -221,8 +223,7 @@ TEST_CASE("EbpfBackend falls back from unsupported TCX to legacy TC") {
 TEST_CASE("EbpfBackend preserves packet ring polling behavior") {
     SECTION("interrupted poll is no work") {
         BackendFixture fixture;
-        fixture.session->packet_poll_results.emplace_back(
-            std::unexpected(std::make_error_code(std::errc::interrupted))
+        fixture.session->packet_poll_results.emplace_back(std::unexpected(std::make_error_code(std::errc::interrupted))
         );
         SequencedStopCondition stop_condition(
             { std::nullopt, std::nullopt, StopRequest { .reason = StopReason::Manual } }
@@ -256,7 +257,6 @@ TEST_CASE("EbpfBackend preserves packet ring polling behavior") {
 TEST_CASE("EbpfBackend uses the configured packet poll timeout") {
     auto config = shinku::config::EbpfConfig::create({
         .iface = "eth0",
-        .arena_pages = 2112,
         .cleanup_interval = 10'000ms,
         .packet_poll_timeout = 250ms,
     });
@@ -267,6 +267,7 @@ TEST_CASE("EbpfBackend uses the configured packet poll timeout") {
     auto result = fixture.runner->run(stop_condition);
 
     REQUIRE(result.has_value());
+    CHECK(fixture.session->log_poll_timeout_ms == 0);
     CHECK(fixture.session->packet_poll_timeout_ms == 250);
 }
 
@@ -281,7 +282,7 @@ TEST_CASE("EbpfBackend preserves log ring polling behavior") {
         auto result = fixture.runner->run(stop_condition);
 
         REQUIRE(result.has_value());
-        CHECK(fixture.session->log_poll_timeout_ms == 100);
+        CHECK(fixture.session->log_poll_timeout_ms == 0);
         CHECK(std::count(fixture.session->calls.begin(), fixture.session->calls.end(), "poll_packet_ring") == 0);
     }
 
@@ -296,6 +297,7 @@ TEST_CASE("EbpfBackend preserves log ring polling behavior") {
         auto result = fixture.runner->run(stop_condition);
 
         REQUIRE(result.has_value());
+        CHECK(fixture.session->log_poll_timeout_ms == 0);
         CHECK(std::count(fixture.session->calls.begin(), fixture.session->calls.end(), "poll_packet_ring") == 1);
     }
 }

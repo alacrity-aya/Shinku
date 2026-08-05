@@ -13,30 +13,29 @@
 #include <expected>
 #include <memory>
 #include <mutex>
-#include <system_error>
 #include <vector>
 
 namespace shinku::backend::ebpf {
 
 class EbpfCacheStore final: public cache::CacheStore {
 public:
-    [[nodiscard]] static std::expected<std::unique_ptr<EbpfCacheStore>, std::error_code>
-    create(EbpfCacheStorageLayout layout, EbpfNativeStorageBinding binding, ebpf_cache_secret secret) noexcept;
+    [[nodiscard]] static std::unique_ptr<EbpfCacheStore>
+    create(EbpfCacheStorageLayout layout, EbpfNativeStorageBinding binding, ebpf_cache_secret secret);
 
-    [[nodiscard]] static std::expected<std::unique_ptr<EbpfCacheStore>, std::error_code> create_for_testing(
+    [[nodiscard]] static std::unique_ptr<EbpfCacheStore> create_for_testing(
         EbpfCacheStorageLayout layout,
         EbpfNativeStorageBinding binding,
         ebpf_cache_secret secret,
         std::unique_ptr<EbpfCacheMap> map
-    ) noexcept;
+    );
 
     ~EbpfCacheStore() override = default;
 
     [[nodiscard]] std::expected<cache::StoreOutcome, cache::CacheStoreError>
-    store(const cache::CacheCandidate& candidate, cache::CacheTime now) noexcept override;
+    store(const cache::CacheCandidate& candidate, cache::CacheTime observed_at, cache::CacheTime now) noexcept override;
 
-    [[nodiscard]] std::expected<cache::CleanupResult, cache::CacheStoreError> cleanup(cache::CacheTime now
-    ) noexcept override;
+    [[nodiscard]] std::expected<cache::CleanupResult, cache::CacheStoreError>
+    cleanup(cache::CacheTime now) noexcept override;
 
 private:
     static constexpr uint32_t kNoSlot = UINT32_MAX;

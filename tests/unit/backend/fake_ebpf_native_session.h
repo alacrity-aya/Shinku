@@ -4,11 +4,15 @@
 #include "backend/ebpf/ebpf_native_session.h"
 
 #include <chrono>
+#include <cstddef>
 #include <deque>
 #include <expected>
+#include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 namespace shinku::backend::ebpf::testing {
@@ -20,8 +24,7 @@ public:
     CapabilityProbeResult arena_result = true;
     std::expected<uint32_t, std::error_code> interface_index_result = 7U;
 
-    std::expected<void, std::error_code> prepare_result;
-    std::expected<void, std::error_code> bridge_result;
+    std::optional<std::error_code> prepare_error;
     std::expected<void, std::error_code> log_ring_result;
     std::expected<void, std::error_code> packet_ring_result;
     std::deque<std::expected<void, std::error_code>> xdp_results;
@@ -31,16 +34,17 @@ public:
     std::deque<std::expected<void, std::error_code>> release_results;
     std::deque<std::expected<int, std::error_code>> log_poll_results;
     std::deque<std::expected<int, std::error_code>> packet_poll_results;
-    std::deque<std::expected<int, std::error_code>> cleanup_results;
 
     std::string probed_interface;
     std::string indexed_interface;
-    uint32_t configured_arena_pages = 0;
+    std::optional<EbpfSkeletonConfig> configured_skeleton;
     uint32_t attached_ifindex = 0;
     int log_poll_timeout_ms = 0;
     int packet_poll_timeout_ms = 0;
     std::vector<std::chrono::milliseconds> waits;
     std::vector<std::string> calls;
+    PacketEventConsumer* packet_consumer = nullptr;
+    bool packet_ring_closed = false;
 
     CapabilityProbeResult has_required_privileges() override {
         calls.emplace_back("probe_privileges");
@@ -64,15 +68,17 @@ public:
         return interface_index_result;
     }
 
-    std::expected<void, std::error_code> prepare_skeleton(uint32_t arena_pages) override {
+    std::expected<EbpfNativeBinding, std::error_code> prepare_skeleton(const EbpfSkeletonConfig& config) override {
         calls.emplace_back("prepare_skeleton");
-        configured_arena_pages = arena_pages;
-        return prepare_result;
-    }
+        configured_skeleton = config;
+        if (prepare_error)
+            return std::unexpected(*prepare_error);
 
-    std::expected<void, std::error_code> create_cache_bridge() override {
-        calls.emplace_back("create_cache_bridge");
-        return bridge_result;
+        constexpr size_t storage_alignment = sizeof(std::max_align_t);
+        const size_t storage_words = (config.cache_layout.arena_bytes + storage_alignment - 1) / storage_alignment;
+        arena_storage.resize(storage_words);
+        auto arena = std::span(reinterpret_cast<std::byte*>(arena_storage.data()), config.cache_layout.arena_bytes);
+        return EbpfNativeBinding(EbpfNativeStorageBinding(0, arena), EbpfNativePendingBinding(1));
     }
 
     std::expected<void, std::error_code> create_log_ring() override {
@@ -98,9 +104,21 @@ public:
         return pop_or_success(legacy_tc_results);
     }
 
-    std::expected<void, std::error_code> create_packet_ring() override {
+    std::expected<void, std::error_code> create_packet_ring(PacketEventConsumer& consumer) override {
         calls.emplace_back("create_packet_ring");
+        packet_consumer = &consumer;
         return packet_ring_result;
+    }
+
+    void close_packet_ring() noexcept override {
+        calls.emplace_back("close_packet_ring");
+        packet_consumer = nullptr;
+        packet_ring_closed = true;
+    }
+
+    void emit_packet_event(std::span<const std::byte> sample) noexcept {
+        if (packet_consumer != nullptr)
+            packet_consumer->consume(sample);
     }
 
     std::expected<int, std::error_code> poll_log_ring(int timeout_ms) override {
@@ -115,11 +133,6 @@ public:
         return pop_or_value(packet_poll_results, 0);
     }
 
-    std::expected<int, std::error_code> cleanup_expired_entries() override {
-        calls.emplace_back("cleanup_expired_entries");
-        return pop_or_value(cleanup_results, 0);
-    }
-
     std::expected<void, std::error_code> wait_for(std::chrono::milliseconds duration) override {
         calls.emplace_back("wait_for");
         waits.emplace_back(duration);
@@ -132,8 +145,10 @@ public:
     }
 
 private:
-    static std::expected<void, std::error_code>
-    pop_or_success(std::deque<std::expected<void, std::error_code>>& results) {
+    std::vector<std::max_align_t> arena_storage;
+
+    static std::expected<void, std::error_code> pop_or_success(std::deque<std::expected<void, std::error_code>>& results
+    ) {
         if (results.empty())
             return {};
         auto result = results.front();

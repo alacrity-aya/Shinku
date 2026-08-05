@@ -32,7 +32,6 @@ public:
     [[nodiscard]] virtual std::expected<void, std::error_code> erase(const ebpf_cache_physical_key& key) noexcept = 0;
 };
 
-[[nodiscard]] std::expected<std::unique_ptr<EbpfCacheMap>, std::error_code>
-make_production_ebpf_cache_map(int map_fd) noexcept;
+[[nodiscard]] std::unique_ptr<EbpfCacheMap> make_production_ebpf_cache_map(int map_fd);
 
 } // namespace shinku::backend::ebpf

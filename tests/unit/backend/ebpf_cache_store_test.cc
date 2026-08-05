@@ -44,8 +44,8 @@ public:
         entries_.reserve(capacity);
     }
 
-    std::expected<std::optional<ebpf_cache_publication>, std::error_code>
-    lookup(const ebpf_cache_physical_key& key) noexcept override {
+    std::expected<std::optional<ebpf_cache_publication>, std::error_code> lookup(const ebpf_cache_physical_key& key
+    ) noexcept override {
         if (fail_lookup_) {
             fail_lookup_ = false;
             return std::unexpected(std::make_error_code(std::errc::io_error));
@@ -152,7 +152,6 @@ cache::CacheKey make_key(uint8_t label) {
 struct CandidateStorage {
     std::array<std::byte, 32> response {};
     std::array<uint16_t, 1> offsets { 12 };
-    std::array<uint16_t, SHINKU_EBPF_CACHE_MAX_TTL_OFFSETS + 1U> oversized_offsets {};
 
     cache::CacheCandidate candidate(uint8_t key, uint8_t payload, cache::CacheLifetime lifetime = 30s) {
         response.fill(std::byte { 0 });
@@ -169,16 +168,11 @@ struct CandidateStorage {
 
 struct StoreHarness {
     explicit StoreHarness(uint32_t capacity = 2, uint32_t response_capacity = 128) {
-        auto made_layout = make_ebpf_cache_storage_layout(cache_config(capacity, response_capacity), 4096);
-        REQUIRE(made_layout.has_value());
-        layout = *made_layout;
+        layout = make_ebpf_cache_storage_layout(cache_config(capacity, response_capacity), 4096);
         arena.assign(layout.arena_bytes, std::byte { 0xa5 });
         auto fake = std::make_unique<FakeEbpfCacheMap>(capacity);
         map = fake.get();
-        auto made_store =
-            EbpfCacheStore::create_for_testing(layout, EbpfNativeStorageBinding(0, arena), secret, std::move(fake));
-        REQUIRE(made_store.has_value());
-        store = std::move(*made_store);
+        store = EbpfCacheStore::create_for_testing(layout, EbpfNativeStorageBinding(0, arena), secret, std::move(fake));
     }
 
     [[nodiscard]] ebpf_cache_slot_header* header(uint32_t slot_index) {
@@ -199,20 +193,10 @@ struct StoreHarness {
 
 class EbpfCacheStoreConformanceAdapter final: public cache::testing::CacheStoreConformanceAdapter {
 public:
-    std::expected<cache::StoreOutcome, cache::CacheStoreError> store(
-        uint8_t key,
-        uint8_t payload,
-        cache::CacheTime now,
-        cache::CacheLifetime lifetime,
-        bool incomplete_patch_plan = false
-    ) noexcept override {
+    std::expected<cache::StoreOutcome, cache::CacheStoreError>
+    store(uint8_t key, uint8_t payload, cache::CacheTime now, cache::CacheLifetime lifetime) noexcept override {
         auto candidate = storage_.candidate(static_cast<uint8_t>('a' + key), payload, lifetime);
-        if (reject_next_ || incomplete_patch_plan) {
-            storage_.oversized_offsets.fill(12);
-            candidate.ttl_offsets = storage_.oversized_offsets;
-            reject_next_ = false;
-        }
-        return harness_.store->store(candidate, now);
+        return harness_.store->store(candidate, now, now);
     }
 
     std::expected<cache::CleanupResult, cache::CacheStoreError> cleanup(cache::CacheTime now) noexcept override {
@@ -241,9 +225,6 @@ public:
         return std::to_integer<uint8_t>(response[header->response_size - 1U]);
     }
 
-    void reject_next() noexcept override {
-        reject_next_ = true;
-    }
     void fail_next_write() noexcept override {
         harness_.map->fail_next_update();
     }
@@ -268,7 +249,6 @@ private:
 
     StoreHarness harness_;
     CandidateStorage storage_;
-    bool reject_next_ = false;
 };
 
 constexpr cache::CacheTime epoch() {
@@ -278,27 +258,16 @@ constexpr cache::CacheTime epoch() {
 } // namespace
 
 TEST_CASE("eBPF cache layout derives density and worst-case TTL capacity") {
-    auto minimum = make_ebpf_cache_storage_layout(cache_config(10, 128), 4096);
-    REQUIRE(minimum.has_value());
-    CHECK(minimum->ttl_offset_capacity == 10);
-    CHECK(minimum->slot_stride == 184);
-    CHECK(minimum->required_arena_bytes == 1840);
-    CHECK(minimum->arena_bytes == 4096);
-    CHECK(minimum->arena_page_count == 1);
+    const auto minimum = make_ebpf_cache_storage_layout(cache_config(10, 128), 4096);
+    CHECK(minimum.ttl_offset_capacity == 10);
+    CHECK(minimum.slot_stride == 184);
+    CHECK(minimum.required_arena_bytes == 1840);
+    CHECK(minimum.arena_bytes == 4096);
+    CHECK(minimum.arena_page_count == 1);
 
-    auto maximum = make_ebpf_cache_storage_layout(cache_config(1, 512), 4096);
-    REQUIRE(maximum.has_value());
-    CHECK(maximum->ttl_offset_capacity == 45);
-    CHECK(maximum->slot_stride == SHINKU_EBPF_CACHE_MAX_SLOT_STRIDE);
-
-    const auto zero_page_size = make_ebpf_cache_storage_layout(cache_config(1, 128), 0);
-    REQUIRE_FALSE(zero_page_size);
-    CHECK(zero_page_size.error() == std::make_error_code(std::errc::invalid_argument));
-
-    const auto excessive_page_count =
-        make_ebpf_cache_storage_layout(cache_config(std::numeric_limits<uint32_t>::max(), 512), 1);
-    REQUIRE_FALSE(excessive_page_count);
-    CHECK(excessive_page_count.error() == std::make_error_code(std::errc::value_too_large));
+    const auto maximum = make_ebpf_cache_storage_layout(cache_config(1, 512), 4096);
+    CHECK(maximum.ttl_offset_capacity == 45);
+    CHECK(maximum.slot_stride == SHINKU_EBPF_CACHE_MAX_SLOT_STRIDE);
 }
 
 TEST_CASE("eBPF Cache Store satisfies the reusable Cache Store contract") {
@@ -331,7 +300,7 @@ TEST_CASE("eBPF cache Store writes only the active slot region") {
     StoreHarness harness;
     CandidateStorage storage;
     auto candidate = storage.candidate('a', 42);
-    REQUIRE(harness.store->store(candidate, epoch()) == cache::StoreOutcome::Inserted);
+    REQUIRE(harness.store->store(candidate, epoch(), epoch()) == cache::StoreOutcome::Inserted);
 
     REQUIRE(harness.map->size() == 1);
     const auto* published = harness.map->entry(0);
@@ -354,7 +323,7 @@ TEST_CASE("same-key publication failure restores the previous slot") {
     StoreHarness harness;
     CandidateStorage storage;
     auto first = storage.candidate('a', 10);
-    REQUIRE(harness.store->store(first, epoch()) == cache::StoreOutcome::Inserted);
+    REQUIRE(harness.store->store(first, epoch(), epoch()) == cache::StoreOutcome::Inserted);
     const auto old_publication = harness.map->entry(0)->publication;
     const auto old_header = *harness.header(old_publication.slot_index);
     const std::vector old_response(
@@ -364,7 +333,7 @@ TEST_CASE("same-key publication failure restores the previous slot") {
 
     auto second = storage.candidate('a', 20);
     harness.map->fail_next_update();
-    const auto result = harness.store->store(second, epoch() + 1s);
+    const auto result = harness.store->store(second, epoch() + 1s, epoch() + 1s);
     REQUIRE_FALSE(result.has_value());
     CHECK(result.error().code == cache::CacheStoreErrorCode::WriteFailed);
 
@@ -381,12 +350,12 @@ TEST_CASE("failed insertion remains hidden and returns its slot to the free list
     StoreHarness harness(1);
     CandidateStorage storage;
     harness.map->fail_next_update();
-    auto failed = harness.store->store(storage.candidate('a', 1), epoch());
+    auto failed = harness.store->store(storage.candidate('a', 1), epoch(), epoch());
     REQUIRE_FALSE(failed.has_value());
     CHECK(failed.error().code == cache::CacheStoreErrorCode::WriteFailed);
     CHECK(harness.map->size() == 0);
 
-    REQUIRE(harness.store->store(storage.candidate('b', 2), epoch()) == cache::StoreOutcome::Inserted);
+    REQUIRE(harness.store->store(storage.candidate('b', 2), epoch(), epoch()) == cache::StoreOutcome::Inserted);
     REQUIRE(harness.map->entry(0) != nullptr);
     CHECK(harness.map->entry(0)->publication.slot_index == 0);
 }
@@ -394,11 +363,11 @@ TEST_CASE("failed insertion remains hidden and returns its slot to the free list
 TEST_CASE("failed victim invalidation preserves the published victim") {
     StoreHarness harness(1);
     CandidateStorage storage;
-    REQUIRE(harness.store->store(storage.candidate('a', 1), epoch()) == cache::StoreOutcome::Inserted);
+    REQUIRE(harness.store->store(storage.candidate('a', 1), epoch(), epoch()) == cache::StoreOutcome::Inserted);
     const auto victim = harness.map->entry(0)->publication;
 
     harness.map->fail_next_erase();
-    auto failed = harness.store->store(storage.candidate('b', 2), epoch());
+    auto failed = harness.store->store(storage.candidate('b', 2), epoch(), epoch());
     REQUIRE_FALSE(failed.has_value());
     CHECK(failed.error().code == cache::CacheStoreErrorCode::WriteFailed);
     REQUIRE(harness.map->size() == 1);
@@ -410,7 +379,7 @@ TEST_CASE("map lookup failure is reported as unavailable storage") {
     StoreHarness harness;
     CandidateStorage storage;
     harness.map->fail_next_lookup();
-    auto failed = harness.store->store(storage.candidate('a', 1), epoch());
+    auto failed = harness.store->store(storage.candidate('a', 1), epoch(), epoch());
     REQUIRE_FALSE(failed.has_value());
     CHECK(failed.error().code == cache::CacheStoreErrorCode::StorageUnavailable);
 }
@@ -418,9 +387,11 @@ TEST_CASE("map lookup failure is reported as unavailable storage") {
 TEST_CASE("eBPF cache Store replaces round-robin and reuses cleanup slots") {
     StoreHarness harness;
     CandidateStorage storage;
-    REQUIRE(harness.store->store(storage.candidate('a', 1, 1s), epoch()) == cache::StoreOutcome::Inserted);
-    REQUIRE(harness.store->store(storage.candidate('b', 2), epoch()) == cache::StoreOutcome::Inserted);
-    REQUIRE(harness.store->store(storage.candidate('c', 3), epoch() + 1s) == cache::StoreOutcome::Inserted);
+    REQUIRE(harness.store->store(storage.candidate('a', 1, 1s), epoch(), epoch()) == cache::StoreOutcome::Inserted);
+    REQUIRE(harness.store->store(storage.candidate('b', 2), epoch(), epoch()) == cache::StoreOutcome::Inserted);
+    REQUIRE(
+        harness.store->store(storage.candidate('c', 3), epoch() + 1s, epoch() + 1s) == cache::StoreOutcome::Inserted
+    );
     CHECK(harness.map->size() == 2);
 
     auto cleanup = harness.store->cleanup(epoch() + 31s);
@@ -429,7 +400,9 @@ TEST_CASE("eBPF cache Store replaces round-robin and reuses cleanup slots") {
     CHECK_FALSE(cleanup->more_work);
     CHECK(harness.map->size() == 0);
 
-    REQUIRE(harness.store->store(storage.candidate('d', 4), epoch() + 31s) == cache::StoreOutcome::Inserted);
+    REQUIRE(
+        harness.store->store(storage.candidate('d', 4), epoch() + 31s, epoch() + 31s) == cache::StoreOutcome::Inserted
+    );
     REQUIRE(harness.map->entry(0) != nullptr);
     CHECK(harness.map->entry(0)->publication.slot_index < 2);
 }
@@ -437,7 +410,7 @@ TEST_CASE("eBPF cache Store replaces round-robin and reuses cleanup slots") {
 TEST_CASE("eBPF cache cleanup bounds one capacity sweep") {
     StoreHarness harness(300);
     CandidateStorage storage;
-    REQUIRE(harness.store->store(storage.candidate('a', 1, 1s), epoch()) == cache::StoreOutcome::Inserted);
+    REQUIRE(harness.store->store(storage.candidate('a', 1, 1s), epoch(), epoch()) == cache::StoreOutcome::Inserted);
 
     auto first = harness.store->cleanup(epoch() + 1s);
     REQUIRE(first.has_value());
@@ -453,7 +426,7 @@ TEST_CASE("eBPF cache cleanup bounds one capacity sweep") {
 TEST_CASE("cleanup leaves ownership intact when map deletion fails") {
     StoreHarness harness(1);
     CandidateStorage storage;
-    REQUIRE(harness.store->store(storage.candidate('a', 1, 1s), epoch()) == cache::StoreOutcome::Inserted);
+    REQUIRE(harness.store->store(storage.candidate('a', 1, 1s), epoch(), epoch()) == cache::StoreOutcome::Inserted);
     harness.map->fail_next_erase();
 
     auto failed = harness.store->cleanup(epoch() + 1s);
@@ -471,12 +444,14 @@ TEST_CASE("Store and cleanup serialize concurrent Host writers") {
     StoreHarness harness;
     CandidateStorage expiring_storage;
     CandidateStorage new_storage;
-    REQUIRE(harness.store->store(expiring_storage.candidate('a', 1, 1s), epoch()) == cache::StoreOutcome::Inserted);
+    REQUIRE(
+        harness.store->store(expiring_storage.candidate('a', 1, 1s), epoch(), epoch()) == cache::StoreOutcome::Inserted
+    );
 
     std::expected<cache::StoreOutcome, cache::CacheStoreError> stored = cache::StoreOutcome::Rejected;
     std::expected<cache::CleanupResult, cache::CacheStoreError> cleaned = cache::CleanupResult {};
     auto new_candidate = new_storage.candidate('b', 2);
-    std::jthread writer([&] { stored = harness.store->store(new_candidate, epoch() + 2s); });
+    std::jthread writer([&] { stored = harness.store->store(new_candidate, epoch() + 2s, epoch() + 2s); });
     std::jthread cleaner([&] { cleaned = harness.store->cleanup(epoch() + 2s); });
     writer.join();
     cleaner.join();
@@ -486,28 +461,67 @@ TEST_CASE("Store and cleanup serialize concurrent Host writers") {
     CHECK(harness.map->size() == 1);
 }
 
-TEST_CASE("eBPF cache Store rejects a TTL patch plan exceeding layout capacity") {
+TEST_CASE("eBPF cache Store rejects observations exhausted before admission") {
     StoreHarness harness;
     CandidateStorage storage;
-    auto candidate = storage.candidate('a', 1);
-    storage.oversized_offsets.fill(12);
-    candidate.ttl_offsets = storage.oversized_offsets;
-    CHECK(harness.store->store(candidate, epoch()) == cache::StoreOutcome::Rejected);
+
+    auto exhausted = storage.candidate('b', 2, 1s);
+    CHECK(harness.store->store(exhausted, epoch(), epoch() + 1s) == cache::StoreOutcome::Rejected);
     CHECK(harness.map->size() == 0);
 }
 
-TEST_CASE("eBPF cache Store rejects unrepresentable expiry timestamps") {
+TEST_CASE("same-key Store admission requires a strictly newer observation") {
     StoreHarness harness;
     CandidateStorage storage;
 
-    auto unrepresentable = storage.candidate('a', 1, cache::CacheLifetime { 10'000'000'000LL });
-    const cache::CacheTime late_time { cache::CacheTime::duration::max() };
-    CHECK(harness.store->store(unrepresentable, late_time) == cache::StoreOutcome::Rejected);
-    CHECK(harness.map->size() == 0);
+    auto first = storage.candidate('a', 10, 30s);
+    REQUIRE(harness.store->store(first, epoch() + 10s, epoch() + 10s) == cache::StoreOutcome::Inserted);
+    const auto original_publication = harness.map->entry(0)->publication;
+    const auto original_header = *harness.header(original_publication.slot_index);
 
-    auto valid = storage.candidate('b', 2);
-    CHECK(harness.store->store(valid, epoch()) == cache::StoreOutcome::Inserted);
-    CHECK(harness.map->size() == 1);
+    auto older = storage.candidate('a', 20, 60s);
+    CHECK(harness.store->store(older, epoch() + 9s, epoch() + 20s) == cache::StoreOutcome::Rejected);
+    auto equal = storage.candidate('a', 30, 60s);
+    CHECK(harness.store->store(equal, epoch() + 10s, epoch() + 20s) == cache::StoreOutcome::Rejected);
+
+    REQUIRE(harness.map->entry(0) != nullptr);
+    CHECK(harness.map->entry(0)->publication.slot_index == original_publication.slot_index);
+    CHECK(harness.map->entry(0)->publication.generation == original_publication.generation);
+    const auto* unchanged = harness.header(original_publication.slot_index);
+    CHECK(unchanged->sequence == original_header.sequence);
+    CHECK(unchanged->generation == original_header.generation);
+    CHECK(unchanged->stored_at_ns == original_header.stored_at_ns);
+    CHECK(unchanged->expires_at_ns == original_header.expires_at_ns);
+    CHECK(harness.response(original_publication.slot_index).back() == std::byte { 10 });
+
+    auto newer = storage.candidate('a', 40, 60s);
+    REQUIRE(harness.store->store(newer, epoch() + 11s, epoch() + 20s) == cache::StoreOutcome::Updated);
+    const auto* updated = harness.header(original_publication.slot_index);
+    CHECK(updated->stored_at_ns == 11'000'000'000ULL);
+    CHECK(updated->expires_at_ns == 71'000'000'000ULL);
+    CHECK(harness.response(original_publication.slot_index).back() == std::byte { 40 });
+}
+
+TEST_CASE("an older same-key observation cannot replace an expired entry") {
+    StoreHarness harness;
+    CandidateStorage storage;
+
+    auto first = storage.candidate('a', 10, 1s);
+    REQUIRE(harness.store->store(first, epoch() + 10s, epoch() + 10s) == cache::StoreOutcome::Inserted);
+    auto older = storage.candidate('a', 20, 30s);
+    CHECK(harness.store->store(older, epoch() + 9s, epoch() + 12s) == cache::StoreOutcome::Rejected);
+    CHECK(harness.response(0).back() == std::byte { 10 });
+}
+
+TEST_CASE("victim liveness is evaluated at Store Admission Time") {
+    StoreHarness harness(1);
+    CandidateStorage storage;
+
+    REQUIRE(harness.store->store(storage.candidate('a', 1, 10s), epoch(), epoch()) == cache::StoreOutcome::Inserted);
+    CHECK(
+        harness.store->store(storage.candidate('b', 2, 30s), epoch() + 5s, epoch() + 11s)
+        == cache::StoreOutcome::Inserted
+    );
 }
 
 } // namespace shinku::backend::ebpf

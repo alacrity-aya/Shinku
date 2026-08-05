@@ -2,18 +2,24 @@
 #pragma once
 
 #include "backend/backend.h"
+#include "backend/ebpf/cache/correlated_dns_event_consumer.h"
+#include "backend/ebpf/cache/ebpf_cache_store.h"
+#include "backend/ebpf/cache/pending_query_cleaner.h"
 #include "backend/ebpf/ebpf_native_session.h"
+#include "cache/dns_policy.h"
 #include "config/config.h"
 
 #include <memory>
 
 namespace shinku::backend::ebpf {
 
+class CleanupWorker;
+
 class EbpfBackend final: public Backend {
 public:
     EbpfBackend(
         config::EbpfConfig ebpf_config,
-        [[maybe_unused]] config::CacheConfig cache_config,
+        config::CacheConfig cache_config,
         std::unique_ptr<EbpfNativeSession> native_session
     );
     ~EbpfBackend() override;
@@ -25,10 +31,13 @@ protected:
     [[nodiscard]] std::expected<void, BackendError> stop() override;
 
 private:
-    struct CleanupWorker;
-
     config::EbpfConfig config_;
+    config::CacheConfig cache_config_;
     std::unique_ptr<EbpfNativeSession> native_session_;
+    std::unique_ptr<EbpfCacheStore> cache_store_;
+    std::unique_ptr<PendingQueryCleaner> pending_cleaner_;
+    std::unique_ptr<cache::DnsPolicy> dns_policy_;
+    std::unique_ptr<CorrelatedDnsEventConsumer> event_consumer_;
     std::unique_ptr<CleanupWorker> cleanup_worker_;
 };
 

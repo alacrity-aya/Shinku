@@ -2,8 +2,6 @@
 #include "backend/ebpf/ebpf_native_session.h"
 
 #include "bpf_log.h"
-#include "constants.h"
-#include "core/loader_cache_bridge.h"
 
 #include "cache.skel.h"
 
@@ -12,6 +10,7 @@
 #include <cerrno>
 #include <chrono>
 #include <cstdarg>
+#include <cstddef>
 #include <cstdio>
 #include <ctime>
 #include <expected>
@@ -19,6 +18,8 @@
 #include <linux/capability.h>
 #include <memory>
 #include <net/if.h>
+#include <poll.h>
+#include <span>
 #include <string>
 #include <string_view>
 #include <sys/capability.h>
@@ -46,6 +47,36 @@ std::unexpected<std::error_code> invalid_state_error() {
     return std::unexpected(std::make_error_code(std::errc::invalid_argument));
 }
 
+bpf_tc_hook empty_legacy_tc_hook() noexcept {
+    return bpf_tc_hook {
+        .sz = sizeof(bpf_tc_hook),
+        .ifindex = 0,
+        .attach_point = BPF_TC_EGRESS,
+        .parent = 0,
+        .handle = 0,
+        .qdisc = nullptr,
+    };
+}
+
+bpf_tc_opts legacy_tc_detach_opts(const bpf_tc_opts& attached_opts) noexcept {
+    bpf_tc_opts opts {};
+    opts.sz = sizeof(bpf_tc_opts);
+    opts.handle = attached_opts.handle;
+    opts.priority = attached_opts.priority;
+    return opts;
+}
+
+int destroy_owned_clsact(const bpf_tc_hook& legacy_hook) noexcept {
+    bpf_tc_hook qdisc_hook = legacy_hook;
+    qdisc_hook.attach_point = static_cast<bpf_tc_attach_point>(BPF_TC_INGRESS | BPF_TC_EGRESS);
+    return bpf_tc_hook_destroy(&qdisc_hook);
+}
+
+int packet_event_trampoline(void* context, void* data, size_t size) noexcept {
+    static_cast<PacketEventConsumer*>(context)->consume(std::span(static_cast<const std::byte*>(data), size));
+    return 0;
+}
+
 CapabilityProbeResult effective_capability_is_set(cap_t capabilities, cap_value_t capability) {
     cap_flag_value_t value = CAP_CLEAR;
     if (cap_get_flag(capabilities, capability, CAP_EFFECTIVE, &value) != 0)
@@ -56,7 +87,7 @@ CapabilityProbeResult effective_capability_is_set(cap_t capabilities, cap_value_
 // libbpf supplies a printf-style va_list and invokes this callback through a C ABI.
 // NOLINTBEGIN(modernize-use-std-print)
 int libbpf_print_callback(libbpf_print_level level, const char* format, va_list args) noexcept {
-    std::array<char, LOG_TIMESTAMP_LEN> timestamp {};
+    std::array<char, 16> timestamp {};
     const std::time_t now = std::time(nullptr);
     std::tm local_time {};
     localtime_r(&now, &local_time);
@@ -92,16 +123,15 @@ int libbpf_print_callback(libbpf_print_level level, const char* format, va_list 
 
 struct ProductionEbpfNativeSession::NativeResources {
     cache_bpf* skeleton = nullptr;
-    loader_cache_bridge bridge {};
-    bool bridge_ready = false;
     bpf_link* xdp = nullptr;
     bpf_link* tcx = nullptr;
-    bpf_tc_hook legacy_hook {};
+    bpf_tc_hook legacy_hook = empty_legacy_tc_hook();
     bpf_tc_opts legacy_opts {};
     bool legacy_attached = false;
     bool owns_clsact = false;
     ring_buffer* log_ring = nullptr;
     ring_buffer* packet_ring = nullptr;
+    PacketEventConsumer* packet_consumer = nullptr;
     log_options log_config {
         .min_level = LOG_INFO,
         .show_timestamp = true,
@@ -168,13 +198,15 @@ std::expected<uint32_t, std::error_code> ProductionEbpfNativeSession::interface_
     return current_errno_error();
 }
 
-std::expected<void, std::error_code> ProductionEbpfNativeSession::prepare_skeleton(uint32_t arena_pages) {
+std::expected<EbpfNativeBinding, std::error_code>
+ProductionEbpfNativeSession::prepare_skeleton(const EbpfSkeletonConfig& config) {
     libbpf_set_print(libbpf_print_callback);
     errno = 0;
     resources_->skeleton = cache_bpf__open();
     if (resources_->skeleton == nullptr)
         return current_errno_error();
     if (resources_->skeleton->maps.arena == nullptr || resources_->skeleton->maps.rb_pkt == nullptr
+        || resources_->skeleton->maps.cache_map == nullptr || resources_->skeleton->maps.pending_queries == nullptr
         || resources_->skeleton->progs.xdp_rx == nullptr || resources_->skeleton->progs.tc_tx == nullptr)
         return invalid_state_error();
 #if SHINKU_BPF_LOG_ENABLED
@@ -182,7 +214,17 @@ std::expected<void, std::error_code> ProductionEbpfNativeSession::prepare_skelet
         return invalid_state_error();
 #endif
 
-    int result = bpf_map__set_max_entries(resources_->skeleton->maps.arena, arena_pages);
+    resources_->skeleton->rodata->shinku_config.cache_layout = config.cache_layout.bpf_layout();
+    resources_->skeleton->rodata->shinku_config.secret = config.secret;
+    resources_->skeleton->rodata->shinku_config.pending_timeout_ns = config.pending_timeout_ns;
+
+    int result = bpf_map__set_max_entries(resources_->skeleton->maps.arena, config.cache_layout.arena_page_count);
+    if (result != 0)
+        return negative_errno_error(result);
+    result = bpf_map__set_max_entries(resources_->skeleton->maps.cache_map, config.cache_layout.entry_capacity);
+    if (result != 0)
+        return negative_errno_error(result);
+    result = bpf_map__set_max_entries(resources_->skeleton->maps.pending_queries, config.pending_capacity);
     if (result != 0)
         return negative_errno_error(result);
 
@@ -195,25 +237,13 @@ std::expected<void, std::error_code> ProductionEbpfNativeSession::prepare_skelet
     result = cache_bpf__attach(resources_->skeleton);
     if (result != 0)
         return negative_errno_error(result);
-    return {};
-}
-
-std::expected<void, std::error_code> ProductionEbpfNativeSession::create_cache_bridge() {
-    const int result = loader_cache_bridge_init(
-        &resources_->bridge,
-        resources_->skeleton,
-        1,
-        1,
-        0,
-        2000,
-        3,
-        4096,
-        CACHE_MAP_MAX_ENTRIES * 10
+    return EbpfNativeBinding(
+        EbpfNativeStorageBinding(
+            bpf_map__fd(resources_->skeleton->maps.cache_map),
+            std::as_writable_bytes(std::span(resources_->skeleton->arena->cache_slots, config.cache_layout.arena_bytes))
+        ),
+        EbpfNativePendingBinding(bpf_map__fd(resources_->skeleton->maps.pending_queries))
     );
-    if (result != 0)
-        return negative_errno_error(result);
-    resources_->bridge_ready = true;
-    return {};
 }
 
 std::expected<void, std::error_code> ProductionEbpfNativeSession::create_log_ring() {
@@ -236,6 +266,9 @@ std::expected<void, std::error_code> ProductionEbpfNativeSession::attach_xdp(uin
     bpf_link* link = bpf_program__attach_xdp(resources_->skeleton->progs.xdp_rx, static_cast<int>(ifindex));
     if (link == nullptr)
         return current_errno_error();
+    const long error = libbpf_get_error(link);
+    if (error != 0)
+        return negative_errno_error(static_cast<int>(error));
     resources_->xdp = link;
     return {};
 }
@@ -245,12 +278,15 @@ std::expected<void, std::error_code> ProductionEbpfNativeSession::attach_tcx(uin
     bpf_link* link = bpf_program__attach_tcx(resources_->skeleton->progs.tc_tx, static_cast<int>(ifindex), nullptr);
     if (link == nullptr)
         return current_errno_error();
+    const long error = libbpf_get_error(link);
+    if (error != 0)
+        return negative_errno_error(static_cast<int>(error));
     resources_->tcx = link;
     return {};
 }
 
 std::expected<void, std::error_code> ProductionEbpfNativeSession::attach_legacy_tc(uint32_t ifindex) {
-    bpf_tc_hook hook = resources_->owns_clsact ? resources_->legacy_hook : bpf_tc_hook {};
+    bpf_tc_hook hook = resources_->owns_clsact ? resources_->legacy_hook : empty_legacy_tc_hook();
     bool owns_clsact = resources_->owns_clsact;
     if (!owns_clsact) {
         hook.sz = sizeof(bpf_tc_hook);
@@ -270,12 +306,12 @@ std::expected<void, std::error_code> ProductionEbpfNativeSession::attach_legacy_
     const int result = bpf_tc_attach(&hook, &opts);
     if (result != 0) {
         if (owns_clsact) {
-            if (bpf_tc_hook_destroy(&hook) != 0) {
+            if (destroy_owned_clsact(hook) != 0) {
                 resources_->legacy_hook = hook;
                 resources_->legacy_opts = opts;
                 resources_->owns_clsact = true;
             } else {
-                resources_->legacy_hook = {};
+                resources_->legacy_hook = empty_legacy_tc_hook();
                 resources_->legacy_opts = {};
                 resources_->owns_clsact = false;
             }
@@ -290,17 +326,26 @@ std::expected<void, std::error_code> ProductionEbpfNativeSession::attach_legacy_
     return {};
 }
 
-std::expected<void, std::error_code> ProductionEbpfNativeSession::create_packet_ring() {
+std::expected<void, std::error_code> ProductionEbpfNativeSession::create_packet_ring(PacketEventConsumer& consumer) {
+    resources_->packet_consumer = &consumer;
     errno = 0;
     resources_->packet_ring = ring_buffer__new(
         bpf_map__fd(resources_->skeleton->maps.rb_pkt),
-        loader_cache_bridge_packet_callback,
-        &resources_->bridge,
+        packet_event_trampoline,
+        resources_->packet_consumer,
         nullptr
     );
     if (resources_->packet_ring == nullptr)
         return current_errno_error();
     return {};
+}
+
+void ProductionEbpfNativeSession::close_packet_ring() noexcept {
+    if (resources_->packet_ring != nullptr) {
+        ring_buffer__free(resources_->packet_ring);
+        resources_->packet_ring = nullptr;
+    }
+    resources_->packet_consumer = nullptr;
 }
 
 std::expected<int, std::error_code> ProductionEbpfNativeSession::poll_log_ring([[maybe_unused]] int timeout_ms) {
@@ -315,14 +360,29 @@ std::expected<int, std::error_code> ProductionEbpfNativeSession::poll_log_ring([
 }
 
 std::expected<int, std::error_code> ProductionEbpfNativeSession::poll_packet_ring(int timeout_ms) {
-    const int result = ring_buffer__poll(resources_->packet_ring, timeout_ms);
+    constexpr size_t batch_limit = 64;
+    int result = ring_buffer__consume_n(resources_->packet_ring, batch_limit);
     if (result < 0)
         return negative_errno_error(result);
-    return result;
-}
+    if (result != 0)
+        return result;
 
-std::expected<int, std::error_code> ProductionEbpfNativeSession::cleanup_expired_entries() {
-    const int result = loader_cache_bridge_cleanup(&resources_->bridge);
+    const int epoll_fd = ring_buffer__epoll_fd(resources_->packet_ring);
+    if (epoll_fd < 0)
+        return negative_errno_error(epoll_fd);
+    pollfd descriptor {
+        .fd = epoll_fd,
+        .events = POLLIN,
+        .revents = 0,
+    };
+    errno = 0;
+    const int wait_result = ::poll(&descriptor, 1, timeout_ms);
+    if (wait_result < 0)
+        return current_errno_error();
+    if (wait_result == 0)
+        return 0;
+
+    result = ring_buffer__consume_n(resources_->packet_ring, batch_limit);
     if (result < 0)
         return negative_errno_error(result);
     return result;
@@ -340,10 +400,7 @@ std::expected<void, std::error_code> ProductionEbpfNativeSession::release() {
             release_result = negative_errno_error(result);
     };
 
-    if (resources_->packet_ring != nullptr) {
-        ring_buffer__free(resources_->packet_ring);
-        resources_->packet_ring = nullptr;
-    }
+    close_packet_ring();
     if (resources_->log_ring != nullptr) {
         ring_buffer__free(resources_->log_ring);
         resources_->log_ring = nullptr;
@@ -359,24 +416,21 @@ std::expected<void, std::error_code> ProductionEbpfNativeSession::release() {
         record(bpf_link__destroy(link));
     }
     if (resources_->legacy_attached) {
-        const int result = bpf_tc_detach(&resources_->legacy_hook, &resources_->legacy_opts);
+        const bpf_tc_opts detach_opts = legacy_tc_detach_opts(resources_->legacy_opts);
+        const int result = bpf_tc_detach(&resources_->legacy_hook, &detach_opts);
         record(result);
         if (result == 0)
             resources_->legacy_attached = false;
     }
     if (!resources_->legacy_attached && resources_->owns_clsact) {
-        const int result = bpf_tc_hook_destroy(&resources_->legacy_hook);
+        const int result = destroy_owned_clsact(resources_->legacy_hook);
         record(result);
         if (result == 0)
             resources_->owns_clsact = false;
     }
     if (!resources_->legacy_attached && !resources_->owns_clsact) {
-        resources_->legacy_hook = {};
+        resources_->legacy_hook = empty_legacy_tc_hook();
         resources_->legacy_opts = {};
-    }
-    if (resources_->bridge_ready) {
-        loader_cache_bridge_destroy(&resources_->bridge);
-        resources_->bridge_ready = false;
     }
     if (resources_->skeleton != nullptr && !resources_->legacy_attached && !resources_->owns_clsact) {
         cache_bpf__destroy(resources_->skeleton);

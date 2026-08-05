@@ -7,7 +7,6 @@
 #include <expected>
 #include <linux/bpf.h>
 #include <memory>
-#include <new>
 #include <optional>
 #include <system_error>
 
@@ -22,8 +21,8 @@ class ProductionEbpfCacheMap final: public EbpfCacheMap {
 public:
     explicit ProductionEbpfCacheMap(int map_fd) noexcept: map_fd_(map_fd) {}
 
-    std::expected<std::optional<ebpf_cache_publication>, std::error_code>
-    lookup(const ebpf_cache_physical_key& key) noexcept override {
+    std::expected<std::optional<ebpf_cache_publication>, std::error_code> lookup(const ebpf_cache_physical_key& key
+    ) noexcept override {
         ebpf_cache_publication publication {};
         errno = 0;
         if (bpf_map_lookup_elem(map_fd_, &key, &publication) == 0)
@@ -58,12 +57,8 @@ private:
 
 } // namespace
 
-std::expected<std::unique_ptr<EbpfCacheMap>, std::error_code> make_production_ebpf_cache_map(int map_fd) noexcept {
-    try {
-        return std::make_unique<ProductionEbpfCacheMap>(map_fd);
-    } catch (const std::bad_alloc&) {
-        return std::unexpected(std::make_error_code(std::errc::not_enough_memory));
-    }
+std::unique_ptr<EbpfCacheMap> make_production_ebpf_cache_map(int map_fd) {
+    return std::make_unique<ProductionEbpfCacheMap>(map_fd);
 }
 
 } // namespace shinku::backend::ebpf
