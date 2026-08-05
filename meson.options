@@ -4,8 +4,5 @@ option('bpf_log', type : 'boolean', value : false,
 option('build_benchmark_bin', type : 'boolean', value : false,
        description : 'Build optimized non-sanitized benchmark binary target (shinku_bench)')
 
-option('ecs', type : 'boolean', value : false,
-       description : 'Compile in EDNS Client Subnet (ECS) support')
-
 option('dns_fuzzing', type : 'boolean', value : false,
        description : 'Build optional Clang libFuzzer targets for the DNS policy engine')

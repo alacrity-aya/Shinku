@@ -1,86 +1,6 @@
 # Unit Tests
 
 # ====================
-# DNS Hash Test (userspace, no BPF)
-# ====================
-dns_hash_test_exe = executable(
-    'dns_hash_verify',
-    'hash/dns_hash_test.c',
-    files(
-      '../../src/core/hash.c',
-      '../../src/core/cache_sketch.c',
-      '../../src/core/cache_recent.c',
-      '../../src/core/cache_segments.c',
-      '../../src/core/cache_ops.c',
-      '../../src/core/dns_parser.c',
-
-    ),
-    native: true,
-    dependencies: [libbpf_dep],
-    c_args: ['-g', '-O2', '-D__BPF__=0'],
-    include_directories: inc_src
-)
-
-test('DNS Hash Consistency Check', dns_hash_test_exe)
-
-# ====================
-# DNS Parser Test (userspace, no BPF)
-# ====================
-dns_parser_test_exe = executable(
-    'dns_parser_test',
-    'parser/dns_parser_test.c',
-    files(
-      '../../src/core/hash.c',
-      '../../src/core/cache_sketch.c',
-      '../../src/core/cache_recent.c',
-      '../../src/core/cache_segments.c',
-      '../../src/core/cache_ops.c',
-      '../../src/core/dns_parser.c',
-    ),
-    native: true,
-    dependencies: [libbpf_dep],
-    c_args: ['-g', '-O2', '-D__BPF__=0'],
-    include_directories: inc_src
-)
-
-test('DNS Parser Test', dns_parser_test_exe)
-
-# ====================
-# Cache Store Correctness Test (userspace, no BPF)
-# ====================
-cache_store_test_exe = executable(
-    'cache_store_test',
-    'cache/cache_store_test.c',
-    files(
-      '../../src/core/hash.c',
-      '../../src/core/cache_sketch.c',
-      '../../src/core/cache_recent.c',
-      '../../src/core/cache_segments.c',
-      '../../src/core/cache_ops.c',
-      '../../src/core/dns_parser.c',
-    ),
-    native: true,
-    dependencies: [libbpf_dep, dependency('threads')],
-    c_args: ['-g', '-O2', '-D__BPF__=0'],
-    include_directories: inc_src
-)
-
-test('Cache Store Correctness Test', cache_store_test_exe)
-
-# ====================
-# Ring Buffer Allocator Test (userspace, no BPF)
-# ====================
-ring_buffer_test_exe = executable(
-    'ring_buffer_test',
-    'allocator/ring_buffer_test.c',
-    native: true,
-    dependencies: dependency('threads'),
-    c_args: ['-g', '-O2'],
-)
-
-test('Ring Buffer Allocator Test', ring_buffer_test_exe)
-
-# ====================
 # Arena List Test
 # ====================
 arena_inc = include_directories('../../src/bpf/arena', '../../src/include', '../../src')
@@ -162,18 +82,6 @@ arena_htab_test_exe = executable(
 
 test('Arena Hash Table Test', arena_htab_test_exe)
 
-
-# ====================
-# CAREs Expand Test 
-# ====================
-
-cares_expand_test_exe = executable(
-    'cares_expand_test',
-    'cares/cares_expand_test.c',
-    dependencies: cares_dep,
-)
-
-test('Flat DNS Packet test Test', cares_expand_test_exe)
 
 catch2_with_main_dep = dependency(
     'catch2-with-main',
@@ -267,6 +175,32 @@ ebpf_cache_store_test_exe = executable(
 
 test('eBPF Cache Store Test', ebpf_cache_store_test_exe)
 
+pending_query_cleaner_test_exe = executable(
+    'pending_query_cleaner_test',
+    files(
+      'backend/pending_query_cleaner_test.cc',
+      '../../src/backend/ebpf/cache/ebpf_pending_query_map.cc',
+      '../../src/backend/ebpf/cache/pending_query_cleaner.cc',
+    ),
+    dependencies: [libbpf_dep, catch2_with_main_dep],
+    include_directories: inc_src,
+)
+
+test('Pending Query Cleaner Test', pending_query_cleaner_test_exe)
+
+correlated_dns_event_consumer_test_exe = executable(
+    'correlated_dns_event_consumer_test',
+    files(
+      'backend/correlated_dns_event_consumer_test.cc',
+      '../../src/backend/ebpf/cache/correlated_dns_event_consumer.cc',
+    ),
+    cache_dns_policy_src,
+    dependencies: catch2_with_main_dep,
+    include_directories: inc_src,
+)
+
+test('Correlated DNS Event Consumer Test', correlated_dns_event_consumer_test_exe)
+
 ebpf_cache_verifier_bpf_obj = custom_target(
   'ebpf_cache_verifier.bpf.o',
   input: 'backend/ebpf_cache_verifier.bpf.c',
@@ -310,6 +244,20 @@ ebpf_cache_verifier_test_exe = executable(
 )
 
 test('eBPF Cache Verifier Gate', ebpf_cache_verifier_test_exe)
+
+ebpf_production_verifier_test_exe = executable(
+    'ebpf_production_verifier_test',
+    files(
+      'backend/ebpf_production_verifier_test.cc',
+      '../../src/backend/ebpf/cache/ebpf_cache_storage_layout.cc',
+    ),
+    bpf_skel,
+    dependencies: libbpf_dep,
+    include_directories: inc_src,
+    override_options: ['b_sanitize=none'],
+)
+
+test('eBPF Production Verifier Gate', ebpf_production_verifier_test_exe)
 
 # ====================
 # C++ CLI Parser Test
@@ -362,33 +310,13 @@ ebpf_backend_test_exe = executable(
       'backend/fake_ebpf_native_session_test.cc',
     ),
     backend_src,
+    cache_dns_policy_src,
     ebpf_backend_src,
-    core_src,
     bpf_skel,
     dependencies: [catch2_with_main_dep, libbpf_dep, libcap_dep],
     include_directories: inc_src,
-    c_args: (bpf_log ? ['-DSHINKU_BPF_LOG_ENABLED=1'] : ['-DSHINKU_BPF_LOG_ENABLED=0']) + (ecs ? ['-DSHINKU_ECS_ENABLED=1'] : ['-DSHINKU_ECS_ENABLED=0']),
-    cpp_args: (bpf_log ? ['-DSHINKU_BPF_LOG_ENABLED=1'] : ['-DSHINKU_BPF_LOG_ENABLED=0']) + (ecs ? ['-DSHINKU_ECS_ENABLED=1'] : ['-DSHINKU_ECS_ENABLED=0']),
+    c_args: (bpf_log ? ['-DSHINKU_BPF_LOG_ENABLED=1'] : ['-DSHINKU_BPF_LOG_ENABLED=0']),
+    cpp_args: (bpf_log ? ['-DSHINKU_BPF_LOG_ENABLED=1'] : ['-DSHINKU_BPF_LOG_ENABLED=0']),
 )
 
 test('eBPF Backend Test', ebpf_backend_test_exe)
-
-# ====================
-# DNS Benchmark (manual, not a test)
-# ====================
-dns_bench_exe = executable(
-    'dns_bench',
-    'bench/dns_bench.c',
-    files(
-      '../../src/core/hash.c',
-      '../../src/core/cache_sketch.c',
-      '../../src/core/cache_recent.c',
-      '../../src/core/cache_segments.c',
-      '../../src/core/cache_ops.c',
-      '../../src/core/dns_parser.c',
-    ),
-    native: true,
-    dependencies: [libbpf_dep],
-    c_args: ['-g', '-O2', '-D__BPF__=0'],
-    include_directories: inc_src
-)

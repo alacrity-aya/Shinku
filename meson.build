@@ -13,10 +13,8 @@ project('shinku', 'c', 'cpp',
 # Build options
 bpf_log = get_option('bpf_log')
 build_benchmark_bin = get_option('build_benchmark_bin')
-ecs = get_option('ecs')
 dns_fuzzing = get_option('dns_fuzzing')
 
-cares_dep = dependency('libcares', fallback : ['c-ares', 'cares_dep'])
 libbpf_dep = dependency('libbpf')
 libcap_dep = dependency('libcap', fallback : ['libcap', 'libcap_dep'])
 tomlplusplus_dep = dependency(
@@ -53,16 +51,24 @@ inc_src = include_directories('src/include', 'src')
 # ====================
 bpf_obj = custom_target(
   'cache.bpf.o',
-  input: 'src/bpf/cache.bpf.c',
+  input: [
+    'src/bpf/cache.bpf.c',
+    'src/bpf/cache_bpf_common.h',
+    'src/bpf/cache_bpf_state.h',
+    'src/bpf/cache_bpf_parse.h',
+    'src/bpf/cache_bpf_fingerprint.h',
+    'src/bpf/cache_bpf_snapshot.h',
+    'src/bpf/cache_bpf_pending.h',
+  ],
   output: 'cache.bpf.o',
   depends: vmlinux_h,
   command: [
     clang, '-g', '-O2', '-target', 'bpf',
-  ] + (bpf_log ? ['-DSHINKU_BPF_LOG_ENABLED=1'] : ['-DSHINKU_BPF_LOG_ENABLED=0']) + (ecs ? ['-DSHINKU_ECS_ENABLED=1'] : ['-DSHINKU_ECS_ENABLED=0']) + [
+  ] + (bpf_log ? ['-DSHINKU_BPF_LOG_ENABLED=1'] : ['-DSHINKU_BPF_LOG_ENABLED=0']) + [
     '-I' + meson.current_build_dir(),
     '-I' + meson.current_source_dir() + '/src/include',
     '-I' + meson.current_source_dir() + '/src',
-    '-c', '@INPUT@', '-o', '@OUTPUT@'
+    '-c', '@INPUT0@', '-o', '@OUTPUT@'
   ]
 )
 
@@ -89,18 +95,6 @@ bpf_skel = custom_target(
   capture: true
 )
 
-# Core Library
-core_src = files(
-  'src/core/hash.c',
-  'src/core/cache_sketch.c',
-  'src/core/cache_recent.c',
-  'src/core/cache_segments.c',
-  'src/core/cache_ops.c',
-  'src/core/dns_parser.c',
-  'src/core/loader_cache_bridge.c',
-
-)
-
 # CLI entry point
 process_control_src = files(
   'src/process_control/process_control.cc',
@@ -120,7 +114,15 @@ cache_dns_policy_src = files(
 ebpf_backend_src = files(
   'src/backend/backend_creation.cc',
   'src/backend/ebpf/ebpf_backend.cc',
+  'src/backend/ebpf/cleanup_worker.cc',
   'src/backend/ebpf/ebpf_native_session.cc',
+  'src/backend/ebpf/cache/correlated_dns_event_consumer.cc',
+  'src/backend/ebpf/cache/ebpf_cache_map.cc',
+  'src/backend/ebpf/cache/ebpf_cache_secret.cc',
+  'src/backend/ebpf/cache/ebpf_cache_storage_layout.cc',
+  'src/backend/ebpf/cache/ebpf_cache_store.cc',
+  'src/backend/ebpf/cache/ebpf_pending_query_map.cc',
+  'src/backend/ebpf/cache/pending_query_cleaner.cc',
 )
 
 cli_src = files(
@@ -132,13 +134,12 @@ cli_src = files(
 executable(
   'shinku',
   cli_src,
-  core_src,          
   bpf_skel,
   version_header,
   dependencies: [libbpf_dep, libcap_dep, tomlplusplus_dep, argparse_dep],
   include_directories: inc_src,
-  c_args: (bpf_log ? ['-DSHINKU_BPF_LOG_ENABLED=1'] : ['-DSHINKU_BPF_LOG_ENABLED=0']) + (ecs ? ['-DSHINKU_ECS_ENABLED=1'] : ['-DSHINKU_ECS_ENABLED=0']),
-  cpp_args: (bpf_log ? ['-DSHINKU_BPF_LOG_ENABLED=1'] : ['-DSHINKU_BPF_LOG_ENABLED=0']) + (ecs ? ['-DSHINKU_ECS_ENABLED=1'] : ['-DSHINKU_ECS_ENABLED=0']),
+  c_args: (bpf_log ? ['-DSHINKU_BPF_LOG_ENABLED=1'] : ['-DSHINKU_BPF_LOG_ENABLED=0']),
+  cpp_args: (bpf_log ? ['-DSHINKU_BPF_LOG_ENABLED=1'] : ['-DSHINKU_BPF_LOG_ENABLED=0']),
   install: true
 )
 
@@ -146,7 +147,6 @@ if build_benchmark_bin
   executable(
     'shinku_bench',
     cli_src,
-    core_src,
     bpf_skel,
     version_header,
     dependencies: [libbpf_dep, libcap_dep, tomlplusplus_dep, argparse_dep],
@@ -154,11 +154,11 @@ if build_benchmark_bin
     c_args: [
       '-O3',
       '-DNDEBUG',
-    ] + (bpf_log ? ['-DSHINKU_BPF_LOG_ENABLED=1'] : ['-DSHINKU_BPF_LOG_ENABLED=0']) + (ecs ? ['-DSHINKU_ECS_ENABLED=1'] : ['-DSHINKU_ECS_ENABLED=0']),
+    ] + (bpf_log ? ['-DSHINKU_BPF_LOG_ENABLED=1'] : ['-DSHINKU_BPF_LOG_ENABLED=0']),
     cpp_args: [
       '-O3',
       '-DNDEBUG',
-    ] + (bpf_log ? ['-DSHINKU_BPF_LOG_ENABLED=1'] : ['-DSHINKU_BPF_LOG_ENABLED=0']) + (ecs ? ['-DSHINKU_ECS_ENABLED=1'] : ['-DSHINKU_ECS_ENABLED=0']),
+    ] + (bpf_log ? ['-DSHINKU_BPF_LOG_ENABLED=1'] : ['-DSHINKU_BPF_LOG_ENABLED=0']),
     override_options: [
       'b_sanitize=none',
       'buildtype=release',
