@@ -3,6 +3,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <ctime>
 #include <ratio>
 
 namespace shinku::cache {
@@ -20,5 +21,13 @@ struct CacheClock {
 
 using CacheTime = CacheClock::time_point;
 using CacheLifetime = std::chrono::seconds;
+
+// Timestamp in the CacheClock domain read from the kernel's boot clock
+// (CLOCK_BOOTTIME), the same monotonic time domain used by the BPF hit path.
+[[nodiscard]] inline CacheTime boot_time() noexcept {
+    timespec value {};
+    clock_gettime(CLOCK_BOOTTIME, &value);
+    return CacheTime(std::chrono::seconds(value.tv_sec) + std::chrono::nanoseconds(value.tv_nsec));
+}
 
 } // namespace shinku::cache

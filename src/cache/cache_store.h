@@ -33,7 +33,7 @@ public:
     CacheStore& operator=(CacheStore&&) = delete;
 
     [[nodiscard]] virtual std::expected<StoreOutcome, CacheStoreError>
-    store(const CacheCandidate& candidate, CacheTime now) noexcept = 0;
+    store(const CacheCandidate& candidate, CacheTime observed_at, CacheTime now) noexcept = 0;
 
     [[nodiscard]] virtual std::expected<CleanupResult, CacheStoreError> cleanup(CacheTime now) noexcept = 0;
 };

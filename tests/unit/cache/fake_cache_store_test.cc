@@ -35,14 +35,16 @@ using shinku::cache::testing::CacheStoreConformanceAdapter;
 
 class FakeCacheStore final: public CacheStore {
 public:
-    explicit FakeCacheStore(std::size_t capacity, std::size_t max_ttl_offsets, std::size_t cleanup_batch):
+    explicit FakeCacheStore(std::size_t capacity, std::size_t cleanup_batch):
         capacity_(capacity),
-        max_ttl_offsets_(max_ttl_offsets),
         cleanup_batch_(cleanup_batch) {}
 
     std::expected<StoreOutcome, CacheStoreError>
-    store(const CacheCandidate& candidate, CacheTime now) noexcept override {
+    store(const CacheCandidate& candidate, CacheTime observed_at, CacheTime now) noexcept override {
         std::scoped_lock lock(mutex_);
+
+        if (observed_at + candidate.lifetime <= now)
+            return StoreOutcome::Rejected;
 
         if (fail_next_write_) {
             fail_next_write_ = false;
@@ -51,27 +53,18 @@ public:
                 .cause = std::nullopt,
             });
         }
-        if (reject_next_) {
-            reject_next_ = false;
-            return StoreOutcome::Rejected;
-        }
-        if (candidate.ttl_offsets.size() > max_ttl_offsets_)
-            return StoreOutcome::Rejected;
-        for (uint16_t offset: candidate.ttl_offsets) {
-            if (offset > candidate.response.size() || candidate.response.size() - offset < sizeof(uint32_t))
-                return StoreOutcome::Rejected;
-        }
-
         auto existing = std::find_if(entries_.begin(), entries_.end(), [&](const Record& record) {
             return record.key == candidate.key;
         });
         if (existing != entries_.end()) {
-            *existing = copy_record(candidate, now);
+            if (observed_at <= existing->observed_at)
+                return StoreOutcome::Rejected;
+            *existing = copy_record(candidate, observed_at);
             return StoreOutcome::Updated;
         }
 
         if (entries_.size() < capacity_) {
-            entries_.push_back(copy_record(candidate, now));
+            entries_.push_back(copy_record(candidate, observed_at));
             return StoreOutcome::Inserted;
         }
 
@@ -79,11 +72,11 @@ public:
             return now >= record.expires_at;
         });
         if (expired != entries_.end()) {
-            *expired = copy_record(candidate, now);
+            *expired = copy_record(candidate, observed_at);
             return StoreOutcome::Inserted;
         }
 
-        entries_.at(replacement_cursor_) = copy_record(candidate, now);
+        entries_.at(replacement_cursor_) = copy_record(candidate, observed_at);
         replacement_cursor_ = (replacement_cursor_ + 1) % capacity_;
         return StoreOutcome::Replaced;
     }
@@ -124,11 +117,6 @@ public:
         return entry->response;
     }
 
-    void reject_next() noexcept {
-        std::scoped_lock lock(mutex_);
-        reject_next_ = true;
-    }
-
     void fail_next_write() noexcept {
         std::scoped_lock lock(mutex_);
         fail_next_write_ = true;
@@ -138,48 +126,41 @@ private:
     struct Record {
         CacheKey key;
         CacheEntryKind kind;
+        CacheTime observed_at;
         CacheTime expires_at;
         std::vector<std::byte> response;
         std::vector<uint16_t> ttl_offsets;
     };
 
-    static Record copy_record(const CacheCandidate& candidate, CacheTime now) {
+    static Record copy_record(const CacheCandidate& candidate, CacheTime observed_at) {
         return Record {
             .key = candidate.key,
             .kind = candidate.kind,
-            .expires_at = now + candidate.lifetime,
+            .observed_at = observed_at,
+            .expires_at = observed_at + candidate.lifetime,
             .response = std::vector<std::byte>(candidate.response.begin(), candidate.response.end()),
             .ttl_offsets = std::vector<uint16_t>(candidate.ttl_offsets.begin(), candidate.ttl_offsets.end()),
         };
     }
 
     std::size_t capacity_;
-    std::size_t max_ttl_offsets_;
     std::size_t cleanup_batch_;
     mutable std::mutex mutex_;
     std::vector<Record> entries_;
     std::size_t replacement_cursor_ = 0;
-    bool reject_next_ = false;
     bool fail_next_write_ = false;
 };
 
 class FakeCacheStoreAdapter final: public CacheStoreConformanceAdapter {
 public:
-    FakeCacheStoreAdapter(): store_(2, 1, 1) {}
+    FakeCacheStoreAdapter(): store_(2, 1) {}
 
-    std::expected<StoreOutcome, CacheStoreError> store(
-        uint8_t key,
-        uint8_t payload,
-        CacheTime now,
-        CacheLifetime lifetime,
-        bool incomplete_patch_plan = false
-    ) noexcept override {
+    std::expected<StoreOutcome, CacheStoreError>
+    store(uint8_t key, uint8_t payload, CacheTime now, CacheLifetime lifetime) noexcept override {
         std::array<std::byte, 8> response {};
         response[7] = static_cast<std::byte>(payload);
         constexpr std::array<uint16_t, 1> complete_offsets { 0 };
-        constexpr std::array<uint16_t, 2> incomplete_offsets { 0, 4 };
-        const std::span<const uint16_t> offsets = incomplete_patch_plan ? std::span<const uint16_t>(incomplete_offsets)
-                                                                        : std::span<const uint16_t>(complete_offsets);
+        const std::span<const uint16_t> offsets = complete_offsets;
         CacheCandidate candidate {
             .key = make_key(key),
             .kind = CacheEntryKind::Positive,
@@ -187,7 +168,7 @@ public:
             .response = response,
             .ttl_offsets = offsets,
         };
-        return store_.store(candidate, now);
+        return store_.store(candidate, now, now);
     }
 
     std::expected<CleanupResult, CacheStoreError> cleanup(CacheTime now) noexcept override {
@@ -203,10 +184,6 @@ public:
         if (response.empty())
             return std::nullopt;
         return std::to_integer<uint8_t>(response.back());
-    }
-
-    void reject_next() noexcept override {
-        store_.reject_next();
     }
 
     void fail_next_write() noexcept override {

@@ -21,17 +21,11 @@ class CacheStoreConformanceAdapter {
 public:
     virtual ~CacheStoreConformanceAdapter() = default;
 
-    virtual std::expected<StoreOutcome, CacheStoreError> store(
-        uint8_t key,
-        uint8_t payload,
-        CacheTime now,
-        CacheLifetime lifetime,
-        bool incomplete_patch_plan = false
-    ) noexcept = 0;
+    virtual std::expected<StoreOutcome, CacheStoreError>
+    store(uint8_t key, uint8_t payload, CacheTime now, CacheLifetime lifetime) noexcept = 0;
     virtual std::expected<CleanupResult, CacheStoreError> cleanup(CacheTime now) noexcept = 0;
     virtual bool hit_visible(uint8_t key, CacheTime now) const noexcept = 0;
     virtual std::optional<uint8_t> payload(uint8_t key) const = 0;
-    virtual void reject_next() noexcept = 0;
     virtual void fail_next_write() noexcept = 0;
 };
 
@@ -40,11 +34,9 @@ void run_cache_store_conformance(Factory&& make_adapter) {
     using namespace std::chrono_literals;
     const CacheTime epoch { std::chrono::nanoseconds::zero() };
 
-    SECTION("reports Inserted and Rejected outcomes") {
+    SECTION("reports Inserted outcomes") {
         auto adapter = make_adapter();
         REQUIRE(adapter->store(1, 10, epoch, 30s) == StoreOutcome::Inserted);
-        adapter->reject_next();
-        REQUIRE(adapter->store(2, 20, epoch, 30s) == StoreOutcome::Rejected);
     }
 
     SECTION("Updated publishes the new payload and refreshes expiry") {
@@ -81,20 +73,6 @@ void run_cache_store_conformance(Factory&& make_adapter) {
         REQUIRE(adapter->store(3, 30, epoch + 1s, 30s) == StoreOutcome::Inserted);
     }
 
-    SECTION("Rejected preserves published entries and does not retain candidate spans") {
-        auto adapter = make_adapter();
-        REQUIRE(adapter->store(1, 10, epoch, 30s) == StoreOutcome::Inserted);
-        const auto before = adapter->payload(1);
-
-        adapter->reject_next();
-        REQUIRE(adapter->store(2, 20, epoch, 30s) == StoreOutcome::Rejected);
-        CHECK(adapter->hit_visible(1, epoch));
-        CHECK(adapter->hit_visible(1, epoch + 29s));
-        CHECK_FALSE(adapter->hit_visible(1, epoch + 30s));
-        CHECK(adapter->payload(1) == before);
-        CHECK_FALSE(adapter->hit_visible(2, epoch));
-    }
-
     SECTION("WriteFailed never publishes the candidate") {
         auto adapter = make_adapter();
         adapter->fail_next_write();
@@ -102,12 +80,6 @@ void run_cache_store_conformance(Factory&& make_adapter) {
 
         REQUIRE_FALSE(result.has_value());
         CHECK(result.error().code == CacheStoreErrorCode::WriteFailed);
-        CHECK_FALSE(adapter->hit_visible(1, epoch));
-    }
-
-    SECTION("an incomplete TTL patch plan is rejected rather than truncated") {
-        auto adapter = make_adapter();
-        REQUIRE(adapter->store(1, 10, epoch, 30s, true) == StoreOutcome::Rejected);
         CHECK_FALSE(adapter->hit_visible(1, epoch));
     }
 
