@@ -15,7 +15,7 @@ bpf_log = get_option('bpf_log')
 build_benchmark_bin = get_option('build_benchmark_bin')
 dns_fuzzing = get_option('dns_fuzzing')
 
-libbpf_dep = dependency('libbpf')
+libbpf_dep = dependency('libbpf', version: '>=1.3.0')
 libcap_dep = dependency('libcap', fallback : ['libcap', 'libcap_dep'])
 tomlplusplus_dep = dependency(
   'tomlplusplus',
@@ -23,6 +23,7 @@ tomlplusplus_dep = dependency(
   default_options : ['compile_library=false']
 )
 argparse_dep = dependency('argparse', fallback : ['argparse', 'argparse_dep'])
+spdlog_dep = dependency('spdlog', fallback : ['spdlog', 'spdlog_dep'])
 clang = find_program('clang')
 bpftool = find_program('bpftool')
 python3 = find_program('python3')
@@ -136,7 +137,7 @@ executable(
   cli_src,
   bpf_skel,
   version_header,
-  dependencies: [libbpf_dep, libcap_dep, tomlplusplus_dep, argparse_dep],
+  dependencies: [libbpf_dep, libcap_dep, tomlplusplus_dep, argparse_dep, spdlog_dep],
   include_directories: inc_src,
   c_args: (bpf_log ? ['-DSHINKU_BPF_LOG_ENABLED=1'] : ['-DSHINKU_BPF_LOG_ENABLED=0']),
   cpp_args: (bpf_log ? ['-DSHINKU_BPF_LOG_ENABLED=1'] : ['-DSHINKU_BPF_LOG_ENABLED=0']),
@@ -149,7 +150,7 @@ if build_benchmark_bin
     cli_src,
     bpf_skel,
     version_header,
-    dependencies: [libbpf_dep, libcap_dep, tomlplusplus_dep, argparse_dep],
+    dependencies: [libbpf_dep, libcap_dep, tomlplusplus_dep, argparse_dep, spdlog_dep],
     include_directories: inc_src,
     c_args: [
       '-O3',

@@ -38,13 +38,7 @@ std::unexpected<std::error_code> current_errno_error() {
 }
 
 std::unexpected<std::error_code> negative_errno_error(int result) {
-    if (result >= 0)
-        return std::unexpected(std::make_error_code(std::errc::invalid_argument));
     return std::unexpected(std::error_code { -result, std::generic_category() });
-}
-
-std::unexpected<std::error_code> invalid_state_error() {
-    return std::unexpected(std::make_error_code(std::errc::invalid_argument));
 }
 
 bpf_tc_hook empty_legacy_tc_hook() noexcept {
@@ -205,14 +199,6 @@ ProductionEbpfNativeSession::prepare_skeleton(const EbpfSkeletonConfig& config) 
     resources_->skeleton = cache_bpf__open();
     if (resources_->skeleton == nullptr)
         return current_errno_error();
-    if (resources_->skeleton->maps.arena == nullptr || resources_->skeleton->maps.rb_pkt == nullptr
-        || resources_->skeleton->maps.cache_map == nullptr || resources_->skeleton->maps.pending_queries == nullptr
-        || resources_->skeleton->progs.xdp_rx == nullptr || resources_->skeleton->progs.tc_tx == nullptr)
-        return invalid_state_error();
-#if SHINKU_BPF_LOG_ENABLED
-    if (resources_->skeleton->maps._rb_log == nullptr)
-        return invalid_state_error();
-#endif
 
     resources_->skeleton->rodata->shinku_config.cache_layout = config.cache_layout.bpf_layout();
     resources_->skeleton->rodata->shinku_config.secret = config.secret;
@@ -266,9 +252,6 @@ std::expected<void, std::error_code> ProductionEbpfNativeSession::attach_xdp(uin
     bpf_link* link = bpf_program__attach_xdp(resources_->skeleton->progs.xdp_rx, static_cast<int>(ifindex));
     if (link == nullptr)
         return current_errno_error();
-    const long error = libbpf_get_error(link);
-    if (error != 0)
-        return negative_errno_error(static_cast<int>(error));
     resources_->xdp = link;
     return {};
 }
@@ -278,9 +261,6 @@ std::expected<void, std::error_code> ProductionEbpfNativeSession::attach_tcx(uin
     bpf_link* link = bpf_program__attach_tcx(resources_->skeleton->progs.tc_tx, static_cast<int>(ifindex), nullptr);
     if (link == nullptr)
         return current_errno_error();
-    const long error = libbpf_get_error(link);
-    if (error != 0)
-        return negative_errno_error(static_cast<int>(error));
     resources_->tcx = link;
     return {};
 }

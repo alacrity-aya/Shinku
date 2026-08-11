@@ -28,6 +28,11 @@ namespace {
 
 constexpr std::string_view kBackendKey = "backend";
 
+enum class BackendKind : uint8_t {
+    Ebpf,
+    Dpdk,
+};
+
 ConfigError make_error(ConfigErrorCode code, const std::filesystem::path& path, std::string message) {
     return ConfigError {
         .code = code,
@@ -90,7 +95,7 @@ emit_validation_error(DiagnosticSink& sink, const std::filesystem::path& path, C
             );
     }
 
-    return emit_error(sink, ConfigErrorCode::ValidationError, path, "invalid configuration");
+    std::unreachable();
 }
 
 void emit_warning(DiagnosticSink& sink, const std::filesystem::path& path, std::string message) {
@@ -476,8 +481,7 @@ std::expected<Config, ConfigError> load_config(const std::filesystem::path& path
         if (!cache)
             return std::unexpected(cache.error());
         return Config {
-            .backend = *backend,
-            .backend_config = *ebpf,
+            .backend = std::move(*ebpf),
             .cache = *cache,
         };
     }
@@ -489,8 +493,7 @@ std::expected<Config, ConfigError> load_config(const std::filesystem::path& path
     if (!cache)
         return std::unexpected(cache.error());
     return Config {
-        .backend = *backend,
-        .backend_config = *dpdk,
+        .backend = *dpdk,
         .cache = *cache,
     };
 }

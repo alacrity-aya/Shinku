@@ -14,8 +14,6 @@ enum class ParseError : uint8_t {
     QuestionFieldsTruncated,
     ResourceRecordHeaderTruncated,
     ResourceDataTruncated,
-    TtlOffsetCapacityExceeded,
-    InvalidCanonicalQuestion,
 };
 
 } // namespace shinku::cache::dns

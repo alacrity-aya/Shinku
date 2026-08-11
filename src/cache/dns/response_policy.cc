@@ -45,7 +45,7 @@ judge_response(const ParsedResponse& response, CacheNamespace cache_namespace, b
         return std::unexpected(BypassReason::CheckingDisabled);
     if ((response.flags & kFlagZ) != 0)
         return std::unexpected(BypassReason::ReservedFlagSet);
-    if (response.question_is_compressed || !response.question_name)
+    if (!response.question_name)
         return std::unexpected(BypassReason::UnsupportedQuestionEncoding);
     if (response.question_type != kTypeA)
         return std::unexpected(BypassReason::UnsupportedQuestionType);

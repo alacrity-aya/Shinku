@@ -5,6 +5,7 @@
 
 #include <expected>
 #include <filesystem>
+#include <variant>
 #include <vector>
 
 namespace {
@@ -23,25 +24,27 @@ TEST_CASE("CLI accepts the default config path") {
     auto result = parse({ "shinku", "run" });
 
     REQUIRE(result.has_value());
-    CHECK(result->action == shinku::cli::CliAction::Run);
-    REQUIRE(result->command.has_value());
-    CHECK(result->command->config_path == std::filesystem::path("./shinku.toml"));
+    const auto* command = std::get_if<shinku::cli::CliCommand>(&*result);
+    REQUIRE(command != nullptr);
+    CHECK(command->config_path == std::filesystem::path("./shinku.toml"));
 }
 
 TEST_CASE("CLI accepts an explicit config path") {
     auto result = parse({ "shinku", "run", "--config", "custom.toml" });
 
     REQUIRE(result.has_value());
-    REQUIRE(result->command.has_value());
-    CHECK(result->command->config_path == std::filesystem::path("custom.toml"));
+    const auto* command = std::get_if<shinku::cli::CliCommand>(&*result);
+    REQUIRE(command != nullptr);
+    CHECK(command->config_path == std::filesystem::path("custom.toml"));
 }
 
 TEST_CASE("CLI leaves config path validation to the config loader") {
     auto result = parse({ "shinku", "run", "--config", "" });
 
     REQUIRE(result.has_value());
-    REQUIRE(result->command.has_value());
-    CHECK(result->command->config_path.empty());
+    const auto* command = std::get_if<shinku::cli::CliCommand>(&*result);
+    REQUIRE(command != nullptr);
+    CHECK(command->config_path.empty());
 }
 
 TEST_CASE("CLI accepts help and version actions") {
@@ -50,14 +53,13 @@ TEST_CASE("CLI accepts help and version actions") {
     auto version = parse({ "shinku", "--version" });
 
     REQUIRE(root_help.has_value());
-    CHECK(root_help->action == shinku::cli::CliAction::ShowHelp);
-    CHECK_FALSE(root_help->command.has_value());
+    CHECK(std::get<shinku::cli::CliAction>(*root_help) == shinku::cli::CliAction::ShowHelp);
 
     REQUIRE(run_help.has_value());
-    CHECK(run_help->action == shinku::cli::CliAction::ShowHelp);
+    CHECK(std::get<shinku::cli::CliAction>(*run_help) == shinku::cli::CliAction::ShowHelp);
 
     REQUIRE(version.has_value());
-    CHECK(version->action == shinku::cli::CliAction::ShowVersion);
+    CHECK(std::get<shinku::cli::CliAction>(*version) == shinku::cli::CliAction::ShowVersion);
 }
 
 TEST_CASE("CLI rejects unsupported forms") {

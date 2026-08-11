@@ -107,11 +107,9 @@ std::byte* EbpfCacheStore::slot(uint32_t slot_index) noexcept {
     return binding_.arena().data() + (static_cast<size_t>(slot_index) * layout_.slot_stride);
 }
 
+// overwrap
 uint64_t EbpfCacheStore::next_generation() noexcept {
-    const uint64_t result = next_generation_++;
-    if (next_generation_ == 0)
-        next_generation_ = 1;
-    return result;
+    return next_generation_++;
 }
 
 uint32_t EbpfCacheStore::allocate_slot() noexcept {

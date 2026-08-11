@@ -5,6 +5,7 @@
 #include <optional>
 #include <string_view>
 #include <system_error>
+#include <utility>
 
 namespace shinku::cache {
 
@@ -28,7 +29,7 @@ struct CacheStoreError {
         case CacheStoreErrorCode::CleanupFailed:
             return "cleanup failed";
     }
-    return "unknown";
+    std::unreachable();
 }
 
 } // namespace shinku::cache

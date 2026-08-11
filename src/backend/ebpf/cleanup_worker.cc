@@ -49,9 +49,8 @@ void CleanupWorker::run(
         {
             std::unique_lock lock(wait_mutex);
             const auto deadline = std::min(next_cache, next_pending);
-            const bool stopped =
-                wake.wait_until(lock, token, deadline, [&token] { return token.stop_requested(); });
-            if (stopped || token.stop_requested())
+            wake.wait_until(lock, token, deadline, [&token] { return token.stop_requested(); });
+            if (token.stop_requested())
                 break;
         }
 

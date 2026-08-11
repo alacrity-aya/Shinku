@@ -6,10 +6,10 @@
 #include "cache/dns/parsed_response.h"
 
 #include <algorithm>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
-#include <limits>
 #include <optional>
 #include <span>
 
@@ -19,10 +19,13 @@ namespace {
 constexpr size_t kDnsHeaderSize = 12;
 constexpr size_t kQuestionFieldsSize = 4;
 constexpr size_t kResourceRecordFieldsSize = 10;
+constexpr size_t kMinimumResourceRecordSize = 1 + kResourceRecordFieldsSize;
 constexpr uint16_t kTypeOpt = 41;
 constexpr uint16_t kTypeSoa = 6;
 constexpr uint16_t kClassIn = 1;
 constexpr uint32_t kTtlHighBit = 0x8000'0000U;
+
+static_assert((kMaxDnsMessageBytes - kDnsHeaderSize) / kMinimumResourceRecordSize <= kMaxTtlOffsets);
 
 enum class DnsSection : uint8_t {
     Answer,
@@ -85,26 +88,10 @@ std::expected<EncodedName, ParseError> scan_encoded_name(std::span<const std::by
     return std::unexpected(ParseError::NameTruncated);
 }
 
-ParseError canonical_name_error(CanonicalNameError error) noexcept {
-    switch (error) {
-        case CanonicalNameError::TooLong:
-            return ParseError::NameTooLong;
-        case CanonicalNameError::InvalidLabel:
-            return ParseError::InvalidLabelType;
-        case CanonicalNameError::Empty:
-        case CanonicalNameError::CompressionPointer:
-        case CanonicalNameError::TruncatedLabel:
-        case CanonicalNameError::MissingRootLabel:
-        case CanonicalNameError::TrailingData:
-            return ParseError::InvalidCanonicalQuestion;
-    }
-    return ParseError::InvalidCanonicalQuestion;
-}
-
 } // namespace
 
 std::expected<ParsedResponse, ParseError>
-parse_response(std::span<const std::byte> message, std::span<uint16_t> ttl_offset_scratch) noexcept {
+parse_response(std::span<const std::byte> message, std::span<uint16_t, kMaxTtlOffsets> ttl_offset_scratch) noexcept {
     if (message.size() > kMaxDnsMessageBytes)
         return std::unexpected(ParseError::MessageTooLarge);
     if (message.size() < kDnsHeaderSize)
@@ -120,7 +107,6 @@ parse_response(std::span<const std::byte> message, std::span<uint16_t> ttl_offse
     std::optional<CanonicalDnsName> question_name;
     uint16_t question_type = 0;
     uint16_t question_class = 0;
-    bool question_is_compressed = false;
 
     for (uint16_t index = 0; index < question_count; ++index) {
         const size_t name_start = cursor;
@@ -133,13 +119,11 @@ parse_response(std::span<const std::byte> message, std::span<uint16_t> ttl_offse
             return std::unexpected(ParseError::QuestionFieldsTruncated);
 
         if (index == 0) {
-            question_is_compressed = encoded_name->compressed;
             question_type = read_u16(message, cursor);
             question_class = read_u16(message, cursor + 2);
-            if (!question_is_compressed) {
+            if (!encoded_name->compressed) {
                 auto canonical = CanonicalDnsName::from_wire(message.subspan(name_start, cursor - name_start));
-                if (!canonical)
-                    return std::unexpected(canonical_name_error(canonical.error()));
+                assert(canonical.has_value());
                 question_name = *canonical;
             }
         }
@@ -171,11 +155,6 @@ parse_response(std::span<const std::byte> message, std::span<uint16_t> ttl_offse
                 return std::unexpected(ParseError::ResourceDataTruncated);
 
             if (type != kTypeOpt) {
-                if (ttl_offset_count >= ttl_offset_scratch.size())
-                    return std::unexpected(ParseError::TtlOffsetCapacityExceeded);
-                if (ttl_offset > std::numeric_limits<uint16_t>::max())
-                    return std::unexpected(ParseError::TtlOffsetCapacityExceeded);
-
                 ttl_offset_scratch[ttl_offset_count++] = static_cast<uint16_t>(ttl_offset);
                 const uint32_t ttl = (wire_ttl & kTtlHighBit) == 0 ? wire_ttl : 0;
                 minimum_ttl = minimum_ttl ? std::min(*minimum_ttl, ttl) : ttl;
@@ -200,13 +179,10 @@ parse_response(std::span<const std::byte> message, std::span<uint16_t> ttl_offse
         .message = message,
         .flags = flags,
         .question_count = question_count,
-        .answer_count = answer_count,
-        .authority_count = authority_count,
         .additional_count = additional_count,
         .question_name = question_name,
         .question_type = question_type,
         .question_class = question_class,
-        .question_is_compressed = question_is_compressed,
         .minimum_ttl = minimum_ttl,
         .authority_has_in_soa = authority_has_in_soa,
         .ttl_offsets = ttl_offset_scratch.first(ttl_offset_count),

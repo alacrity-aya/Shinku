@@ -11,6 +11,7 @@
 #include <exception>
 #include <print>
 #include <utility>
+#include <variant>
 
 namespace {
 
@@ -26,24 +27,21 @@ int run_application(int argc, char** argv) {
         return 2;
     }
 
-    switch (cli_result->action) {
-        case shinku::cli::CliAction::ShowHelp:
-            std::print("{}", shinku::cli::usage_text());
-            return 0;
-        case shinku::cli::CliAction::ShowVersion:
-            std::println("shinku {}", SHINKU_VERSION);
-            return 0;
-        case shinku::cli::CliAction::Run:
-            break;
+    if (const auto* action = std::get_if<shinku::cli::CliAction>(&*cli_result)) {
+        switch (*action) {
+            case shinku::cli::CliAction::ShowHelp:
+                std::print("{}", shinku::cli::usage_text());
+                return 0;
+            case shinku::cli::CliAction::ShowVersion:
+                std::println("shinku {}", SHINKU_VERSION);
+                return 0;
+        }
+        std::unreachable();
     }
 
-    if (!cli_result->command.has_value()) {
-        std::println(stderr, "error: run command is missing");
-        return 2;
-    }
-
+    const auto& command = std::get<shinku::cli::CliCommand>(*cli_result);
     shinku::config::StderrDiagnosticSink sink;
-    auto config = shinku::config::load_config(cli_result->command->config_path, sink);
+    auto config = shinku::config::load_config(command.config_path, sink);
     if (!config)
         return 1;
 

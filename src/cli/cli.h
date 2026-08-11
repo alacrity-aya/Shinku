@@ -4,17 +4,14 @@
 #include <cstdint>
 #include <expected>
 #include <filesystem>
-#include <optional>
 #include <string>
 #include <string_view>
+#include <variant>
 
 namespace shinku::cli {
 
 enum class CliErrorCode : uint8_t {
     MissingSubcommand,
-    UnsupportedSubcommand,
-    MissingConfigPath,
-    UnsupportedOption,
     UnexpectedArgument,
 };
 
@@ -28,15 +25,11 @@ struct CliCommand {
 };
 
 enum class CliAction : uint8_t {
-    Run,
     ShowHelp,
     ShowVersion,
 };
 
-struct CliResult {
-    CliAction action;
-    std::optional<CliCommand> command;
-};
+using CliResult = std::variant<CliCommand, CliAction>;
 
 std::expected<CliResult, CliError> parse_cli(int argc, char** argv);
 

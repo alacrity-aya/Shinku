@@ -26,43 +26,37 @@ std::string_view state_name(BackendState state) {
         case BackendState::Failed:
             return "Failed";
     }
-    return "Unknown";
+    std::unreachable();
 }
 
 std::unexpected<BackendError> invalid_state_error(BackendState state) {
     auto message = std::format("cannot run backend while runner is {}", state_name(state));
 
-    return std::unexpected(
-        BackendError {
-            .code = BackendErrorCode::InvalidState,
-            .message = std::move(message),
-            .cause = std::nullopt,
-        }
-    );
+    return std::unexpected(BackendError {
+        .code = BackendErrorCode::InvalidState,
+        .message = std::move(message),
+        .cause = std::nullopt,
+    });
 }
 
 std::unexpected<BackendError> missing_backend_error() {
-    return std::unexpected(
-        BackendError {
-            .code = BackendErrorCode::InvalidState,
-            .message = "cannot run backend: backend object is missing",
-            .cause = std::nullopt,
-        }
-    );
+    return std::unexpected(BackendError {
+        .code = BackendErrorCode::InvalidState,
+        .message = "cannot run backend: backend object is missing",
+        .cause = std::nullopt,
+    });
 }
 
 std::unexpected<BackendError> stop_failed_error(StopRequest request, const BackendError& error) {
-    return std::unexpected(
-        BackendError {
-            .code = BackendErrorCode::StopFailed,
-            .message = std::format(
-                "failed to stop backend after {} shutdown request: {}",
-                stop_reason_name(request.reason),
-                error.message
-            ),
-            .cause = error.cause,
-        }
-    );
+    return std::unexpected(BackendError {
+        .code = BackendErrorCode::StopFailed,
+        .message = std::format(
+            "failed to stop backend after {} shutdown request: {}",
+            stop_reason_name(request.reason),
+            error.message
+        ),
+        .cause = error.cause,
+    });
 }
 
 } // namespace

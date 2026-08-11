@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <string_view>
+#include <utility>
 
 namespace shinku::cache {
 
@@ -63,7 +64,7 @@ enum class BypassReason : uint8_t {
         case BypassReason::ZeroLifetime:
             return "zero lifetime";
     }
-    return "unknown";
+    std::unreachable();
 }
 
 } // namespace shinku::cache

@@ -39,7 +39,6 @@ TEST_CASE("wire parser extracts question and complete TTL plan") {
     CHECK(std::ranges::equal(parsed->question_name->wire(), wire_name("www.example")));
     CHECK(parsed->question_type == 1);
     CHECK(parsed->question_class == 1);
-    CHECK_FALSE(parsed->question_is_compressed);
     CHECK(parsed->minimum_ttl == 60);
     CHECK(parsed->authority_has_in_soa);
     REQUIRE(parsed->ttl_offsets.size() == 2);
@@ -96,7 +95,6 @@ TEST_CASE("wire parser reports a compressed Question without resolving it") {
     auto parsed = parse_response(message, scratch);
 
     REQUIRE(parsed.has_value());
-    CHECK(parsed->question_is_compressed);
     CHECK_FALSE(parsed->question_name.has_value());
 }
 
@@ -136,11 +134,6 @@ TEST_CASE("wire parser fills the complete 512-byte TTL offset bound") {
     REQUIRE(parsed.has_value());
     CHECK(parsed->ttl_offsets.size() == kMaxTtlOffsets);
     CHECK(parsed->minimum_ttl == 1);
-
-    std::array<uint16_t, kMaxTtlOffsets - 1> undersized_scratch {};
-    auto without_capacity = parse_response(message, undersized_scratch);
-    REQUIRE_FALSE(without_capacity.has_value());
-    CHECK(without_capacity.error() == ParseError::TtlOffsetCapacityExceeded);
 }
 
 TEST_CASE("wire parser rejects malformed message boundaries") {

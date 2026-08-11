@@ -211,9 +211,7 @@ std::expected<PollStatus, BackendError> EbpfBackend::poll() {
 }
 
 std::expected<void, BackendError> EbpfBackend::stop() {
-    if (cleanup_worker_)
-        cleanup_worker_.reset();
-
+    cleanup_worker_.reset();
     native_session_->close_packet_ring();
     event_consumer_.reset();
     dns_policy_.reset();

@@ -2,6 +2,7 @@
 #include "backend/stop_condition.h"
 
 #include <string_view>
+#include <utility>
 
 namespace shinku::backend {
 
@@ -14,7 +15,7 @@ std::string_view stop_reason_name(StopReason reason) noexcept {
         case StopReason::Timeout:
             return "timeout";
     }
-    return "unknown";
+    std::unreachable();
 }
 
 } // namespace shinku::backend

@@ -10,11 +10,6 @@
 
 namespace shinku::config {
 
-enum class BackendKind : uint8_t {
-    Ebpf,
-    Dpdk,
-};
-
 enum class ConfigValidationError : uint8_t {
     EbpfCleanupIntervalNotPositive,
     EbpfPacketPollTimeoutOutOfRange,
@@ -139,8 +134,7 @@ private:
 using BackendConfig = std::variant<EbpfConfig, DpdkConfig>;
 
 struct Config {
-    BackendKind backend;
-    BackendConfig backend_config;
+    BackendConfig backend;
     CacheConfig cache;
 };
 

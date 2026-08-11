@@ -317,22 +317,20 @@ TEST_CASE("EbpfBackend maps native session release failure") {
     CHECK(std::count(fixture.session->calls.begin(), fixture.session->calls.end(), "release") == 1);
 }
 
-TEST_CASE("make_backend validates selection and assembles production eBPF backend") {
-    const shinku::config::Config mismatch = {
-        .backend = shinku::config::BackendKind::Ebpf,
-        .backend_config = shinku::config::DpdkConfig { .client_port = 0, .server_port = 1 },
-        .cache = cache_config(),
-    };
-    auto mismatched = shinku::backend::make_backend(mismatch);
-    REQUIRE_FALSE(mismatched.has_value());
-    CHECK(mismatched.error().code == BackendErrorCode::WrongConfig);
-
+TEST_CASE("make_backend dispatches the validated backend alternative") {
     const shinku::config::Config config = {
-        .backend = shinku::config::BackendKind::Ebpf,
-        .backend_config = ebpf_config(),
+        .backend = ebpf_config(),
         .cache = cache_config(),
     };
     auto backend = shinku::backend::make_backend(config);
     REQUIRE(backend.has_value());
     CHECK(*backend != nullptr);
+
+    const shinku::config::Config dpdk_config = {
+        .backend = shinku::config::DpdkConfig { .client_port = 0, .server_port = 1 },
+        .cache = cache_config(),
+    };
+    auto unsupported = shinku::backend::make_backend(dpdk_config);
+    REQUIRE_FALSE(unsupported.has_value());
+    CHECK(unsupported.error().code == BackendErrorCode::Unsupported);
 }

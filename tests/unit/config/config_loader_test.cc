@@ -175,10 +175,9 @@ pending_query_timeout = "2s"
     auto result = shinku::config::load_config(path, sink);
 
     REQUIRE(result.has_value());
-    CHECK(result->backend == shinku::config::BackendKind::Ebpf);
-    CHECK(result->backend_config.index() == 0);
+    REQUIRE(std::holds_alternative<shinku::config::EbpfConfig>(result->backend));
 
-    const auto& ebpf = std::get<shinku::config::EbpfConfig>(result->backend_config);
+    const auto& ebpf = std::get<shinku::config::EbpfConfig>(result->backend);
     CHECK(ebpf.iface() == "eth0");
     CHECK(ebpf.cleanup_interval().count() == 10'000);
     CHECK(ebpf.packet_poll_timeout().count() == 100);
@@ -212,10 +211,9 @@ pending_query_timeout = "100ms"
     auto result = shinku::config::load_config(path, sink);
 
     REQUIRE(result.has_value());
-    CHECK(result->backend == shinku::config::BackendKind::Dpdk);
-    CHECK(result->backend_config.index() == 1);
+    REQUIRE(std::holds_alternative<shinku::config::DpdkConfig>(result->backend));
 
-    const auto& dpdk = std::get<shinku::config::DpdkConfig>(result->backend_config);
+    const auto& dpdk = std::get<shinku::config::DpdkConfig>(result->backend);
     CHECK(dpdk.client_port == 0);
     CHECK(dpdk.server_port == 1);
 }
@@ -245,8 +243,8 @@ pending_query_timeout = "10s"
     auto result = shinku::config::load_config(path, sink);
 
     REQUIRE(result.has_value());
-    CHECK(result->backend_config.index() == 0);
-    CHECK(std::get<shinku::config::EbpfConfig>(result->backend_config).cleanup_interval().count() == 100);
+    REQUIRE(std::holds_alternative<shinku::config::EbpfConfig>(result->backend));
+    CHECK(std::get<shinku::config::EbpfConfig>(result->backend).cleanup_interval().count() == 100);
 }
 
 TEST_CASE("unknown key warning is emitted before first hard error") {
@@ -327,7 +325,7 @@ pending_query_timeout = "2s"
     auto result = shinku::config::load_config(path, sink);
 
     REQUIRE(result.has_value());
-    CHECK(std::get<shinku::config::EbpfConfig>(result->backend_config).packet_poll_timeout().count() == 250);
+    CHECK(std::get<shinku::config::EbpfConfig>(result->backend).packet_poll_timeout().count() == 250);
     CHECK(sink.messages().empty());
 }
 

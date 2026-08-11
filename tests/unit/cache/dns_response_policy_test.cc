@@ -36,13 +36,10 @@ struct PolicyFixture {
         .message = message,
         .flags = 0x8180,
         .question_count = 1,
-        .answer_count = 1,
-        .authority_count = 0,
         .additional_count = 0,
         .question_name = name,
         .question_type = 1,
         .question_class = 1,
-        .question_is_compressed = false,
         .minimum_ttl = 30,
         .authority_has_in_soa = false,
         .ttl_offsets = offsets,
@@ -133,7 +130,7 @@ TEST_CASE("response policy enforces the correlated Response Profile") {
         fixture.response.additional_count = test_case.additional;
         fixture.response.question_type = test_case.type;
         fixture.response.question_class = test_case.rr_class;
-        fixture.response.question_is_compressed = test_case.compressed;
+        fixture.response.question_name = test_case.compressed ? std::nullopt : std::optional { fixture.name };
 
         auto candidate = judge_response(fixture.response, kNamespace, true);
         REQUIRE_FALSE(candidate.has_value());

@@ -16,13 +16,10 @@ struct ParsedResponse {
     std::span<const std::byte> message;
     uint16_t flags;
     uint16_t question_count;
-    uint16_t answer_count;
-    uint16_t authority_count;
     uint16_t additional_count;
     std::optional<CanonicalDnsName> question_name;
     uint16_t question_type;
     uint16_t question_class;
-    bool question_is_compressed;
     std::optional<uint32_t> minimum_ttl;
     bool authority_has_in_soa;
     std::span<const uint16_t> ttl_offsets;
@@ -31,13 +28,10 @@ struct ParsedResponse {
         return std::tie(
             flags,
             question_count,
-            answer_count,
-            authority_count,
             additional_count,
             question_name,
             question_type,
             question_class,
-            question_is_compressed,
             minimum_ttl,
             authority_has_in_soa
         );

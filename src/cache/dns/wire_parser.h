@@ -15,6 +15,6 @@ inline constexpr size_t kMaxDnsMessageBytes = 512;
 inline constexpr size_t kMaxTtlOffsets = 45;
 
 [[nodiscard]] std::expected<ParsedResponse, ParseError>
-parse_response(std::span<const std::byte> message, std::span<uint16_t> ttl_offset_scratch) noexcept;
+parse_response(std::span<const std::byte> message, std::span<uint16_t, kMaxTtlOffsets> ttl_offset_scratch) noexcept;
 
 } // namespace shinku::cache::dns

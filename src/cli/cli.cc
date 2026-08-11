@@ -5,7 +5,6 @@
 
 #include <expected>
 #include <filesystem>
-#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -53,26 +52,23 @@ std::expected<CliResult, CliError> parse_cli(int argc, char** argv) {
     }
 
     if (program.get<bool>(std::string(kHelp)))
-        return CliResult { .action = CliAction::ShowHelp, .command = std::nullopt };
+        return CliResult { CliAction::ShowHelp };
 
     if (program.get<bool>(std::string(kVersion)))
-        return CliResult { .action = CliAction::ShowVersion, .command = std::nullopt };
+        return CliResult { CliAction::ShowVersion };
 
     if (!program.is_subcommand_used(run_command))
         return cli_error(CliErrorCode::MissingSubcommand, "expected subcommand: run");
 
     if (run_command.get<bool>(std::string(kHelp)))
-        return CliResult { .action = CliAction::ShowHelp, .command = std::nullopt };
+        return CliResult { CliAction::ShowHelp };
 
     std::filesystem::path config_path(kDefaultConfigPath);
     auto explicit_config = run_command.present<std::vector<std::string>>(std::string(kConfig));
     if (explicit_config.has_value())
         config_path = explicit_config.value().front();
 
-    return CliResult {
-        .action = CliAction::Run,
-        .command = CliCommand { .config_path = config_path },
-    };
+    return CliResult { CliCommand { .config_path = config_path } };
 }
 
 } // namespace shinku::cli
