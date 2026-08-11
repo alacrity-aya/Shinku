@@ -22,6 +22,60 @@ _Avoid_: Legacy backend
 The Cache Engine that uses DPDK packet I/O and userspace packet buffers.
 _Avoid_: DPDK mode
 
+**DPDK Port ID**:
+The runtime DPDK Ethernet device identifier assigned after EAL initialization. The DPDK Backend resolves it from a
+configured client-side or service-side DPDK Device Source; it is not stable configuration identity.
+_Avoid_: UDP port, socket port, configured device identity
+
+**DPDK Device Source**:
+The typed origin from which EAL creates a DPDK Ethernet device: either an explicitly selected physical PCI device or a
+supported virtual device. Client-side and service-side Device Sources define the two boundaries of a DPDK Cache Point
+before EAL assigns their runtime DPDK Port IDs; the two sides may use different supported source kinds.
+_Avoid_: DPDK Port ID, arbitrary EAL argument
+
+**Backend Poll Quantum**:
+The bounded, Backend-defined progress made by one `Backend::poll()` call before control returns to the Backend Runner.
+A quantum may include a bounded backend-native readiness wait; DPDK uses a nonblocking quantum with bounded packet work
+in each direction. Returning between quanta gives the Runner regular opportunities to observe a Stop Request.
+_Avoid_: worker loop, unbounded wait, unbounded burst drain
+
+**DPDK Packet Buffer Ownership**:
+The obligation to either transfer an `rte_mbuf` to a successful DPDK operation or release it exactly once. RX transfers
+received mbufs to the DPDK Backend; TX transfers only the accepted prefix to the PMD, while the Backend still owns and
+must release every unaccepted mbuf.
+_Avoid_: borrowed packet, implicit TX cleanup
+
+**DPDK Memory Mode**:
+The validated choice of EAL packet-memory backing for one DPDK Backend Lifecycle: configured Hugepages or explicit
+no-Hugepage memory. It is fixed before the one EAL initialization attempt and never selected by startup fallback.
+_Avoid_: Cache memory, automatic Hugepage fallback
+
+**DPDK PMD**:
+The Poll Mode Driver that implements DPDK's common Ethernet-device interface for a physical or virtual Device Source,
+including PCI drivers and `net_ring`. PMD-specific capability and alignment rules are discovered during Backend start.
+_Avoid_: kernel network driver, Device Source
+
+**DPDK Descriptor Ring**:
+The bounded RX or TX queue of descriptors through which a PMD and the DPDK Backend exchange packet-buffer ownership.
+Descriptor count is queue capacity; it is distinct from the number of packets handled by one burst.
+_Avoid_: packet burst, mempool, DNS ring buffer
+
+**DPDK Packet Pool**:
+The `rte_mempool` that owns reusable mbufs for DPDK RX and Cache Hit packet construction. Module 9's single shared pool
+is placed on the sole MAIN lcore NUMA socket and supplies both configured ports.
+_Avoid_: Cache Store, descriptor ring, per-port packet ownership
+
+**DPDK Frame Contract**:
+The packet shape one DPDK Backend Lifecycle promises to receive, forward, and construct. Module 9 supports standard
+1500-byte L3 MTU frames in one mbuf segment and does not claim Jumbo Frame or multi-segment packet support.
+_Avoid_: DNS response limit, descriptor capacity
+
+**DPDK Link State**:
+The PMD-reported physical or virtual link condition, including up/down and optional speed/duplex details. It is distinct
+from Linux admin state and from DPDK port lifecycle state. Module 9 records one nonblocking startup observation after
+the ports start, does not use the result as a startup gate, and does not monitor Link State while Running.
+_Avoid_: Backend Running state, Linux interface state
+
 **Backend-neutral**:
 A rule or type that applies equally to all Backends instead of belonging to eBPF or DPDK specifically.
 _Avoid_: Shared by accident
@@ -53,6 +107,12 @@ _Avoid_: Return code, exception
 **Observability Surface**:
 The deleted runtime-facing health, metrics, and status reporting API. A replacement must be designed as a future module before reintroduction.
 _Avoid_: Metrics code
+
+**Runtime Log**:
+A low-frequency operator-facing record of Host Runtime lifecycle or state transitions. Runtime Logs use `spdlog`, do
+not carry control flow, and are distinct from typed errors and the deleted Observability Surface. The DPDK packet path
+does not emit a Runtime Log per packet, burst, or empty Poll Quantum.
+_Avoid_: Backend error, metric, packet trace
 
 ### Deployment
 

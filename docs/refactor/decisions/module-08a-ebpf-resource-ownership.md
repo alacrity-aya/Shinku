@@ -28,7 +28,9 @@ Decisions:
 22. `FakeEbpfNativeSession` uses independent result queues and an explicit call trace. It does not allocate fake native pointers or reproduce production resource-handle state.
 23. The old `EbpfPlatform`, per-resource opaque Handle hierarchy, private type-erased Handle implementations, and `dynamic_cast`-based production extraction are removed.
 24. 8A preserves the attach sequence: generated skeleton attachment, optional log ring, XDP retry, TCX retry with legacy TC fallback, packet ring creation, then cleanup-worker startup.
-25. 8A preserves ring behavior: log-ring `EINTR` returns `NoWork` before packet polling, other log-ring failures are non-fatal warnings, packet-ring `EINTR` returns `NoWork`, and other packet-ring failures return `PollFailed`.
+25. 8A preserves ring behavior: log-ring `EINTR` completes the quantum successfully before packet polling, other
+    log-ring failures are non-fatal warnings, packet-ring `EINTR` completes successfully, and other packet-ring failures
+    return `PollFailed`. ADR-0047 later removes the former `NoWork` activity result.
 26. The TCX fallback loop remains Backend policy: each unsupported TCX result triggers one legacy TC attempt; after a failed legacy attempt the Backend waits and retries TCX for at most five rounds with the existing backoff.
 27. The existing BPF log callback remains in `ProductionEbpfNativeSession`; the general diagnostics/logging boundary remains deferred to Module 10.
 28. The optional `ebpf.packet_poll_timeout` is materialized as `100ms` when absent, validated from `1ms` through `1s`, and applies only to packet-ring polling. Log-ring polling keeps a private `100ms` timeout.

@@ -20,6 +20,7 @@ Historical Segment numbers remain stable because existing decisions refer to the
 | Segment 20: Module 8E eBPF production cutover | [Module 8E](decisions/module-08e-production-cutover.md) |
 | Segment 20: Module 8E design review findings | [Module 8E Review](decisions/module-08e-design-review-findings.md) |
 | Module 8 performance evidence | [PERF-M8-1](decisions/module-08-performance-evidence.md) |
+| Segment 21: Module 9 DPDK Backend | [Module 9](decisions/module-09-dpdk-backend.md) |
 
 New decisions belong in the narrowest applicable file. Cross-module decisions should be recorded in the earliest
 owning stage and linked from later module decisions when they refine or supersede it.

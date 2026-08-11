@@ -3,8 +3,9 @@
 This file records the frozen design for `PERF-M8-1`. It refines the required evidence in `benchmark-backlog.md`
 without introducing a product performance pass line.
 
-Status: design frozen and harness implemented on 2026-08-03; privileged smoke passed on 2026-08-05 and canonical
-evidence remains pending.
+Status: design frozen and harness implemented on 2026-08-03; privileged smoke passed on 2026-08-05. Canonical
+evidence is a deferred TODO while Module 9 is active; it remains required before Module 8 performance evidence is
+considered complete.
 If an implementation-time tool or kernel fact makes a frozen decision infeasible, reopen only that decision with
 recorded evidence rather than silently changing the measurement Contract.
 
@@ -157,7 +158,8 @@ Completed without privilege:
   confirmed `U == Q-H` for the emitted Prometheus metrics.
 
 The privileged root topology smoke passed on 2026-08-05, including real XDP/legacy-TC attachment, hook-mode detection,
-namespace traffic, Miss-to-Fill-to-Hit sentinels, service teardown, and hook cleanup. Canonical evidence remains pending.
+namespace traffic, Miss-to-Fill-to-Hit sentinels, service teardown, and hook cleanup. Canonical evidence is deferred as
+a TODO until the DPDK work reaches a stable comparison point.
 
 ## Freeze Boundary
 

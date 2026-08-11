@@ -66,9 +66,6 @@ CLI parser API:
 ```cpp
 enum class CliErrorCode {
     MissingSubcommand,
-    UnsupportedSubcommand,
-    MissingConfigPath,
-    UnsupportedOption,
     UnexpectedArgument,
 };
 
@@ -82,15 +79,11 @@ struct CliCommand {
 };
 
 enum class CliAction {
-    Run,
     ShowHelp,
     ShowVersion,
 };
 
-struct CliResult {
-    CliAction action;
-    std::optional<CliCommand> command;
-};
+using CliResult = std::variant<CliCommand, CliAction>;
 
 std::expected<CliResult, CliError> parse_cli(int argc, char** argv);
 ```

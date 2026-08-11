@@ -39,13 +39,15 @@ Decisions:
 7. CLI owns CLI syntax diagnostics; Config Loader owns Config File diagnostics.
 8. CLI parser returns a typed `CliCommand` containing the selected Config File path.
 9. CLI Module uses the file layout `cli.h`, `cli.cc`, and `main.cc`.
-10. `CliErrorCode` MVP contains `MissingSubcommand`, `UnsupportedSubcommand`, `MissingConfigPath`, `UnsupportedOption`, and `UnexpectedArgument`.
+10. `CliErrorCode` contains only errors the parser produces: `MissingSubcommand` and `UnexpectedArgument`.
 11. CLI supports `shinku --help`, `shinku run --help`, and `shinku --version` as non-run actions.
 12. CLI version output comes from Meson `configuration_data()`.
 13. CLI does not reject explicit empty `--config` paths; Config Loader owns path-open failures.
 14. CLI does not canonicalize config paths.
 15. `shinku run --config` with no path is rejected by argparse and mapped to `UnexpectedArgument`.
 16. Duplicate `--config` is rejected by argparse and mapped to `UnexpectedArgument`.
+17. `CliResult` is `std::variant<CliCommand, CliAction>`; a run result therefore always carries its command, while
+    help/version results cannot accidentally carry one.
 
 Constraint:
 
@@ -61,7 +63,9 @@ Constraint:
 Decisions:
 
 1. eBPF Backend uses the minimum required config fields: `iface`, `arena_pages`, and `cleanup_interval`.
-2. DPDK Backend uses the minimum required config fields: `client_port` and `server_port`.
+2. Superseded by Module 9 decision 7. The initial schema used numeric `client_port` and `server_port`; the active DPDK
+   design binds client-side and service-side roles to required `[dpdk.client]` and `[dpdk.service]` typed Device Source
+   tables and resolves runtime Port IDs after EAL init. Module 9 decision 30 defines their exact shape.
 3. Cache Policy is backend-neutral and belongs in the top-level `cache` section.
 4. The first `cache` fields are the minimum set: `max_entries`, `max_response_bytes`, and `cache_negative`.
 5. The Config File path has a default value: `./shinku.toml`.

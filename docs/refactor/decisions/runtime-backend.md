@@ -11,7 +11,8 @@ Decisions:
 5. Backend abstraction files live in `src/backend/`.
 6. The public `Backend` interface is a pure virtual class. CRTP is not used as the public interface because backend selection is runtime-configured; CRTP may be used later only as a private implementation helper.
 7. `BackendRunner` owns lifecycle sequencing for `Created -> Running -> Stopped -> Failed`; backend implementations only perform backend-specific resource actions.
-8. `poll()` returns `std::expected<PollStatus, BackendError>`, where `PollStatus` includes `WorkDone` and `NoWork`.
+8. Superseded by decision 58. The initial interface returned `std::expected<PollStatus, BackendError>` with
+   `WorkDone` and `NoWork`; Runner never consumed the distinction.
 9. `stop()` is idempotent and returns success if the backend is already stopped.
 10. Module 6 uses a minimal file layout: `backend.h`, `backend_error.h`, `backend_runner.h`, and `backend_runner.cc`.
 11. `BackendError` uses a typed enum, message, and optional `std::error_code` cause.
@@ -30,7 +31,13 @@ Decisions:
 24. `BackendErrorCode` starts with `InvalidState`, `WrongConfig`, `Unsupported`, `PermissionDenied`, `ProbeFailed`, `StartFailed`, `PollFailed`, and `StopFailed`.
 25. `BackendRunner` owns its backend through `std::unique_ptr<Backend>`.
 26. Fake backend tests live in `tests/unit/backend/backend_runner_test.cc`.
-27. Backend runner tests cover happy path and lifecycle edges: initial state, automatic probe on start, invalid pre-start poll, `WorkDone`, `NoWork`, poll failure to `Failed`, idempotent stop, stop from `Failed`, destructor best-effort stop, probe error, start failure, and probe while running.
+27. Backend runner tests cover happy path and lifecycle edges: initial state, automatic probe on start, successful
+    bounded poll, poll failure to `Failed`, idempotent stop, stop from `Failed`, destructor best-effort stop, probe error,
+    start failure, and probe while running.
+58. `Backend::poll()` returns `std::expected<void, BackendError>`. Success means one bounded Backend Poll Quantum
+    completed; failure means runtime progress cannot continue. `PollStatus`, `WorkDone`, and `NoWork` are deleted because
+    Runner never changed pacing or lifecycle behavior based on them. Backend activity facts stay private, and future
+    Diagnostics uses meaningful backend-specific counters instead of a lifecycle activity bit. See ADR-0047.
 
 Constraint:
 
@@ -50,17 +57,24 @@ Probe role:
 
 Decisions:
 
-1. The first Host Runtime loop is a simple blocking loop that repeatedly calls `poll()` until shutdown.
+1. The first Host Runtime loop is a simple synchronous loop that repeatedly calls `poll()` until shutdown.
 2. `poll()` is the canonical backend step name.
-3. `poll()` must return quickly. If there is no backend work to process, it returns `NoWork`.
+3. `poll()` executes one bounded, Backend-defined Poll Quantum. A quantum may include a bounded backend-native readiness
+   wait, but never an unbounded wait or unbounded backlog drain. It reports only successful completion or typed failure.
 4. Signal handling lives in a separate small process-control module.
+5. Superseded by Segment 10 decision 58. `BackendRunner` deliberately checks only poll success or failure and immediately
+   begins its next Stop Condition/poll iteration after success; a universal idle sleep would conflict with a DPDK PMD
+   busy-poll loop.
 
 Constraint:
 
 - The Host Runtime loop owns backend sequencing: `probe()`, `start()`, repeated `poll()`, then `stop()`.
 - The process-control module only turns process signals into shutdown requests. It must not own Config loading, Backend selection, Backend lifecycle, or Backend diagnostics.
-- Backend implementations must not hide blocking waits inside `poll()`. Waiting policy, if needed later, belongs to the Host Runtime loop or a later explicit module design.
-- `NoWork` is a normal poll result, not an error.
+- A Backend may use its native bounded readiness wait inside its Poll Quantum, as eBPF does, but its maximum wait and
+  work bounds are part of the Backend interface. DPDK's Poll Quantum is nonblocking and performs bounded RX/TX bursts.
+- Runner observes a Stop Request only between Poll Quanta, so every Backend must keep the quantum bounded and document
+  its worst-case stop-observation latency.
+- A successful quantum may process zero backend work; this remains normal and is not separately reported to Runner.
 
 ## Segment 12: Process-control Module
 
@@ -130,7 +144,8 @@ Decisions:
 21. `bpf_ctx` and operations that traffic directly in it are transitional refactor targets after Module 7 establishes the C++ backend production path.
 22. eBPF probe fakes live in the same private `EbpfLoaderOps` table; Module 7 does not introduce a separate `EbpfProbeOps`.
 23. Module 7 has no `BackendFactory` class. Backend creation is represented by the `make_backend(const Config&)` free function.
-24. `make_backend(const Config&)` returns `BackendErrorCode::WrongConfig` if `Config::backend` and `Config::backend_config` disagree.
+24. Superseded: `Config::backend` is the selected `BackendConfig` variant, so backend selection and backend-specific
+    configuration cannot disagree. `make_backend(const Config&)` dispatches directly on that alternative.
 25. `EbpfBackend` unit tests use fake `EbpfLoaderOps` to cover probe/start/poll/stop behavior without root, BPF attachment, real interfaces, BPF arena support, or kernel feature availability.
 26. `EbpfLoaderOps` may expose `bpf_ctx*` in function signatures, but only inside the private eBPF backend boundary.
 27. `EbpfLoaderConfig` is a temporary private adapter shape with only `iface`, `arena_pages`, and `cleanup_interval_ms`.
@@ -143,7 +158,8 @@ Decisions:
 34. `probe()` remains part of the `Backend` lifecycle interface and is called by `BackendRunner`; `make_backend(const Config&)` does not perform host capability probing.
 35. `ShutdownReport` carries only the accepted Stop Request in Module 7; backend-specific shutdown metadata belongs to future diagnostics/observability work.
 36. `BackendError` remains `code + message + optional std::error_code cause` in Module 7; no backend-specific detail maps or variants are added.
-37. `PollStatus` remains `WorkDone` or `NoWork` in Module 7; event counts and backend-specific work categories are deferred.
+37. Superseded by Segment 10 decision 58. Module 7 originally retained `WorkDone`/`NoWork`; the shared interface now
+    reports only quantum success or typed failure.
 38. `StopReason::Signal` means Process Control observed a supported process-termination signal.
 39. `StopReason::Manual` means an in-process control source explicitly requested an orderly shutdown; it is not a backend failure.
 40. `StopReason::Timeout` means a Stop Condition's configured runtime deadline elapsed; it is not a backend poll timeout, loader-operation timeout, or backend failure.
@@ -178,6 +194,10 @@ Decisions:
 3. Module 7 may emit minimal local warnings for non-fatal eBPF backend conditions, such as log-ring poll errors, while low-level C boundary diagnostics remain temporarily in the C loader.
 4. Runtime diagnostics/logging becomes its own module after eBPF and DPDK backend boundaries stabilize and before the full test-suite rewrite.
 5. The future diagnostics/logging module should evaluate explicit diagnostics sinks or dependency injection before considering a singleton logger.
+6. Module 9 selects pinned `spdlog` 1.17.0 and may use it for minimal synchronous DPDK lifecycle logging. This narrows
+   Module 10's implementation choice without moving common routing, formatting, or existing-output migration out of
+   Module 10. Module 9 deliberately uses spdlog's process-global convenience API instead of adding logger injection;
+   Module 10 may replace that access model when it designs the common boundary.
 
 Constraint:
 

@@ -4,7 +4,7 @@
 
 Review date: 2026-08-02
 
-Implementation status: production cutover correctness completed on 2026-08-03. The verifier, Host unit, root namespace, fuzz-smoke, and short Docker-soak evidence is recorded in the Module 8 implementation result. Only `PERF-M8-1` remains before Module 8 closure; the paused benchmark backlog is unchanged.
+Implementation status: production cutover correctness completed on 2026-08-03. The verifier, Host unit, root namespace, fuzz-smoke, and short Docker-soak evidence is recorded in the Module 8 implementation result. Canonical `PERF-M8-1` remains a deferred TODO for final Module 8 performance closure; it does not block the active Module 9 work.
 
 This review checked the Module 8E decision set against the Module 8B/8C/8D contracts, the current eBPF Session/Backend boundaries, libbpf ring-buffer behavior, and the verifier feasibility code. It is a design gate, not an implementation approval. The benchmark backlog is intentionally frozen; performance-specific questions remain deferred unless they affect one of the findings below.
 
@@ -53,7 +53,7 @@ Grill result: decisions 33 through 35 close this finding for MVP. Tests cover ri
 
 Status: Resolved for MVP. Decision 36 bounds one Backend poll to 64 synchronous packet callbacks and returns control to Runner before consuming further backlog.
 
-The previous Session used unbounded `ring_buffer__poll()`. The accepted Session first calls `ring_buffer__consume_n(..., 64)` without blocking; if empty, it waits on the packet-ring epoll fd up to the configured timeout and then performs one more bounded consume. A full batch is normal `WorkDone`, the callback remains always-zero, and Runner checks Stop Condition before the next Backend poll.
+The previous Session used unbounded `ring_buffer__poll()`. The accepted Session first calls `ring_buffer__consume_n(..., 64)` without blocking; if empty, it waits on the packet-ring epoll fd up to the configured timeout and then performs one more bounded consume. Empty, partial, and full batches complete the quantum successfully, the callback remains always-zero, and Runner checks Stop Condition before the next Backend poll. ADR-0047 removes the former activity result.
 
 Implementation evidence:
 
@@ -92,4 +92,4 @@ Findings 8E-R1 through 8E-R7 and decision points 8E-1 through 8E-13 are closed f
 
 The next grill should ask exactly one question at a time in this order:
 
-No unresolved Module 8E grill question remains. Implementation evidence may reopen a specific decision only under its recorded trigger; the paused benchmark backlog remains unchanged.
+No unresolved Module 8E grill question remains. Implementation evidence may reopen a specific decision only under its recorded trigger; the canonical benchmark remains explicitly deferred rather than silently dropped.

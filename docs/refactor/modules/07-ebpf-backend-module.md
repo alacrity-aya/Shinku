@@ -17,7 +17,8 @@ Scope:
 - Add the production backend creation function in `src/backend/backend_creation.h` and `src/backend/backend_creation.cc`.
 - `make_backend(const Config&)` is a free function only; Module 7 does not introduce a `BackendFactory` class.
 - `make_backend(const Config&)` returns `BackendErrorCode::Unsupported` when the selected backend is not yet implemented, even if the Config itself is valid.
-- `make_backend(const Config&)` returns `BackendErrorCode::WrongConfig` if `Config::backend` and `Config::backend_config` disagree.
+- `Config::backend` stores exactly one selected backend-config alternative, and `make_backend(const Config&)` dispatches
+  directly on it; there is no separate selector/config consistency check.
 - `BackendRunner` is the only production lifecycle controller. Production code must not call concrete backend lifecycle methods directly.
 - `Backend` lifecycle methods are runner-owned implementation hooks. Direct concrete backend construction/calls are reserved for `make_backend()` implementation code and backend-specific tests.
 - Module 7 does not use friend-only constructors or passkey construction to enforce the production-only `make_backend()` rule. It relies on keeping `ebpf_backend.h` as an eBPF-private header and keeping production composition outside `make_backend()` on the abstract `Backend` API.
@@ -52,10 +53,10 @@ Scope:
 - `bpf_ctx` and operations that traffic directly in it are transitional refactor targets. Module 7 hides them from public backend/runtime APIs; later eBPF loader refactors should replace this C loader state with C++ resource-owning structures.
 - `poll()` polls the BPF log ring and packet ring once per call, preserving the old loop's behavior as closely as possible.
 - Module 7 keeps the old poll pacing inside `EbpfBackend::poll()`: log ring timeout `100ms`, then packet ring timeout `100ms`.
-- If either log ring or packet ring polling returns a positive event count, `poll()` returns `PollStatus::WorkDone`.
-- Log ring `-EINTR` maps to `PollStatus::NoWork`.
+- Positive event counts remain private and `poll()` returns success.
+- Log ring `-EINTR` maps to successful quantum completion.
 - BPF log ring poll errors are non-fatal: `EbpfBackend::poll()` logs a warning and continues to packet ring polling.
-- Packet ring `-EINTR` maps to `PollStatus::NoWork`.
+- Packet ring `-EINTR` maps to successful quantum completion.
 - Packet ring negative errors other than `-EINTR` map to `BackendErrorCode::PollFailed`; `BackendRunner` then moves to `Failed`.
 - Preserve BPF build, skeleton generation, attach/detach, ring polling, cache cleanup, and existing behavior tests.
 - If BPF arena is unavailable, selected eBPF backend fails as unsupported. Do not introduce compatible-store fallback.
@@ -99,7 +100,8 @@ Scope:
 - `BackendError` remains `code + message + optional std::error_code cause` in Module 7. Do not add backend-specific detail maps or variants.
 - `BackendError::cause` is populated only when the source operation's contract identifies a value as an errno or `std::error_code`. A negative integer alone is insufficient evidence.
 - Private C loader sentinel values such as `ERR_SKEL_LOAD`, `ERR_RB_CREATE`, and `ERR_INVALID_IFACE` stay in the human-readable error message and leave `cause` empty. Mixed return domains such as `loader_setup_bpf()` must not guess an errno from the raw negative value. An operation with an explicit errno contract, such as the `pthread_create()` result used by cleanup-thread startup, may populate `cause` with the corresponding generic-category error code.
-- `PollStatus` remains `WorkDone` or `NoWork` in Module 7. Do not add event counts or backend-specific work categories.
+- ADR-0047 later removes `PollStatus`; event counts remain private and backend-specific work categories belong to
+  Diagnostics rather than the lifecycle interface.
 - `BackendRunner::run()` starts the backend, polls until a `StopRequest` or backend error, and calls `stop()` when a stop is requested.
 - If `run()` is called after a stop request already exists, it returns `ShutdownReport` without starting the backend and sets `state()` to `Stopped`.
 - If `run()` is called while the runner state is not `Created`, it returns `BackendErrorCode::InvalidState`.
@@ -123,7 +125,8 @@ Scope:
 - `main.cc` does not print the successful `ShutdownReport` or shutdown reason in Module 7; it returns exit code `0`. Operator-facing successful-shutdown diagnostics are deferred to the Runtime Diagnostics/Logging Module.
 - Delete `src/runtime/legacy_ebpf_runner.c` and `src/runtime/legacy_ebpf_runner.h` from Module 7 production build instead of keeping a debug or fallback entrypoint.
 - Delete public `src/config/legacy_env_adapter.h` and `src/config/legacy_env_adapter.cc`; the only remaining `struct env` conversion belongs to the private eBPF loader adapter.
-- `PollStatus::NoWork` does not add an extra runtime sleep in Module 7; the backend poll timeout remains the pacing mechanism.
+- A successful empty quantum does not add an extra runtime sleep in Module 7; the backend poll timeout remains the
+  pacing mechanism.
 - `EbpfBackend::stop()` only performs backend resource cleanup and does not print operator-facing lifecycle messages.
 - Module 7 removes old production-path console lifecycle output such as "BPF System Running", "Shutting down", and "Cleanup thread stopped" from the C++ production path. Low-level loader/libbpf/cache diagnostics may remain in the C boundary until a later diagnostics module.
 
@@ -146,7 +149,7 @@ Result:
 - Made Process Control implement `StopCondition` directly while retaining static signal-handler operations.
 - Added the private `EbpfLoaderConfig` and context-aware `EbpfLoaderOps` seam, production privilege/interface/arena probes, `EbpfBackend`, and the `make_backend(const Config&)` free function.
 - Replaced the production legacy runner path in `main.cc` with `make_backend() + BackendRunner`, removed the public legacy Config adapter and legacy runtime runner, and kept the temporary C `env` type inside the loader boundary.
-- Added focused Backend Runner and eBPF Backend tests for lifecycle sequencing, cleanup retries, Stop Reasons, probe mapping, loader-error causes, partial startup, ring polling, factory mismatch, and unsupported DPDK behavior.
+- Added focused Backend Runner and eBPF Backend tests for lifecycle sequencing, cleanup retries, Stop Reasons, probe mapping, loader-error causes, partial startup, ring polling, backend-alternative dispatch, and unsupported DPDK behavior.
 - `meson compile -C build` passed.
 - `meson compile -C /tmp/shinku-build-bpf-log shinku xdp_pass.bpf.o` passed with `bpf_log=true`; generated `vmlinux.h` warnings remain unchanged.
 - `ASAN_OPTIONS=detect_leaks=0:halt_on_error=1:abort_on_error=1 meson test -C build 'Backend Runner Test' 'Process Control Test' 'eBPF Backend Test' --no-rebuild --print-errorlogs` passed all three focused tests. Leak detection is disabled because LeakSanitizer cannot run under the current ptrace environment; AddressSanitizer remains enabled.

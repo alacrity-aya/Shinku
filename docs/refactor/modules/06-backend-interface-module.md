@@ -22,8 +22,10 @@ Scope:
 - `BackendRunner::probe()` is invalid while running and returns `InvalidState`.
 - If `BackendRunner::start()` gets any probe error, the runner enters `Failed` and propagates the same `BackendError`.
 - Module 6 initially defines explicit `BackendRunner::stop()` from `Failed` to call backend `stop()` best-effort and transition to `Stopped` if cleanup succeeds. Module 7 supersedes this state outcome for errors handled inside `run()`: cleanup and lifecycle outcome are tracked separately, and a runtime failure remains `Failed` after successful cleanup.
-- `poll()` must return quickly. If no work exists, return `NoWork`.
-- `poll()` returns `std::expected<PollStatus, BackendError>`.
+- Module 6 originally required `poll()` to return quickly and report `NoWork` when idle. ADR-0023 later clarifies this
+  as one bounded Backend Poll Quantum, which may include a bounded backend-native readiness wait. ADR-0047 later removes
+  the unused activity result.
+- The current `poll()` interface returns `std::expected<void, BackendError>`.
 - `PollFailed` moves `BackendRunner` into `Failed` for the MVP.
 - `stop()` is idempotent. Calling `stop()` when already stopped returns success.
 - Construction receives a `BackendConfig` variant.
@@ -32,7 +34,7 @@ Scope:
 
 Verification:
 
-- Fake backend tests for lifecycle sequencing and `NoWork`.
+- Fake backend tests for lifecycle sequencing, successful poll completion, and poll failure.
 - `meson test -C build`
 
 Result:

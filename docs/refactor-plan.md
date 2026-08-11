@@ -21,19 +21,23 @@ Status: canonical execution plan entrypoint for the C++/DPDK refactor. The modul
 | 5 | [Process-control Module](refactor/modules/05-process-control-module.md) | complete | Move signal handling and shutdown request propagation out of CLI/backend code. |
 | 6 | [Backend Interface Module](refactor/modules/06-backend-interface-module.md) | complete | Introduce C++ Backend lifecycle interface and shared status/result types. |
 | 7 | [eBPF Backend Module](refactor/modules/07-ebpf-backend-module.md) | complete | Adapt existing eBPF loader behind the Backend interface and keep it runnable. |
-| 8 | [Cache/DNS Module](refactor/modules/08-cache-dns-module.md) | in progress (8A through 8E correctness complete; PERF-M8-1 privileged smoke passed, canonical evidence pending) | Separate backend-neutral DNS/cache policy from eBPF storage details. |
-| 9 | [DPDK Backend Module](refactor/modules/09-dpdk-backend-module.md) | pending | Implement the DPDK backend after common interfaces are stable. |
+| 8 | [Cache/DNS Module](refactor/modules/08-cache-dns-module.md) | implementation complete (PERF-M8-1 deferred TODO) | Separate backend-neutral DNS/cache policy from eBPF storage details. |
+| 9 | [DPDK Backend Module](refactor/modules/09-dpdk-backend-module.md) | in progress | Implement the DPDK backend after common interfaces are stable. |
 | 10 | [Runtime Diagnostics/Logging](refactor/modules/10-runtime-diagnostics-logging.md) | pending | Centralize operator-facing diagnostics, warnings, and runtime logging after backend boundaries stabilize. |
 | 11 | [Test Suite Rewrite](refactor/modules/11-test-suite-rewrite.md) | pending | Rewrite unreliable legacy tests into module-focused regression tests as refactored modules stabilize. |
 
 Current active module:
 
-- [Module 8: Cache/DNS Module](refactor/modules/08-cache-dns-module.md)
+- [Module 9: DPDK Backend Module](refactor/modules/09-dpdk-backend-module.md)
 - Completed slice: 8A eBPF Resource Ownership (`EbpfNativeSession` design).
 - Completed slice: 8B Backend-neutral Cache Domain.
 - Completed slice: 8C DNS Policy Engine.
 - Completed slice: 8D eBPF Cache Store. Host Store, shared ABI, layout, fingerprint, Cache Hit vectors, Cache Time boundaries, and the privileged verifier feasibility gate pass on the MVP development host.
-- Completed implementation slice: 8E eBPF production cutover. The correlated XDP/TC packet path, fixed event ABI, synchronous Host Fill, Pending cleaner, operational shutdown loops, strict legacy deletion, root namespace integration, fuzz smoke, and Docker soak evidence are recorded in the Module 8 plan. The frozen `PERF-M8-1` harness and privileged smoke are complete, but Module 8 remains open for canonical new-system evidence. No product performance blocking line is set.
+- Completed implementation slice: 8E eBPF production cutover. The correlated XDP/TC packet path, fixed event ABI, synchronous Host Fill, Pending cleaner, operational shutdown loops, strict legacy deletion, root namespace integration, fuzz smoke, and Docker soak evidence are recorded in the Module 8 plan. The frozen `PERF-M8-1` harness and privileged smoke are complete. Canonical performance evidence is retained as a deferred TODO and does not block starting Module 9; no product performance blocking line is set.
+
+Deferred TODO carried forward:
+
+- Execute and archive the canonical five-round `PERF-M8-1` artifact after the DPDK backend work reaches a stable comparison point. Existing non-canonical artifacts remain exploratory evidence only.
 
 ## Test Policy During Refactor
 
