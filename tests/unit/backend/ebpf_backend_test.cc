@@ -327,10 +327,15 @@ TEST_CASE("make_backend dispatches the validated backend alternative") {
     CHECK(*backend != nullptr);
 
     const shinku::config::Config dpdk_config = {
-        .backend = shinku::config::DpdkConfig { .client_port = 0, .server_port = 1 },
+        .backend = shinku::config::DpdkBackendSelection {},
         .cache = cache_config(),
     };
-    auto unsupported = shinku::backend::make_backend(dpdk_config);
-    REQUIRE_FALSE(unsupported.has_value());
-    CHECK(unsupported.error().code == BackendErrorCode::Unsupported);
+    auto dpdk_backend = shinku::backend::make_backend(dpdk_config);
+    REQUIRE(dpdk_backend.has_value());
+    CHECK(*dpdk_backend != nullptr);
+
+    const std::array<std::string, 1> misplaced_dpdk_argument { "--no-huge" };
+    auto invalid_ebpf = shinku::backend::make_backend(config, misplaced_dpdk_argument);
+    REQUIRE_FALSE(invalid_ebpf.has_value());
+    CHECK(invalid_ebpf.error().code == BackendErrorCode::WrongConfig);
 }

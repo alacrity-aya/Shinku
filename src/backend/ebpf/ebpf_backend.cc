@@ -196,18 +196,18 @@ std::expected<void, BackendError> EbpfBackend::start() {
     return {};
 }
 
-std::expected<PollStatus, BackendError> EbpfBackend::poll() {
+std::expected<void, BackendError> EbpfBackend::poll() {
     auto log_result = native_session_->poll_log_ring(0);
     if (!log_result && is_interrupted(log_result.error()))
-        return PollStatus::NoWork;
+        return {};
 
     auto packet_result = native_session_->poll_packet_ring(static_cast<int>(config_.packet_poll_timeout().count()));
     if (!packet_result) {
         if (is_interrupted(packet_result.error()))
-            return PollStatus::NoWork;
+            return {};
         return operation_error(BackendErrorCode::PollFailed, "packet ring poll", packet_result.error());
     }
-    return *packet_result > 0 ? PollStatus::WorkDone : PollStatus::NoWork;
+    return {};
 }
 
 std::expected<void, BackendError> EbpfBackend::stop() {

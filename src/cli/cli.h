@@ -7,6 +7,7 @@
 #include <string>
 #include <string_view>
 #include <variant>
+#include <vector>
 
 namespace shinku::cli {
 
@@ -22,6 +23,7 @@ struct CliError {
 
 struct CliCommand {
     std::filesystem::path config_path;
+    std::vector<std::string> dpdk_arguments;
 };
 
 enum class CliAction : uint8_t {

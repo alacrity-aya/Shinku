@@ -27,6 +27,31 @@ TEST_CASE("CLI accepts the default config path") {
     const auto* command = std::get_if<shinku::cli::CliCommand>(&*result);
     REQUIRE(command != nullptr);
     CHECK(command->config_path == std::filesystem::path("./shinku.toml"));
+    CHECK(command->dpdk_arguments.empty());
+}
+
+TEST_CASE("CLI passes every argument after the separator to DPDK") {
+    auto result =
+        parse({ "shinku", "run", "--config", "dpdk.toml", "--", "--no-huge", "-a", "0000:03:00.0", "--log-level=8" });
+
+    REQUIRE(result.has_value());
+    const auto* command = std::get_if<shinku::cli::CliCommand>(&*result);
+    REQUIRE(command != nullptr);
+    CHECK(command->config_path == std::filesystem::path("dpdk.toml"));
+    CHECK(command->dpdk_arguments == std::vector<std::string> { "--no-huge", "-a", "0000:03:00.0", "--log-level=8" });
+}
+
+TEST_CASE("CLI keeps Shinku options before the separator") {
+    auto before_separator = parse({ "shinku", "run", "--unknown", "--", "--no-huge" });
+    auto after_separator = parse({ "shinku", "run", "--", "--config", "belongs-to-dpdk" });
+
+    REQUIRE_FALSE(before_separator.has_value());
+    CHECK(before_separator.error().code == shinku::cli::CliErrorCode::UnexpectedArgument);
+
+    REQUIRE(after_separator.has_value());
+    const auto& command = std::get<shinku::cli::CliCommand>(*after_separator);
+    CHECK(command.config_path == std::filesystem::path("./shinku.toml"));
+    CHECK(command.dpdk_arguments == std::vector<std::string> { "--config", "belongs-to-dpdk" });
 }
 
 TEST_CASE("CLI accepts an explicit config path") {

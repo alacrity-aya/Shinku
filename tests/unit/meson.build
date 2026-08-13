@@ -312,11 +312,33 @@ ebpf_backend_test_exe = executable(
     backend_src,
     cache_dns_policy_src,
     ebpf_backend_src,
+    dpdk_backend_src,
+    backend_creation_src,
     bpf_skel,
-    dependencies: [catch2_with_main_dep, libbpf_dep, libcap_dep],
+    dependencies: [catch2_with_main_dep, libbpf_dep, libcap_dep, spdlog_dep, dpdk_dep, rte_net_ring_dep],
     include_directories: inc_src,
+    build_rpath: dpdk_libdir,
+    link_args: dpdk_rpath_args,
     c_args: (bpf_log ? ['-DSHINKU_BPF_LOG_ENABLED=1'] : ['-DSHINKU_BPF_LOG_ENABLED=0']),
     cpp_args: (bpf_log ? ['-DSHINKU_BPF_LOG_ENABLED=1'] : ['-DSHINKU_BPF_LOG_ENABLED=0']),
 )
 
 test('eBPF Backend Test', ebpf_backend_test_exe)
+
+# ====================
+# C++ DPDK Backend Test
+# ====================
+dpdk_backend_test_exe = executable(
+    'dpdk_backend_test',
+    files(
+      'backend/dpdk_backend_test.cc',
+    ),
+    backend_src,
+    dpdk_backend_src,
+    dependencies: [catch2_with_main_dep, spdlog_dep, dpdk_dep, rte_net_ring_dep],
+    include_directories: inc_src,
+    build_rpath: dpdk_libdir,
+    link_args: dpdk_rpath_args,
+)
+
+test('DPDK Backend Test', dpdk_backend_test_exe)

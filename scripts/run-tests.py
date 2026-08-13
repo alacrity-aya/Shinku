@@ -26,6 +26,7 @@ UNPRIVILEGED_TESTS = (
     "Process Control Test",
     "Backend Runner Test",
     "eBPF Backend Test",
+    "DPDK Backend Test",
 )
 PRIVILEGED_TESTS = (
     "arena_list_test",
@@ -35,10 +36,10 @@ PRIVILEGED_TESTS = (
 )
 PROFILES = {
     "quick": ("build", "unit"),
-    "check": ("build", "unit", "privileged", "integration"),
-    "all": ("build", "unit", "privileged", "integration", "fuzz", "soak"),
+    "check": ("build", "unit", "privileged", "integration", "dpdk"),
+    "all": ("build", "unit", "privileged", "integration", "dpdk", "fuzz", "soak"),
 }
-SUITES = ("build", "unit", "privileged", "integration", "fuzz", "soak")
+SUITES = ("build", "unit", "privileged", "integration", "dpdk", "fuzz", "soak")
 
 
 class Runner:
@@ -96,6 +97,8 @@ class Runner:
             return self.run_privileged()
         if suite == "integration":
             return self.run_integration()
+        if suite == "dpdk":
+            return self.run_dpdk()
         if suite == "fuzz":
             return self.run_fuzz()
         if suite == "soak":
@@ -135,6 +138,19 @@ class Runner:
     def run_integration(self) -> bool:
         command = [sys.executable, str(PROJECT_ROOT / "tests/integration/test_dns_cache.py"), "-v"]
         return self.command("integration", command, root=True)
+
+    def run_dpdk(self) -> bool:
+        command = [
+            "meson",
+            "test",
+            "-C",
+            str(self.build_dir),
+            "--no-rebuild",
+            "--print-errorlogs",
+            "DPDK Ring Smoke Test",
+            "DPDK Port Count Test",
+        ]
+        return self.command("dpdk", command)
 
     def run_fuzz(self) -> bool:
         coredata = self.fuzz_build_dir / "meson-private" / "coredata.dat"
@@ -227,7 +243,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Configure, build, and run Shinku's local test layers.",
         epilog=(
-            "profiles: quick=build+unit; check=quick+privileged+integration; "
+            "profiles: quick=build+unit; check=quick+privileged+integration+dpdk; "
             "all=check+fuzz+soak"
         ),
     )

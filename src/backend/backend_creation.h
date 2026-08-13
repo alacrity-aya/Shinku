@@ -7,9 +7,12 @@
 
 #include <expected>
 #include <memory>
+#include <span>
+#include <string>
 
 namespace shinku::backend {
 
-[[nodiscard]] std::expected<std::unique_ptr<Backend>, BackendError> make_backend(const config::Config& config);
+[[nodiscard]] std::expected<std::unique_ptr<Backend>, BackendError>
+make_backend(const config::Config& config, std::span<const std::string> dpdk_arguments = {});
 
 } // namespace shinku::backend

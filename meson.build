@@ -23,7 +23,12 @@ tomlplusplus_dep = dependency(
   default_options : ['compile_library=false']
 )
 argparse_dep = dependency('argparse', fallback : ['argparse', 'argparse_dep'])
-spdlog_dep = dependency('spdlog', fallback : ['spdlog', 'spdlog_dep'])
+spdlog_dep = dependency('spdlog', version: '==1.17.0', fallback : ['spdlog', 'spdlog_dep'])
+dpdk_dep = dependency('libdpdk')
+dpdk_libdir = dpdk_dep.get_variable(pkgconfig: 'libdir')
+cpp_compiler = meson.get_compiler('cpp')
+rte_net_ring_dep = cpp_compiler.find_library('rte_net_ring', dirs: [dpdk_libdir])
+dpdk_rpath_args = ['-Wl,--disable-new-dtags']
 clang = find_program('clang')
 bpftool = find_program('bpftool')
 python3 = find_program('python3')
@@ -113,7 +118,6 @@ cache_dns_policy_src = files(
 )
 
 ebpf_backend_src = files(
-  'src/backend/backend_creation.cc',
   'src/backend/ebpf/ebpf_backend.cc',
   'src/backend/ebpf/cleanup_worker.cc',
   'src/backend/ebpf/ebpf_native_session.cc',
@@ -126,19 +130,33 @@ ebpf_backend_src = files(
   'src/backend/ebpf/cache/pending_query_cleaner.cc',
 )
 
+dpdk_backend_src = files(
+  'src/backend/dpdk/dpdk_backend.cc',
+  'src/backend/dpdk/dpdk_native_session.cc',
+  'src/backend/dpdk/dpdk_packet_path.cc',
+  'src/backend/dpdk/dpdk_scheduler.cc',
+)
+
+backend_creation_src = files(
+  'src/backend/backend_creation.cc',
+)
+
 cli_src = files(
   'src/cli/main.cc',
   'src/cli/cli.cc',
   'src/config/toml_loader.cc',
-) + process_control_src + backend_src + cache_dns_policy_src + ebpf_backend_src
+) + process_control_src + backend_src + cache_dns_policy_src + ebpf_backend_src + dpdk_backend_src + backend_creation_src
 
 executable(
   'shinku',
   cli_src,
   bpf_skel,
   version_header,
-  dependencies: [libbpf_dep, libcap_dep, tomlplusplus_dep, argparse_dep, spdlog_dep],
+  dependencies: [libbpf_dep, libcap_dep, tomlplusplus_dep, argparse_dep, spdlog_dep, dpdk_dep, rte_net_ring_dep],
   include_directories: inc_src,
+  build_rpath: dpdk_libdir,
+  install_rpath: dpdk_libdir,
+  link_args: dpdk_rpath_args,
   c_args: (bpf_log ? ['-DSHINKU_BPF_LOG_ENABLED=1'] : ['-DSHINKU_BPF_LOG_ENABLED=0']),
   cpp_args: (bpf_log ? ['-DSHINKU_BPF_LOG_ENABLED=1'] : ['-DSHINKU_BPF_LOG_ENABLED=0']),
   install: true
@@ -150,8 +168,10 @@ if build_benchmark_bin
     cli_src,
     bpf_skel,
     version_header,
-    dependencies: [libbpf_dep, libcap_dep, tomlplusplus_dep, argparse_dep, spdlog_dep],
+    dependencies: [libbpf_dep, libcap_dep, tomlplusplus_dep, argparse_dep, spdlog_dep, dpdk_dep, rte_net_ring_dep],
     include_directories: inc_src,
+    build_rpath: dpdk_libdir,
+    link_args: dpdk_rpath_args,
     c_args: [
       '-O3',
       '-DNDEBUG',
@@ -174,6 +194,7 @@ endif
 # Tests
 # ====================
 subdir('tests/unit')
+subdir('tests/integration')
 
 if dns_fuzzing
   subdir('tests/fuzz')

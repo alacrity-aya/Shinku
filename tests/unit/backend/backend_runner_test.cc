@@ -19,7 +19,6 @@ using shinku::backend::BackendError;
 using shinku::backend::BackendErrorCode;
 using shinku::backend::BackendRunner;
 using shinku::backend::BackendState;
-using shinku::backend::PollStatus;
 using shinku::backend::StopCondition;
 using shinku::backend::StopReason;
 using shinku::backend::StopRequest;
@@ -47,7 +46,7 @@ public:
 
     std::expected<void, BackendError> probe_result;
     std::expected<void, BackendError> start_result;
-    std::expected<PollStatus, BackendError> poll_result = PollStatus::NoWork;
+    std::expected<void, BackendError> poll_result;
     std::vector<std::expected<void, BackendError>> stop_results;
 
 protected:
@@ -63,7 +62,7 @@ protected:
         return start_result;
     }
 
-    std::expected<PollStatus, BackendError> poll() override {
+    std::expected<void, BackendError> poll() override {
         trace_->poll_calls++;
         trace_->calls.emplace_back("poll_once");
         return poll_result;

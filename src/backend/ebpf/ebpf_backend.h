@@ -27,7 +27,7 @@ public:
 protected:
     [[nodiscard]] std::expected<void, BackendError> probe() override;
     [[nodiscard]] std::expected<void, BackendError> start() override;
-    [[nodiscard]] std::expected<PollStatus, BackendError> poll() override;
+    [[nodiscard]] std::expected<void, BackendError> poll() override;
     [[nodiscard]] std::expected<void, BackendError> stop() override;
 
 private:

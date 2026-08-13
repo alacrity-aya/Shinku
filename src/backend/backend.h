@@ -17,11 +17,6 @@ enum class BackendState : uint8_t {
     Failed,
 };
 
-enum class PollStatus : uint8_t {
-    WorkDone,
-    NoWork,
-};
-
 class Backend {
 public:
     friend class BackendRunner;
@@ -37,7 +32,7 @@ protected:
 
     [[nodiscard]] virtual std::expected<void, BackendError> probe() = 0;
     [[nodiscard]] virtual std::expected<void, BackendError> start() = 0;
-    [[nodiscard]] virtual std::expected<PollStatus, BackendError> poll() = 0;
+    [[nodiscard]] virtual std::expected<void, BackendError> poll() = 0;
     [[nodiscard]] virtual std::expected<void, BackendError> stop() = 0;
 };
 

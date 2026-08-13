@@ -189,12 +189,35 @@ pending_query_timeout = "2s"
     CHECK(sink.messages().empty());
 }
 
-TEST_CASE("valid DPDK config loads") {
+TEST_CASE("DPDK backend selection needs no DPDK TOML table") {
     const auto path = write_config(
         "valid-dpdk.toml",
         R"(backend = "dpdk"
 
+[cache]
+max_entries = 1024
+max_response_bytes = 512
+cache_negative = false
+max_pending_queries = 256
+pending_query_timeout = "100ms"
+)"
+    );
+
+    CapturingSink sink;
+    auto result = shinku::config::load_config(path, sink);
+
+    REQUIRE(result.has_value());
+    CHECK(std::holds_alternative<shinku::config::DpdkBackendSelection>(result->backend));
+    CHECK(sink.messages().empty());
+}
+
+TEST_CASE("obsolete DPDK TOML fields are temporarily ignored") {
+    const auto path = write_config(
+        "obsolete-dpdk-fields.toml",
+        R"(backend = "dpdk"
+
 [dpdk]
+memory_mode = "no_huge"
 client_port = 0
 server_port = 1
 
@@ -211,11 +234,8 @@ pending_query_timeout = "100ms"
     auto result = shinku::config::load_config(path, sink);
 
     REQUIRE(result.has_value());
-    REQUIRE(std::holds_alternative<shinku::config::DpdkConfig>(result->backend));
-
-    const auto& dpdk = std::get<shinku::config::DpdkConfig>(result->backend);
-    CHECK(dpdk.client_port == 0);
-    CHECK(dpdk.server_port == 1);
+    CHECK(std::holds_alternative<shinku::config::DpdkBackendSelection>(result->backend));
+    CHECK(sink.messages().empty());
 }
 
 TEST_CASE("unselected backend can be incomplete and is not retained") {
@@ -395,40 +415,10 @@ pending_query_timeout = "10ms"
     REQUIRE(sink.messages().size() == 1);
 }
 
-TEST_CASE("invalid DPDK port pair fails") {
-    const auto path = write_config(
-        "bad-dpdk.toml",
-        R"(backend = "dpdk"
-
-[dpdk]
-client_port = 7
-server_port = 7
-
-[cache]
-max_entries = 1024
-max_response_bytes = 512
-cache_negative = true
-max_pending_queries = 256
-pending_query_timeout = "2s"
-)"
-    );
-
-    CapturingSink sink;
-    auto result = shinku::config::load_config(path, sink);
-
-    REQUIRE_FALSE(result.has_value());
-    CHECK(result.error().code == shinku::config::ConfigErrorCode::ValidationError);
-    CHECK(result.error().message.contains("dpdk.server_port"));
-}
-
 TEST_CASE("cache response limit enforces the DNS profile range") {
     const auto path = write_config(
         "bad-response-limit.toml",
         R"(backend = "dpdk"
-
-[dpdk]
-client_port = 0
-server_port = 1
 
 [cache]
 max_entries = 1
@@ -452,10 +442,6 @@ TEST_CASE("pending query capacity must be positive") {
         "bad-pending-capacity.toml",
         R"(backend = "dpdk"
 
-[dpdk]
-client_port = 0
-server_port = 1
-
 [cache]
 max_entries = 1
 max_response_bytes = 128
@@ -477,10 +463,6 @@ TEST_CASE("pending query timeout enforces its inclusive range") {
     const auto path = write_config(
         "bad-pending-timeout.toml",
         R"(backend = "dpdk"
-
-[dpdk]
-client_port = 0
-server_port = 1
 
 [cache]
 max_entries = 1

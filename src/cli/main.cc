@@ -52,7 +52,7 @@ int run_application(int argc, char** argv) {
         return 1;
     }
 
-    auto selected_backend = shinku::backend::make_backend(*config);
+    auto selected_backend = shinku::backend::make_backend(*config, command.dpdk_arguments);
     if (!selected_backend) {
         std::println(stderr, "error: {}", selected_backend.error().message);
         return 1;

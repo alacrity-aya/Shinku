@@ -64,10 +64,7 @@ private:
     std::chrono::milliseconds packet_poll_timeout_;
 };
 
-struct DpdkConfig {
-    uint16_t client_port;
-    uint16_t server_port;
-};
+struct DpdkBackendSelection {};
 
 class CacheConfig {
 public:
@@ -131,7 +128,7 @@ private:
     std::chrono::milliseconds pending_query_timeout_;
 };
 
-using BackendConfig = std::variant<EbpfConfig, DpdkConfig>;
+using BackendConfig = std::variant<EbpfConfig, DpdkBackendSelection>;
 
 struct Config {
     BackendConfig backend;

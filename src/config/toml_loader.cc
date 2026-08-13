@@ -185,8 +185,7 @@ void warn_unknown_keys(const toml::table& root, DiagnosticSink& sink, const std:
     if (const toml::table* ebpf = subtable(root, "ebpf"); ebpf != nullptr)
         warn_unknown_keys(*ebpf, "ebpf", { "iface", "cleanup_interval", "packet_poll_timeout" }, sink, path);
 
-    if (const toml::table* dpdk = subtable(root, "dpdk"); dpdk != nullptr)
-        warn_unknown_keys(*dpdk, "dpdk", { "client_port", "server_port" }, sink, path);
+    // TODO: Decide how obsolete [dpdk] tables should be diagnosed when the final DPDK configuration model is added.
 
     if (const toml::table* cache = subtable(root, "cache"); cache != nullptr)
         warn_unknown_keys(
@@ -415,35 +414,6 @@ parse_ebpf_config(const toml::table& root, const std::filesystem::path& path, Di
     return std::move(*ebpf_config);
 }
 
-std::expected<DpdkConfig, ConfigError>
-parse_dpdk_config(const toml::table& root, const std::filesystem::path& path, DiagnosticSink& sink) {
-    const toml::table* dpdk = subtable(root, "dpdk");
-    if (dpdk == nullptr)
-        return emit_error(sink, ConfigErrorCode::SchemaError, path, "missing required table dpdk");
-
-    auto client_port = require_unsigned<uint16_t>(*dpdk, "client_port", "dpdk.client_port", path, sink);
-    if (!client_port)
-        return std::unexpected(client_port.error());
-
-    auto server_port = require_unsigned<uint16_t>(*dpdk, "server_port", "dpdk.server_port", path, sink);
-    if (!server_port)
-        return std::unexpected(server_port.error());
-
-    if (*client_port == *server_port) {
-        return emit_error(
-            sink,
-            ConfigErrorCode::ValidationError,
-            path,
-            "invalid dpdk.server_port: server_port must differ from client_port"
-        );
-    }
-
-    return DpdkConfig {
-        .client_port = *client_port,
-        .server_port = *server_port,
-    };
-}
-
 } // namespace
 
 void StderrDiagnosticSink::warning(const ConfigWarning& warning) {
@@ -486,14 +456,11 @@ std::expected<Config, ConfigError> load_config(const std::filesystem::path& path
         };
     }
 
-    auto dpdk = parse_dpdk_config(*root, path, sink);
-    if (!dpdk)
-        return std::unexpected(dpdk.error());
     auto cache = parse_cache_config(*root, path, sink);
     if (!cache)
         return std::unexpected(cache.error());
     return Config {
-        .backend = *dpdk,
+        .backend = DpdkBackendSelection {},
         .cache = *cache,
     };
 }
