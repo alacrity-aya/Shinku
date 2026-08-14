@@ -45,6 +45,7 @@ from perf_m8_lib import (
     render_shinku_config,
     sha256_file,
 )
+from perf_m8_report import write_run_report
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -64,6 +65,16 @@ ROLE_CPUS = {
     "dnsmasq": (10,),
     "sampler": (12,),
 }
+
+
+def generate_html_report(run_dir: Path) -> Path | None:
+    try:
+        report = write_run_report(run_dir)
+    except (OSError, ValueError) as error:
+        print(f"PERF-M8-1: could not generate HTML report: {error}", file=sys.stderr)
+        return None
+    print(f"Benchmark HTML report: {report}")
+    return report
 
 
 class BenchmarkFailure(RuntimeError):
@@ -398,14 +409,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dnsperf-binary", type=Path, default=Path(shutil.which("dnsperf") or "dnsperf"))
     parser.add_argument("--results-root", type=Path, default=DEFAULT_RESULTS)
     parser.add_argument("--smoke", action="store_true", help="run one short non-canonical harness smoke preset")
+    parser.add_argument(
+        "--capacity",
+        action="store_true",
+        help="request unlimited-load capacity mode; requires an independent load-generator adapter",
+    )
     parser.add_argument("--skip-check", action="store_true", help="skip run-tests.py check; non-canonical")
     parser.add_argument("--skip-smoke", action="store_true", help="skip the pre-run harness smoke; non-canonical")
     parser.add_argument("--skip-correctness", action="store_true", help="skip DNS correctness probes; non-canonical")
     parser.add_argument("--disable-offloads", action="store_true", help="disable veth offloads; non-canonical")
-    parser.add_argument("--rounds", type=int, default=5)
-    parser.add_argument("--warmup-seconds", type=float, default=5.0)
-    parser.add_argument("--measurement-seconds", type=float, default=30.0)
-    parser.add_argument("--calibration-seconds", type=float, default=5.0)
+    parser.add_argument("--rounds", type=int, default=3)
+    parser.add_argument("--warmup-seconds", type=float, default=10.0)
+    parser.add_argument("--measurement-seconds", type=float, default=10.0)
+    parser.add_argument("--calibration-seconds", type=float, default=2.0)
     parser.add_argument("--trace-length", type=int, default=CANONICAL_TRACE_LENGTH)
     parser.add_argument("--hotset-size", type=int, default=CANONICAL_HOTSET_SIZE)
     parser.add_argument("--zipf-s", type=float, default=CANONICAL_ZIPF_S)
@@ -421,13 +437,49 @@ def validate_args(args: argparse.Namespace) -> None:
         raise BenchmarkFailure("rounds and durations must be positive; warmup may be zero only for smoke")
     if args.trace_length <= 0 or args.hotset_size <= 0 or args.zipf_s <= 0:
         raise BenchmarkFailure("trace length, hotset size, and Zipf s must be positive")
+    if args.capacity:
+        raise BenchmarkFailure(
+            "capacity mode requires an independent load-generator adapter; "
+            "the local veth runner only supports the fixed-load profile"
+        )
+
+
+def effective_settings(args: argparse.Namespace) -> dict[str, Any]:
+    if args.smoke:
+        rounds, warmup, measurement, calibration = 1, 1.0, 1.0, 1.0
+    elif args.capacity:
+        rounds = args.rounds
+        warmup = args.warmup_seconds
+        measurement = args.measurement_seconds
+        calibration = args.calibration_seconds
+    else:
+        rounds = args.rounds
+        warmup = args.warmup_seconds
+        measurement = args.measurement_seconds
+        calibration = args.calibration_seconds
+    return {
+        "mode": "profile",
+        "rounds": rounds,
+        "warmup_seconds": warmup,
+        "measurement_seconds": measurement,
+        "calibration_seconds": calibration,
+        "temperature_limit": args.temperature_limit,
+        "temperature_wait": args.temperature_wait,
+        "order_seed": args.order_seed,
+        "disable_offloads": args.disable_offloads,
+        "smoke": args.smoke,
+        "skip_correctness": args.skip_correctness,
+        "run_smoke_gate": not args.skip_smoke and not args.smoke,
+    }
 
 
 def main() -> int:
     run_dir: Path | None = None
+    html_report_generated = False
     try:
         args = parse_args()
         validate_args(args)
+        settings = effective_settings(args)
         for command in (
             "git",
             "meson",
@@ -460,28 +512,24 @@ def main() -> int:
             noncanonical_reason = "temperature override"
         else:
             noncanonical_reason = None
-        canonical = not any(
-            (
-                args.allow_dirty,
-                args.smoke,
-                args.skip_check,
-                args.skip_smoke,
-                args.skip_correctness,
-                args.disable_offloads,
-                args.coredns_source.resolve() != DEFAULT_COREDNS_SOURCE.resolve(),
-                args.build_dir.resolve() != DEFAULT_PERF_BUILD.resolve(),
-                args.rounds != 5,
-                args.warmup_seconds != 5.0,
-                args.measurement_seconds != 30.0,
-                args.calibration_seconds != 5.0,
-                args.trace_length != CANONICAL_TRACE_LENGTH,
-                args.hotset_size != CANONICAL_HOTSET_SIZE,
-                args.zipf_s != CANONICAL_ZIPF_S,
-                args.trace_seed != CANONICAL_TRACE_SEED,
-                args.order_seed != CANONICAL_ORDER_SEED,
-                noncanonical_reason is not None,
-            )
-        )
+        canonical = False
+        canonical_reasons = ["local fixed-load profile is non-canonical; capacity adapter is not configured"]
+        if args.capacity:
+            canonical_reasons = ["capacity mode requires an independent load-generator adapter"]
+        if args.allow_dirty:
+            canonical_reasons.append("dirty worktree override")
+        if args.smoke:
+            canonical_reasons.append("smoke preset")
+        if args.skip_check:
+            canonical_reasons.append("correctness check skipped")
+        if args.skip_smoke:
+            canonical_reasons.append("smoke gate skipped")
+        if args.skip_correctness:
+            canonical_reasons.append("correctness probes skipped")
+        if args.disable_offloads:
+            canonical_reasons.append("offload override")
+        if noncanonical_reason is not None:
+            canonical_reasons.append(noncanonical_reason)
         run_id = datetime.now(timezone.utc).strftime("perf-m8-1-%Y%m%d-%H%M%S") + f"-{os.getpid()}"
         run_dir = (args.results_root / run_id).resolve()
         run_dir.mkdir(parents=True, exist_ok=False)
@@ -526,7 +574,7 @@ def main() -> int:
                 "run_id": run_id,
                 "created_at_utc": datetime.now(timezone.utc).isoformat(),
                 "canonical_eligible": canonical,
-                "canonical_reasons": [] if canonical else ["one or more override/dirty/skip flags were supplied"],
+                "canonical_reasons": canonical_reasons,
                 "source": {"repository": repository, "coredns": coredns_source_info, "shinku": shinku},
                 "environment": environment_manifest(),
                 "tools": {"dnsperf_probe": dnsperf_probe},
@@ -540,19 +588,7 @@ def main() -> int:
                     }
                     for name, workload in workloads.items()
                 },
-                "settings": {
-                    "rounds": 1 if args.smoke else args.rounds,
-                    "warmup_seconds": 1.0 if args.smoke else args.warmup_seconds,
-                    "measurement_seconds": 1.0 if args.smoke else args.measurement_seconds,
-                    "calibration_seconds": 1.0 if args.smoke else args.calibration_seconds,
-                    "temperature_limit": args.temperature_limit,
-                    "temperature_wait": args.temperature_wait,
-                    "order_seed": args.order_seed,
-                    "disable_offloads": args.disable_offloads,
-                    "smoke": args.smoke,
-                    "skip_correctness": args.skip_correctness,
-                    "run_smoke_gate": not args.skip_smoke and not args.smoke,
-                },
+                "settings": settings,
             },
         )
         request = {
@@ -569,19 +605,7 @@ def main() -> int:
             "records_path": str(records_path),
             "dnsmasq_args": render_dnsmasq_args(hosts_path),
             "workloads": {name: str(workload.trace_path) for name, workload in workloads.items()},
-            "settings": {
-                "rounds": 1 if args.smoke else args.rounds,
-                "warmup_seconds": 1.0 if args.smoke else args.warmup_seconds,
-                "measurement_seconds": 1.0 if args.smoke else args.measurement_seconds,
-                "calibration_seconds": 1.0 if args.smoke else args.calibration_seconds,
-                "temperature_limit": args.temperature_limit,
-                "temperature_wait": args.temperature_wait,
-                "order_seed": args.order_seed,
-                "disable_offloads": args.disable_offloads,
-                "smoke": args.smoke,
-                "skip_correctness": args.skip_correctness,
-                "run_smoke_gate": not args.skip_smoke and not args.smoke,
-            },
+            "settings": settings,
             "smoke_records_path": str(run_dir / "generated" / "smoke-records.json"),
         }
         smoke_names = [f"name{index:04d}.perf.test." for index in range(min(16, effective_hotset_size))]
@@ -600,7 +624,20 @@ def main() -> int:
         worker_result_path = run_dir / "worker-result.json"
         if worker_result_path.is_file():
             final_manifest["worker_result"] = json.loads(worker_result_path.read_text(encoding="utf-8"))
+        elif worker_result.returncode != 0:
+            dump_json(
+                run_dir / "orchestrator-failure.json",
+                {
+                    "complete": False,
+                    "error": (
+                        "privileged benchmark worker exited with status "
+                        f"{worker_result.returncode} before producing worker-result.json"
+                    ),
+                    "type": "WorkerLaunchFailure",
+                },
+            )
         dump_json(run_dir / "manifest.json", final_manifest)
+        html_report_generated = generate_html_report(run_dir) is not None
         if worker_result.returncode in (130, -signal.SIGINT):
             print(f"PERF-M8-1: benchmark interrupted; incomplete artifacts: {run_dir}", file=sys.stderr)
             return 130
@@ -615,12 +652,30 @@ def main() -> int:
         print(f"Benchmark artifacts: {run_dir}")
         return 0
     except BenchmarkFailure as error:
+        if run_dir is not None and not html_report_generated:
+            dump_json(
+                run_dir / "orchestrator-failure.json",
+                {"complete": False, "error": str(error), "type": type(error).__name__},
+            )
+            generate_html_report(run_dir)
         print(f"PERF-M8-1: {error}", file=sys.stderr)
         return 2
     except Exception as error:
+        if run_dir is not None and not html_report_generated:
+            dump_json(
+                run_dir / "orchestrator-failure.json",
+                {"complete": False, "error": str(error), "type": type(error).__name__},
+            )
+            generate_html_report(run_dir)
         print(f"PERF-M8-1 unexpected failure: {error}", file=sys.stderr)
         return 2
     except KeyboardInterrupt:
+        if run_dir is not None and not html_report_generated:
+            dump_json(
+                run_dir / "orchestrator-failure.json",
+                {"complete": False, "error": "benchmark interrupted by user", "type": "KeyboardInterrupt"},
+            )
+            generate_html_report(run_dir)
         location = f"; incomplete artifacts: {run_dir}" if run_dir is not None else ""
         print(f"PERF-M8-1: benchmark interrupted{location}", file=sys.stderr)
         return 130

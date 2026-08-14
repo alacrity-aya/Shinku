@@ -9,6 +9,8 @@ from pathlib import Path
 import sys
 from typing import Any
 
+from perf_m8_lib import summarize_group
+
 
 SCENARIO_ORDER = (
     "native-off-shinku-off",
@@ -29,8 +31,8 @@ def resolve_summary_path(value: Path) -> Path:
 
 def build_report_data(summary: dict[str, Any], source: Path) -> dict[str, Any]:
     groups = summary.get("groups")
-    if not isinstance(groups, dict) or not groups:
-        raise ValueError("summary.json has no benchmark groups")
+    if not isinstance(groups, dict):
+        raise ValueError("benchmark summary groups must be an object")
 
     compact_groups: list[dict[str, Any]] = []
     for group_name, metrics in groups.items():
@@ -63,13 +65,152 @@ def build_report_data(summary: dict[str, Any], source: Path) -> dict[str, Any]:
         "complete": bool(summary.get("complete")),
         "canonical_eligible": bool(summary.get("canonical_eligible")),
         "round_count": summary.get("round_count", 0),
+        "contaminated_attempt_count": summary.get("contaminated_attempt_count", 0),
+        "contaminated_attempts": summary.get("contaminated_attempts", []),
         "tc_modes": summary.get("tc_modes", []),
-        "common_load_qps": summary.get("common_load_qps", {}),
-        "common_driver_scenarios": summary.get("common_driver_scenarios", {}),
-        "capacity_unstable": summary.get("capacity_unstable", {}),
+        "profile_target_qps": summary.get("profile_target_qps", {}),
+        "profile_driver_scenarios": summary.get("profile_driver_scenarios", {}),
+        "profile_unstable": summary.get("profile_unstable", {}),
         "calibrations": summary.get("calibrations", {}),
+        "failure": summary.get("failure"),
+        "analysis": summary.get("analysis", {}),
         "groups": compact_groups,
     }
+
+
+def _read_json(path: Path) -> Any | None:
+    if not path.is_file():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _partial_summary(run_dir: Path) -> dict[str, Any]:
+    manifest = _read_json(run_dir / "manifest.json") or {}
+    failure = (
+        _read_json(run_dir / "failure.json")
+        or _read_json(run_dir / "orchestrator-failure.json")
+        or _read_json(run_dir / "worker-result.json")
+        or {"type": "IncompleteRun", "error": "benchmark did not produce a completion summary"}
+    )
+    round_files = sorted((run_dir / "rounds").glob("**/round.json")) if (run_dir / "rounds").is_dir() else []
+    rounds = [value for path in round_files if isinstance((value := _read_json(path)), dict)]
+    formal_rounds = [run for run in rounds if run.get("phase") != "smoke"]
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for run in (candidate for candidate in formal_rounds if candidate.get("valid", False)):
+        if not all(key in run for key in ("workload", "phase", "scenario", "dnsperf", "cpu", "hit_ratio")):
+            continue
+        run.setdefault("paired_whole_host_delta", None)
+        key = f"{run['workload']}/{run['phase']}/{run['scenario']}"
+        groups.setdefault(key, []).append(run)
+    summaries = {}
+    for key, values in sorted(groups.items()):
+        try:
+            summaries[key] = summarize_group(values)
+        except (KeyError, TypeError, ValueError):
+            continue
+    invalid_rounds = [run for run in formal_rounds if not run.get("valid", False)]
+    analysis = {
+        "completed_rounds": sum(1 for run in formal_rounds if run.get("valid", False)),
+        "invalid_rounds": len(invalid_rounds),
+        "dnsperf_lost": sum(int(run.get("dnsperf", {}).get("lost", 0)) for run in formal_rounds),
+        "last_artifact": str(round_files[-1].parent) if round_files else None,
+        "failed_attempts": [
+            {
+                "workload": run.get("workload"),
+                "phase": run.get("phase"),
+                "round": run.get("round"),
+                "scenario": run.get("scenario"),
+                "lost": run.get("dnsperf", {}).get("lost"),
+                "classification": run.get("network_diagnostics", {}).get("classification"),
+                "artifact_directory": run.get("artifact_directory"),
+            }
+            for run in invalid_rounds
+        ],
+    }
+    settings = manifest.get("settings", {}) if isinstance(manifest, dict) else {}
+    profile_targets = _read_json(run_dir / "profile-targets.json") or {}
+    calibrations = _read_json(run_dir / "calibration.json")
+    if not isinstance(calibrations, dict):
+        calibrations = {}
+        calibration_root = run_dir / "calibration"
+        result_files = sorted(calibration_root.glob("*/*/result.json")) if calibration_root.is_dir() else []
+        for result_path in result_files:
+            result = _read_json(result_path)
+            if isinstance(result, dict):
+                workload_name = result_path.parents[1].name
+                scenario_name = result_path.parent.name
+                calibrations.setdefault(workload_name, {})[scenario_name] = result
+    return {
+        "complete": False,
+        "canonical_eligible": False,
+        "round_count": analysis["completed_rounds"],
+        "contaminated_attempt_count": 0,
+        "tc_modes": sorted({run["tc_mode"] for run in formal_rounds if run.get("tc_mode")}),
+        "profile_target_qps": {
+            workload: target["qps"]
+            for workload, target in profile_targets.items()
+            if isinstance(target, dict) and "qps" in target
+        },
+        "profile_driver_scenarios": {
+            workload: target["driver_scenario"]
+            for workload, target in profile_targets.items()
+            if isinstance(target, dict) and "driver_scenario" in target
+        },
+        "profile_unstable": {},
+        "calibrations": calibrations,
+        "groups": summaries,
+        "failure": failure,
+        "analysis": {**analysis, "mode": settings.get("mode")},
+    }
+
+
+def write_run_report(run_directory: Path, output_path: Path | None = None) -> Path:
+    run_dir = run_directory.expanduser().resolve()
+    summary_path = run_dir / "summary.json"
+    summary = _read_json(summary_path)
+    if not isinstance(summary, dict):
+        summary = _partial_summary(run_dir)
+        source = next(
+            (
+                path
+                for path in (
+                    run_dir / "failure.json",
+                    run_dir / "orchestrator-failure.json",
+                    run_dir / "worker-result.json",
+                )
+                if path.is_file()
+            ),
+            run_dir / "failure.json",
+        )
+    else:
+        source = summary_path
+        failure = _read_json(run_dir / "failure.json") or _read_json(run_dir / "orchestrator-failure.json")
+        if isinstance(failure, dict):
+            summary = {**summary, "complete": False, "failure": failure}
+        elif not summary.get("complete", False):
+            unstable = [key for key, value in summary.get("profile_unstable", {}).items() if value]
+            if unstable:
+                failure = {
+                    "type": "ProfileInstability",
+                    "error": "profile QPS coefficient of variation exceeded 5%: " + ", ".join(unstable),
+                }
+            elif len(summary.get("tc_modes", [])) > 1:
+                failure = {
+                    "type": "HookModeInstability",
+                    "error": "multiple TC attachment modes were observed: " + ", ".join(summary["tc_modes"]),
+                }
+            else:
+                failure = {
+                    "type": "IncompleteSummary",
+                    "error": "one or more aggregate completion gates failed",
+                }
+            summary = {**summary, "failure": failure}
+    destination = output_path.expanduser().resolve() if output_path else run_dir / "report.html"
+    destination.write_text(render_html(build_report_data(summary, source)), encoding="utf-8")
+    return destination
 
 
 def render_html(report_data: dict[str, Any]) -> str:
@@ -94,11 +235,15 @@ def write_report(summary_path: Path, output_path: Path | None = None) -> Path:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Render a self-contained PERF-M8-1 HTML report.")
-    parser.add_argument("summary", type=Path, help="summary.json or its benchmark result directory")
+    parser.add_argument("summary", type=Path, help="summary.json or benchmark result directory")
     parser.add_argument("-o", "--output", type=Path, help="output path (default: report.html beside summary.json)")
     arguments = parser.parse_args(argv)
     try:
-        destination = write_report(arguments.summary, arguments.output)
+        destination = (
+            write_run_report(arguments.summary, arguments.output)
+            if arguments.summary.is_dir()
+            else write_report(arguments.summary, arguments.output)
+        )
     except (OSError, ValueError) as error:
         parser.error(str(error))
     print(destination)
@@ -265,7 +410,7 @@ const seriesColors = ['#087f72','#d85b43','#c88a10','#3975b7'];
 const workloads = [...new Set(report.groups.map(g => g.workload))];
 const phases = [...new Set(report.groups.map(g => g.phase))];
 let selectedWorkload = workloads[0];
-let selectedPhase = phases.includes('capacity') ? 'capacity' : phases[0];
+let selectedPhase = phases.includes('profile') ? 'profile' : phases[0];
 
 const number = (value, digits = 0) => value == null || !Number.isFinite(Number(value)) ? 'N/A' : Number(value).toLocaleString(undefined, {maximumFractionDigits: digits, minimumFractionDigits: digits});
 const percent = value => value == null ? 'N/A' : number(Number(value) * 100, 2) + '%';
@@ -289,7 +434,8 @@ function renderHeader() {
   const badges = [
     `<span class="badge ${report.complete ? 'good' : 'warn'}">${report.complete ? 'Complete' : 'Incomplete'}</span>`,
     `<span class="badge ${report.canonical_eligible ? 'good' : 'warn'}">${report.canonical_eligible ? 'Canonical eligible' : 'Non-canonical'}</span>`,
-    `<span class="badge">${number(report.round_count)} rounds</span>`
+    `<span class="badge">${number(report.round_count)} rounds</span>`,
+    `<span class="badge ${report.contaminated_attempt_count ? 'warn' : ''}">${number(report.contaminated_attempt_count)} contaminated retries</span>`
   ];
   document.getElementById('statusline').innerHTML = badges.join('');
   document.getElementById('source').textContent = report.source;
@@ -298,12 +444,12 @@ function renderHeader() {
 function renderKpis(groups) {
   const best = groups.reduce((a, b) => metric(a, 'qps_median') > metric(b, 'qps_median') ? a : b);
   const lowestP99 = groups.reduce((a, b) => metric(a, 'latency_p99_seconds') < metric(b, 'latency_p99_seconds') ? a : b);
-  const target = report.common_load_qps[selectedWorkload];
-  const unstable = Object.entries(report.capacity_unstable).filter(([key, value]) => value && key.startsWith(selectedWorkload + '/')).length;
+  const target = (report.profile_target_qps || {})[selectedWorkload];
+  const unstable = Object.entries(report.profile_unstable || {}).filter(([key, value]) => value && key.startsWith(selectedWorkload + '/')).length;
   const cards = [
     ['Top throughput', number(metric(best, 'qps_median')), scenarioLabels[best.scenario] + ' QPS'],
     ['Lowest p99', ms(metric(lowestP99, 'latency_p99_seconds')) + ' ms', scenarioLabels[lowestP99.scenario]],
-    ['Common load', target == null ? 'N/A' : number(target), report.common_driver_scenarios[selectedWorkload] ? 'driver: ' + scenarioLabels[report.common_driver_scenarios[selectedWorkload]] : 'capacity phase'],
+    ['Profile load', target == null ? 'N/A' : number(target), report.profile_driver_scenarios[selectedWorkload] ? 'driver: ' + scenarioLabels[report.profile_driver_scenarios[selectedWorkload]] : 'calibration unavailable'],
     ['Stability', unstable ? unstable + ' unstable' : 'Stable', report.tc_modes.length ? 'TC: ' + report.tc_modes.join(', ') : 'TC mode unavailable']
   ];
   document.getElementById('kpis').innerHTML = cards.map(c => `<div class="kpi"><div class="label">${c[0]}</div><div class="value">${c[1]}</div><div class="detail">${c[2]}</div></div>`).join('');
@@ -345,7 +491,13 @@ function barChart(target, groups, series, options = {}) {
 
 function renderOverview() {
   const groups = currentGroups();
-  if (!groups.length) return;
+  if (!groups.length) {
+    const failure = report.failure || {};
+    const analysis = report.analysis || {};
+    document.getElementById('comparison-context').textContent = 'No completed formal scenario groups';
+    document.getElementById('findings').innerHTML = `<div class="finding warn"><strong>Benchmark incomplete</strong>${failure.type || 'IncompleteRun'}: ${failure.error || 'no completion summary was produced'}<br>Completed rounds: ${number(analysis.completed_rounds)} · Invalid rounds: ${number(analysis.invalid_rounds)} · dnsperf lost: ${number(analysis.dnsperf_lost)}</div>`;
+    return;
+  }
   renderKpis(groups);
   document.getElementById('comparison-context').textContent = `${selectedWorkload} workload · ${selectedPhase} load · ${groups[0].metrics.rounds} round(s) per scenario`;
   barChart('qps-chart', groups, [{label:'Median QPS', color:'#087f72', value:g=>metric(g,'qps_median'), format:v=>number(v)}], {tick:v=>number(v/1000)+'k', aria:'Median QPS by scenario'});
@@ -369,10 +521,12 @@ function renderOverview() {
   const gain = baseline ? metric(fastest,'qps_median') / metric(baseline,'qps_median') : null;
   const shinkuDeltas = groups.filter(g=>g.metrics.paired_whole_host_delta_median != null);
   const bestDelta = shinkuDeltas.length ? shinkuDeltas.reduce((a,b)=>metric(a,'paired_whole_host_delta_median')<metric(b,'paired_whole_host_delta_median')?a:b) : null;
+  const failure = report.failure;
   document.getElementById('findings').innerHTML = [
+    failure ? `<div class="finding warn"><strong>Benchmark incomplete</strong>${failure.type || 'Failure'}: ${failure.error || 'no error detail'} · completed rounds ${number(report.analysis?.completed_rounds)} · invalid rounds ${number(report.analysis?.invalid_rounds)} · dnsperf lost ${number(report.analysis?.dnsperf_lost)}</div>` : '',
     `<div class="finding"><strong>${scenarioLabels[fastest.scenario]} leads throughput</strong>${number(metric(fastest,'qps_median'))} QPS${gain ? ', ' + number(gain,2) + '× the uncached baseline' : ''}.</div>`,
     bestDelta ? `<div class="finding"><strong>Lowest paired host demand</strong>${scenarioLabels[bestDelta.scenario]} changes whole-host demand by ${number(metric(bestDelta,'paired_whole_host_delta_median'),3)} mean cores.</div>` : `<div class="finding warn"><strong>Paired host delta unavailable</strong>No Shinku pairing is present for this selection.</div>`
-  ].join('');
+  ].filter(Boolean).join('');
 }
 
 function calibrationChart(target, calibration) {

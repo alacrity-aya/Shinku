@@ -9,11 +9,14 @@ considered complete.
 If an implementation-time tool or kernel fact makes a frozen decision infeasible, reopen only that decision with
 recorded evidence rather than silently changing the measurement Contract.
 
-Implementation lives in `tests/benchmark/perf_m8_lib.py`, `perf_m8_worker.py`, and `run_perf_m8.py`, with focused
-unprivileged tests in `perf_m8_test.py`. The harness builds `build-perf/shinku_bench` and the pinned CoreDNS source,
-generates deterministic workloads/configs, performs preflight and capability probes before topology creation, then
-hands the complete run to one privileged worker. The worker owns topology and process cleanup and writes raw interval
-artifacts plus aggregate JSON and Markdown reports.
+Implementation lives under `tests/benchmark/`: `run_perf_m8.py` owns unprivileged preflight/build work;
+`perf_m8_worker.py` owns privileged topology and run orchestration; `perf_m8_runtime.py` owns process, hook,
+temperature, CPU, and network adapters; `perf_m8_dns.py` owns correctness probes; `perf_m8_driver.py` owns dnsperf
+calibration and load policy; `perf_m8_scenario.py` owns one complete measured scenario; and `perf_m8_lib.py` retains
+shared pure data/report helpers. Focused unprivileged tests live in `perf_m8_test.py`. The harness builds
+`build-perf/shinku_bench` and the pinned CoreDNS source, generates deterministic workloads/configs, performs preflight
+and capability probes before topology creation, then hands the complete run to one privileged worker. The worker owns
+topology cleanup and writes raw interval artifacts plus aggregate JSON and Markdown reports through the deeper modules.
 For local use, `scripts/run-perf-m8.sh` prepares or reuses a JSON-capable dnsperf and invokes the smoke or full
 mode; `--canonical` leaves out the dirty-worktree override.
 
@@ -28,17 +31,34 @@ mode; `--canonical` leaves out the dirty-worktree override.
 3. Run `ceiling` with one hot name and `hotset` with 4,096 names drawn from Zipf `s=1.1`. The hotset trace contains
    1,048,576 queries from a fixed seed. Generator overrides are allowed but make the result non-canonical; archive its
    hash and statistics rather than the generated trace.
-4. Compare four scenarios for each workload: CoreDNS cache off/on, and each of those with Shinku enabled. Capacity uses
-   unlimited offered load with the scenario's own zero-loss calibration. Common load is 80% of the lowest median
-   capacity observed for that workload and uses that slowest scenario's calibrated clients/outstanding unchanged for
-   all four scenarios.
+4. Compare four scenarios for each workload: CoreDNS cache off/on, and each of those with Shinku enabled. The local
+   profile calibrates every scenario, takes the lowest stable zero-loss QPS, and offers 80% of that value to all four
+   scenarios. This mode deliberately does not claim unlimited capacity; capacity evidence requires an independent
+   load-generator adapter.
 5. Pin dnsperf to CPUs `0,2`, CoreDNS to `4,6`, Shinku userspace to `8`, dnsmasq to `10`, and sampling to E-core `12`.
    Do not alter the governor or cpusets.
-6. Canonical defaults are five rounds, 5-second warmup, 30-second measurement, and fixed-seed randomized scenario
-   order. CLI overrides are supported but non-canonical. Provide an explicit smoke preset.
-7. Calibrate every workload/scenario pair for five seconds with two threads across clients
-   `1,4,10,20,40,80,160,320,512` and outstanding `100,1000,4096`. Select the smallest zero-loss configuration within
-   98% of the observed maximum; a boundary optimum invalidates calibration. The original client grid ended at 20 and
+6. Local profile defaults are three rounds, 10-second warmup, 10-second measurement, 2-second calibration samples,
+   10-second stability intervals, and fixed-seed randomized scenario order. CLI overrides are non-canonical. Provide
+   an explicit smoke preset. Unlimited-capacity canonical evidence is reserved for an independent load generator.
+7. Calibrate every workload/scenario pair for the configured sample duration with two threads across clients
+   `1,4,10,20,40,80,160,320,512` and outstanding `100,1000,4096`. For the local profile, retain upper-grid samples as
+   diagnostics but exclude them from candidate selection: a short grid-edge spike is evidence that local capacity is
+   unresolved, not a reason to prevent the fixed-load profile from selecting a stable interior reference. Verify all
+   interior zero-loss samples in descending observed-QPS order until both the fresh-process warmup and a stability
+   interval equal to the formal measurement duration are zero-loss. No stable interior candidate invalidates profile
+   calibration. The future independent capacity mode retains the stricter capacity rule: select the smallest zero-loss
+   configuration within 98% of the observed maximum, reject a boundary optimum, and do not fall below that capacity
+   band merely to obtain a passing result.
+   This profile/capacity separation was made explicit after the 2026-08-13 development run
+   `tests/benchmark/results/perf-m8-1-20260813-114231-104102`: its two-second `hotset/native-off-shinku-on` grid
+   observed 759,876 QPS at the `512/1000` client boundary, while interior `20/1000` and `80/1000` samples were both
+   zero-loss at 710,844 and 709,361 QPS. Treating the boundary spike as a fatal capacity result prevented the fixed-load
+   profile from verifying either viable interior candidate and produced no formal rounds.
+   Run each candidate's warmup and stability interval on a fresh CoreDNS/Shinku process pair so candidates do not share
+   cache state and no calibration process instance exceeds the 300-second TTL.
+   This stability stage was added after the 2026-08-11 development run selected `40/1000` at 723,941 QPS from a
+   zero-loss five-second sample, then lost 112 requests during warmup and 10 of 21,876,371 during its 30-second formal
+   interval while both dnsperf CPUs were effectively saturated. The original client grid ended at 20 and
    calibrated only the Shinku/native-cache-off scenario. The privileged 2026-08-05 development run selected
    clients 20/outstanding 1000 as its sole zero-loss candidate within 98% of the 684,754 QPS observed maximum, so that
    grid did not enclose the host's optimum. The first extension through 80 clients also selected its upper boundary at
@@ -47,8 +67,9 @@ mode; `--canonical` leaves out the dirty-worktree override.
    512 therefore invalidates calibration rather than silently accepting a tool-limited optimum. A later development
    run proved that reusing the fast Shinku scenario's 160/1000 selection overloaded the CoreDNS-only capacity scenario:
    it lost 9,560 of 2,952,316 queries while its DNS correctness and forwarding metrics remained valid. Decision 7 was
-   therefore also amended to calibrate each scenario independently; decision 4 preserves one common-load driver shape.
-8. Wait up to 120 seconds for package temperature at or below 60 C. Capacity-QPS coefficient of variation must be at
+   therefore also amended to calibrate each scenario independently; the profile target is derived only after all four
+   scenario calibrations complete.
+8. Wait up to 120 seconds for package temperature at or below 60 C. Profile-QPS coefficient of variation must be at
    most 5%; otherwise retain all rounds and mark the run unstable/incomplete rather than discarding outliers.
 
 ## Measurement And Correctness
@@ -112,8 +133,11 @@ mode; `--canonical` leaves out the dirty-worktree override.
 25. Warm each fresh scenario with the same workload for five seconds in a separate dnsperf process. Preserve the
     naturally formed CoreDNS/Shinku cache state, then restart the formal trace from its first query without restarting
     services. Do not prefill every unique name. Record warmup sent/completed and ending CoreDNS cache entries only as
-    diagnostics; exclude them from formal aggregation. Calibration uses separate process instances, and each scenario
-    occurrence remains shorter than the 300-second TTL.
+    diagnostics; exclude them from formal aggregation. Before a non-smoke formal interval, however, require a zero-loss
+    warmup as a stability gate. If the initial warmup loses a request, retry once against the now-warmed service state;
+    a second lossy warmup invalidates the run before formal measurement. This distinguishes cold-fill transients from
+    an unsustainable calibrated driver shape without admitting warmup data into the formal result. Calibration uses
+    separate process instances, and each scenario occurrence remains shorter than the 300-second TTL.
 26. Enable the minimal CoreDNS `prometheus` plugin without `runtime_metrics`. After warmup, scrape and archive raw
     pre-interval metrics, then read the CPU baseline; after dnsperf completes, read final CPU before scraping and
     archiving post-interval metrics. Do not scrape during the formal interval. This excludes exposition serialization
@@ -145,15 +169,25 @@ mode; `--canonical` leaves out the dirty-worktree override.
     dnsperf, CoreDNS, Shinku, and dnsmasq on distinct P-cores and the sampler on a non-SMT E-core. Require role sibling
     sets not to overlap and record all sibling activity. Consistent with the earlier noise decision, do not offline or
     cpuset-isolate unused SMT siblings.
+34. Archive host and namespace veth link statistics, `ethtool -S` driver/XDP counters, and
+    `/proc/net/softnet_stat` immediately before and after warmup and formal measurement. Collection remains outside
+    timed intervals and is diagnostic only. A later loss can therefore be localized to an observed interface/XDP or
+    softnet counter delta without adding BPF program counters or changing the measured packet path.
+35. Treat a formal measurement as load-generator query-path contamination only when dnsperf reports non-zero loss,
+    the namespace veth `tx.dropped` delta exactly equals that loss, the host veth XDP TX error delta is zero, and every
+    invariant other than completed-equals-sent and zero-loss passes.
+    Archive the complete rejected attempt and retry the same scenario at most twice. An accepted retry must still pass
+    every zero-loss and correctness invariant; unattributed loss fails immediately, and three consecutive attributed
+    contaminations fail the benchmark. Contaminated attempts are evidence, not capacity samples or discarded outliers.
 
 ## Implementation Verification
 
 Completed without privilege:
 
-- `python3 tests/benchmark/perf_m8_test.py -v`: 9 tests passed.
+- `python3 tests/benchmark/perf_m8_test.py -v`: focused helper and module-interface tests passed.
 - `python3 -m py_compile tests/benchmark/*.py tests/integration/topology.py`: passed.
 - `meson compile -C build-perf shinku_bench xdp_pass.bpf.o`: passed.
-- `./scripts/run-tests.py quick --fail-fast`: 10 Host tests passed.
+- `./scripts/run-tests.py quick --fail-fast`: 11 Host tests passed.
 - The pinned CoreDNS checkout and JSON-capable dnsperf capability probe passed; a loopback CoreDNS/dnsmasq check
   confirmed `U == Q-H` for the emitted Prometheus metrics.
 

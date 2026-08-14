@@ -12,11 +12,12 @@ extra_args=()
 
 usage() {
     cat <<'EOF'
-Usage: scripts/run-perf-m8.sh [--smoke|--full] [--canonical] [-- benchmark-options]
+Usage: scripts/run-perf-m8.sh [--smoke|--full] [--canonical] [--capacity] [-- benchmark-options]
 
 Default mode runs the short non-canonical smoke gate. The full mode runs the
-five-round benchmark. --canonical requires a clean repository and leaves out
---allow-dirty; benchmark options after -- are forwarded unchanged.
+local fixed-load profile (3 rounds, 10s warmup, 10s measurement). Unlimited
+capacity requires an independent load-generator adapter and is not available
+through the local veth runner. Benchmark options after -- are forwarded.
 
 Set DNSPERF_JSON to reuse an existing JSON-capable dnsperf binary.
 EOF
@@ -55,6 +56,11 @@ done
 
 if [[ -n "${DNSPERF_JSON:-}" && ! -x "$dnsperf_binary" ]]; then
     printf 'DNSPERF_JSON is not an executable: %s\n' "$dnsperf_binary" >&2
+    exit 2
+fi
+
+if ((canonical == 1)); then
+    printf '%s\n' '--canonical requires an independent capacity load-generator adapter; local profile is non-canonical' >&2
     exit 2
 fi
 
