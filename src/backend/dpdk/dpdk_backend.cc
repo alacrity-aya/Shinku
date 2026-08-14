@@ -2,16 +2,26 @@
 #include "backend/dpdk/dpdk_backend.h"
 
 #include "backend/backend_error.h"
-#include "backend/dpdk/dpdk_native_session.h"
+#include "backend/dpdk/dpdk_cache_store.h"
+#include "backend/dpdk/dpdk_cleanup_tasks.h"
+#include "backend/dpdk/dpdk_dns_packet.h"
+#include "backend/dpdk/dpdk_eal.h"
+#include "backend/dpdk/dpdk_error.h"
 #include "backend/dpdk/dpdk_packet_path.h"
+#include "backend/dpdk/dpdk_packet_pool.h"
+#include "backend/dpdk/dpdk_pending_store.h"
+#include "backend/dpdk/dpdk_port.h"
 #include "backend/dpdk/dpdk_scheduler.h"
+#include "config/config.h"
 
 #include <array>
 #include <cassert>
+#include <chrono>
 #include <expected>
 #include <format>
 #include <memory>
 #include <optional>
+#include <rte_memory.h>
 #include <span>
 #include <spdlog/spdlog.h>
 #include <string>
@@ -22,7 +32,9 @@
 namespace shinku::backend::dpdk {
 namespace {
 
-std::unexpected<BackendError> native_error(BackendErrorCode code, const DpdkNativeError& error) {
+constexpr std::chrono::seconds kDefaultCacheCleanupInterval { 1 };
+
+std::unexpected<BackendError> dpdk_error(BackendErrorCode code, const DpdkError& error) {
     std::string message = std::format("DPDK {} failed", error.operation);
     if (!error.detail.empty())
         message += ": " + error.detail;
@@ -33,10 +45,24 @@ std::unexpected<BackendError> native_error(BackendErrorCode code, const DpdkNati
 
 } // namespace
 
-DpdkBackend::DpdkBackend(std::span<const std::string> eal_arguments, std::unique_ptr<DpdkNativeSession> native_session):
+DpdkBackend::DpdkBackend(
+    std::span<const std::string> eal_arguments,
+    const config::CacheConfig& cache_config,
+    std::unique_ptr<DpdkEal> eal,
+    std::unique_ptr<DpdkPacketPool> packet_pool,
+    std::unique_ptr<DpdkPort> client_port,
+    std::unique_ptr<DpdkPort> service_port
+):
     eal_arguments_(eal_arguments.begin(), eal_arguments.end()),
-    native_session_(std::move(native_session)) {
-    assert(native_session_ != nullptr);
+    cache_config_(cache_config),
+    eal_(std::move(eal)),
+    packet_pool_(std::move(packet_pool)),
+    client_port_(std::move(client_port)),
+    service_port_(std::move(service_port)) {
+    assert(eal_ != nullptr);
+    assert(packet_pool_ != nullptr);
+    assert(client_port_ != nullptr);
+    assert(service_port_ != nullptr);
 }
 
 DpdkBackend::~DpdkBackend() = default;
@@ -47,13 +73,82 @@ std::expected<void, BackendError> DpdkBackend::probe() {
 
 std::expected<void, BackendError> DpdkBackend::start() {
     spdlog::info("starting DPDK backend");
-    if (auto result = native_session_->start(eal_arguments_); !result)
-        return native_error(BackendErrorCode::StartFailed, result.error());
+    if (auto result = eal_->initialize(eal_arguments_); !result)
+        return dpdk_error(BackendErrorCode::StartFailed, result.error());
 
-    client_path_ = std::make_unique<DpdkPacketPath>(*native_session_, PortSide::Client, PortSide::Service);
-    service_path_ = std::make_unique<DpdkPacketPath>(*native_session_, PortSide::Service, PortSide::Client);
+    auto client_descriptors = client_port_->configure();
+    if (!client_descriptors)
+        return dpdk_error(BackendErrorCode::StartFailed, client_descriptors.error());
+    auto service_descriptors = service_port_->configure();
+    if (!service_descriptors)
+        return dpdk_error(BackendErrorCode::StartFailed, service_descriptors.error());
+
+    const std::array descriptors { *client_descriptors, *service_descriptors };
+    if (auto result = packet_pool_->create(descriptors, eal_->main_socket_id()); !result)
+        return dpdk_error(BackendErrorCode::StartFailed, result.error());
+    if (auto result = client_port_->setup_queues(eal_->main_socket_id()); !result)
+        return dpdk_error(BackendErrorCode::StartFailed, result.error());
+    if (auto result = service_port_->setup_queues(eal_->main_socket_id()); !result)
+        return dpdk_error(BackendErrorCode::StartFailed, result.error());
+    if (auto result = client_port_->start(); !result)
+        return dpdk_error(BackendErrorCode::StartFailed, result.error());
+    if (auto result = service_port_->start(); !result)
+        return dpdk_error(BackendErrorCode::StartFailed, result.error());
+    client_port_->log_link_state();
+    service_port_->log_link_state();
+
+    auto cache = DpdkCacheStore::create(cache_config_.max_entries(), cache_config_.max_response_bytes(), SOCKET_ID_ANY);
+    if (!cache) {
+        return std::unexpected(
+            BackendError {
+                .code = BackendErrorCode::StartFailed,
+                .message = "DPDK cache store creation failed",
+                .cause = cache.error().cause,
+            }
+        );
+    }
+    auto pending = DpdkPendingStore::create(cache_config_.max_pending_queries(), SOCKET_ID_ANY);
+    if (!pending) {
+        return std::unexpected(
+            BackendError {
+                .code = BackendErrorCode::StartFailed,
+                .message = "DPDK pending store creation failed",
+                .cause = pending.error(),
+            }
+        );
+    }
+    cache_store_ = std::move(*cache);
+    pending_store_ = std::move(*pending);
+    dns_policy_ =
+        std::make_unique<cache::DnsPolicy>(cache_config_.max_response_bytes(), cache_config_.cache_negative());
+    cache_context_ = std::make_unique<DpdkCacheContext>(DpdkCacheContext {
+        .cache = *cache_store_,
+        .pending = *pending_store_,
+        .policy = *dns_policy_,
+        .pending_timeout = cache_config_.pending_query_timeout(),
+        // TODO: expose a DPDK-specific interval after the CLI/config boundary is settled.
+        .cache_cleanup_interval = kDefaultCacheCleanupInterval,
+    });
+
+    client_path_ = std::make_unique<DpdkPacketForwarder>(
+        *client_port_,
+        *service_port_,
+        DnsPacketDirection::Query,
+        *cache_context_
+    );
+    service_path_ = std::make_unique<DpdkPacketForwarder>(
+        *service_port_,
+        *client_port_,
+        DnsPacketDirection::Response,
+        *cache_context_
+    );
+    cache_cleanup_task_ = std::make_unique<DpdkCacheCleanupTask>(*cache_context_);
+    pending_cleanup_task_ = std::make_unique<DpdkPendingCleanupTask>(*cache_context_);
     scheduler_ = std::make_unique<DpdkCooperativeScheduler>(
-        std::array<DpdkPollTask*, 4> { client_path_.get(), service_path_.get(), nullptr, nullptr }
+        *client_path_,
+        *service_path_,
+        *cache_cleanup_task_,
+        *pending_cleanup_task_
     );
     spdlog::info("DPDK backend started");
     return {};
@@ -66,12 +161,29 @@ std::expected<void, BackendError> DpdkBackend::poll() {
 
 std::expected<void, BackendError> DpdkBackend::stop() {
     scheduler_.reset();
+    pending_cleanup_task_.reset();
+    cache_cleanup_task_.reset();
     service_path_.reset();
     client_path_.reset();
+    cache_context_.reset();
+    dns_policy_.reset();
+    pending_store_.reset();
+    cache_store_.reset();
 
-    auto result = native_session_->release();
-    if (!result)
-        return native_error(BackendErrorCode::StopFailed, result.error());
+    std::optional<DpdkError> first_error;
+    const auto record = [&first_error](const std::expected<void, DpdkError>& result) {
+        if (!result && !first_error)
+            first_error = result.error();
+    };
+    record(service_port_->close());
+    record(client_port_->close());
+    if (!service_port_->owns_resources() && !client_port_->owns_resources())
+        record(packet_pool_->close());
+    if (!service_port_->owns_resources() && !client_port_->owns_resources() && !packet_pool_->owns_resources())
+        record(eal_->close());
+
+    if (first_error)
+        return dpdk_error(BackendErrorCode::StopFailed, *first_error);
     spdlog::info("DPDK backend stopped");
     return {};
 }

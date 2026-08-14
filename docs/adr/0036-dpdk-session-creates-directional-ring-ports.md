@@ -1,6 +1,6 @@
 # DPDK Session Creates Directional Ring Ports
 
-Status: accepted
+Status: superseded by ADR-0070
 
 For each `kind = "ring"` Device Source, `DpdkNativeSession` explicitly creates distinct ingress and egress `rte_ring`
 objects and wraps them in an Ethernet device with `rte_eth_from_rings()`. It does not ask EAL to create a bare

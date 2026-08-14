@@ -148,6 +148,7 @@ class Runner:
             "--no-rebuild",
             "--print-errorlogs",
             "DPDK Ring Smoke Test",
+            "DPDK Cache Path Test",
             "DPDK Port Count Test",
         ]
         return self.command("dpdk", command)

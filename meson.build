@@ -6,7 +6,7 @@ project('shinku', 'c', 'cpp',
     'b_sanitize=address',
     'buildtype=debug',
     'b_lundef=false',
-    'cpp_std=c++23'
+    'cpp_std=c++26'
   ]
 )
 
@@ -132,8 +132,16 @@ ebpf_backend_src = files(
 
 dpdk_backend_src = files(
   'src/backend/dpdk/dpdk_backend.cc',
-  'src/backend/dpdk/dpdk_native_session.cc',
+  'src/backend/dpdk/dpdk_pending_store.cc',
+  'src/backend/dpdk/dpdk_cleanup_tasks.cc',
+  'src/backend/dpdk/dpdk_time.cc',
+  'src/backend/dpdk/dpdk_cache_store.cc',
+  'src/backend/dpdk/dpdk_dns_packet.cc',
+  'src/backend/dpdk/dpdk_hash_table.cc',
+  'src/backend/dpdk/dpdk_eal.cc',
+  'src/backend/dpdk/dpdk_packet_pool.cc',
   'src/backend/dpdk/dpdk_packet_path.cc',
+  'src/backend/dpdk/dpdk_port.cc',
   'src/backend/dpdk/dpdk_scheduler.cc',
 )
 

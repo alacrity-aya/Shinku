@@ -4,20 +4,30 @@
 #include "backend/backend_error.h"
 #include "backend/dpdk/dpdk_packet_path.h"
 
-#include <array>
 #include <expected>
 
 namespace shinku::backend::dpdk {
 
-DpdkCooperativeScheduler::DpdkCooperativeScheduler(std::array<DpdkPollTask*, 4> tasks) noexcept: tasks_(tasks) {}
+DpdkCooperativeScheduler::DpdkCooperativeScheduler(
+    DpdkPollTask& client,
+    DpdkPollTask& service,
+    DpdkPollTask& cache,
+    DpdkPollTask& pending
+) noexcept:
+    client_(client),
+    service_(service),
+    cache_(cache),
+    pending_(pending) {}
 
 std::expected<void, BackendError> DpdkCooperativeScheduler::run_quantum() {
-    for (auto* task: tasks_) {
-        if (task == nullptr)
-            continue;
-        if (auto result = task->run(); !result)
-            return result;
-    }
+    if (auto result = client_.run(); !result)
+        return result;
+    if (auto result = service_.run(); !result)
+        return result;
+    if (auto result = cache_.run(); !result)
+        return result;
+    if (auto result = pending_.run(); !result)
+        return result;
     return {};
 }
 

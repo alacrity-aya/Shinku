@@ -8,9 +8,11 @@ Scope:
 
 - Support `shinku run`.
 - Support `shinku run --config path/to/file.toml`.
+- Module 9 amendment: accept native DPDK EAL arguments after `--` and retain them verbatim in `CliCommand`.
 - Support `shinku --help` and `shinku run --help`; both print usage and exit successfully.
 - Support `shinku --version`; it prints the Meson project version and exits successfully.
-- Reject all other CLI forms in the MVP, including `shinku --config path`, `shinku run -c path`, and `shinku run --backend ebpf`.
+- Reject unsupported Shinku options before `--`, including `shinku --config path`, `shinku run -c path`, and
+  `shinku run --backend ebpf`.
 - Reject `-h`, `shinku run --version`, duplicate `--config`, missing `--config` values, and all short aliases in the MVP.
 - Do not support env vars.
 - Do not preserve old CLI flag compatibility.
@@ -23,7 +25,7 @@ Scope:
 File layout:
 
 - `src/cli/cli.h`: `CliCommand`, `CliError`, and `parse_cli()` declarations.
-- `src/cli/cli.cc`: strict `argparse`-backed parser for `shinku run [--config path]`.
+- `src/cli/cli.cc`: `argparse`-backed parser for `shinku run [--config path]` plus a thin `--` split for EAL arguments.
 - `src/cli/main.cc`: temporary process entrypoint wiring `parse_cli()`, `load_config()`, `to_legacy_env()`, and the old eBPF loader path until later modules move runtime concerns out.
 - generated config/version header from Meson `configuration_data()`: provides the version string used by `shinku --version`.
 
@@ -32,6 +34,7 @@ Accepted forms:
 ```bash
 shinku run
 shinku run --config ./custom.toml
+shinku run --config ./dpdk.toml -- --no-huge --no-pci --vdev=net_ring0 --vdev=net_ring1
 shinku --help
 shinku run --help
 shinku --version
@@ -76,6 +79,7 @@ struct CliError {
 
 struct CliCommand {
     std::filesystem::path config_path;
+    std::vector<std::string> dpdk_arguments;
 };
 
 enum class CliAction {
@@ -93,6 +97,7 @@ API contract:
 - `parse_cli()` only parses CLI syntax.
 - `parse_cli()` does not open, parse, or validate the Config File.
 - `CliCommand::config_path` defaults to `./shinku.toml` for `shinku run`.
+- Tokens after the first exact `--` are retained in order and without interpretation as DPDK EAL arguments.
 - CLI does not canonicalize `CliCommand::config_path`; Config Loader is responsible for opening the path as provided.
 - CLI does not validate whether a provided config path is empty or openable; Config Loader owns those diagnostics.
 - `shinku run --config` with no following path is rejected by argparse and mapped to `UnexpectedArgument`.

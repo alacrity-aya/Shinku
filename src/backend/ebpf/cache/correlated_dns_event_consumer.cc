@@ -46,7 +46,7 @@ void CorrelatedDnsEventConsumer::consume(std::span<const std::byte> sample) noex
     if (!candidate)
         return;
 
-    [[maybe_unused]] auto stored = store_.store(
+    auto _ = store_.store(
         *candidate,
         cache::CacheTime(std::chrono::nanoseconds(header.response_observed_at_ns)),
         time_source_()

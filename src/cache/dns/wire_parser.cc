@@ -4,6 +4,7 @@
 #include "cache/canonical_name.h"
 #include "cache/dns/parse_error.h"
 #include "cache/dns/parsed_response.h"
+#include "cache/dns/wire_io.h"
 
 #include <algorithm>
 #include <cassert>
@@ -37,22 +38,6 @@ struct EncodedName {
     size_t end_offset;
     bool compressed;
 };
-
-uint16_t read_u16(std::span<const std::byte> message, size_t offset) noexcept {
-    return static_cast<uint16_t>(
-        static_cast<uint16_t>(std::to_integer<uint8_t>(message[offset])) << 8U
-        | std::to_integer<uint8_t>(message[offset + 1])
-    );
-}
-
-uint32_t read_u32(std::span<const std::byte> message, size_t offset) noexcept {
-    return static_cast<uint32_t>(
-        static_cast<uint32_t>(std::to_integer<uint8_t>(message[offset])) << 24U
-        | static_cast<uint32_t>(std::to_integer<uint8_t>(message[offset + 1])) << 16U
-        | static_cast<uint32_t>(std::to_integer<uint8_t>(message[offset + 2])) << 8U
-        | std::to_integer<uint8_t>(message[offset + 3])
-    );
-}
 
 std::expected<EncodedName, ParseError> scan_encoded_name(std::span<const std::byte> message, size_t start) noexcept {
     size_t cursor = start;
@@ -97,11 +82,11 @@ parse_response(std::span<const std::byte> message, std::span<uint16_t, kMaxTtlOf
     if (message.size() < kDnsHeaderSize)
         return std::unexpected(ParseError::HeaderTruncated);
 
-    const uint16_t flags = read_u16(message, 2);
-    const uint16_t question_count = read_u16(message, 4);
-    const uint16_t answer_count = read_u16(message, 6);
-    const uint16_t authority_count = read_u16(message, 8);
-    const uint16_t additional_count = read_u16(message, 10);
+    const uint16_t flags = wire::read_u16(message, 2);
+    const uint16_t question_count = wire::read_u16(message, 4);
+    const uint16_t answer_count = wire::read_u16(message, 6);
+    const uint16_t authority_count = wire::read_u16(message, 8);
+    const uint16_t additional_count = wire::read_u16(message, 10);
 
     size_t cursor = kDnsHeaderSize;
     std::optional<CanonicalDnsName> question_name;
@@ -119,8 +104,8 @@ parse_response(std::span<const std::byte> message, std::span<uint16_t, kMaxTtlOf
             return std::unexpected(ParseError::QuestionFieldsTruncated);
 
         if (index == 0) {
-            question_type = read_u16(message, cursor);
-            question_class = read_u16(message, cursor + 2);
+            question_type = wire::read_u16(message, cursor);
+            question_class = wire::read_u16(message, cursor + 2);
             if (!encoded_name->compressed) {
                 auto canonical = CanonicalDnsName::from_wire(message.subspan(name_start, cursor - name_start));
                 assert(canonical.has_value());
@@ -144,11 +129,11 @@ parse_response(std::span<const std::byte> message, std::span<uint16_t, kMaxTtlOf
             if (message.size() - cursor < kResourceRecordFieldsSize)
                 return std::unexpected(ParseError::ResourceRecordHeaderTruncated);
 
-            const uint16_t type = read_u16(message, cursor);
-            const uint16_t rr_class = read_u16(message, cursor + 2);
+            const uint16_t type = wire::read_u16(message, cursor);
+            const uint16_t rr_class = wire::read_u16(message, cursor + 2);
             const size_t ttl_offset = cursor + 4;
-            const uint32_t wire_ttl = read_u32(message, ttl_offset);
-            const uint16_t rdata_size = read_u16(message, cursor + 8);
+            const uint32_t wire_ttl = wire::read_u32(message, ttl_offset);
+            const uint16_t rdata_size = wire::read_u16(message, cursor + 8);
             cursor += kResourceRecordFieldsSize;
 
             if (message.size() - cursor < rdata_size)

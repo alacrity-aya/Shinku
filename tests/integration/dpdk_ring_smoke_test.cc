@@ -1,11 +1,14 @@
 // SPDX-License-Identifier: GPL-2.0-only OR Apache-2.0
 #include "backend/backend_runner.h"
 #include "backend/dpdk/dpdk_backend.h"
-#include "backend/dpdk/dpdk_native_session.h"
+#include "backend/dpdk/dpdk_eal.h"
+#include "backend/dpdk/dpdk_packet_pool.h"
+#include "backend/dpdk/dpdk_port.h"
 #include "config/config.h"
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -255,9 +258,38 @@ int main(int argc, char** argv) {
     for (int index = 1; index < argc; ++index)
         eal_arguments.emplace_back(argv[index]);
 
+    auto cache_config = shinku::config::CacheConfig::create({
+        .max_entries = 64,
+        .max_response_bytes = 512,
+        .cache_negative = true,
+        .max_pending_queries = 64,
+        .pending_query_timeout = std::chrono::seconds(1),
+    });
+    if (!cache_config) {
+        std::println(stderr, "DPDK ring smoke CacheConfig construction failed");
+        return 1;
+    }
+    auto eal = std::make_unique<shinku::backend::dpdk::ProductionDpdkEal>();
+    auto packet_pool = std::make_unique<shinku::backend::dpdk::ProductionDpdkPacketPool>(*eal);
+    auto client_port = std::make_unique<shinku::backend::dpdk::ProductionDpdkPort>(
+        0,
+        "client Port ID 0",
+        *eal,
+        *packet_pool
+    );
+    auto service_port = std::make_unique<shinku::backend::dpdk::ProductionDpdkPort>(
+        1,
+        "service Port ID 1",
+        *eal,
+        *packet_pool
+    );
     auto backend = std::make_unique<shinku::backend::dpdk::DpdkBackend>(
         eal_arguments,
-        std::make_unique<shinku::backend::dpdk::ProductionDpdkNativeSession>()
+        *cache_config,
+        std::move(eal),
+        std::move(packet_pool),
+        std::move(client_port),
+        std::move(service_port)
     );
     shinku::backend::BackendRunner runner(std::move(backend));
     RingSmokeStopCondition stop_condition;

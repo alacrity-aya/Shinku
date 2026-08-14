@@ -1,6 +1,6 @@
 # DPDK MVP Uses a Fixed File Prefix
 
-Status: accepted
+Status: superseded by ADR-0070
 
 Module 9 always initializes EAL with `--file-prefix=shinku`. It does not generate a process-specific suffix and does not
 expose `file_prefix` or `instance_name` through Config. The MVP therefore supports only one active Shinku DPDK primary

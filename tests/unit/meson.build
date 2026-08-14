@@ -334,6 +334,7 @@ dpdk_backend_test_exe = executable(
       'backend/dpdk_backend_test.cc',
     ),
     backend_src,
+    cache_dns_policy_src,
     dpdk_backend_src,
     dependencies: [catch2_with_main_dep, spdlog_dep, dpdk_dep, rte_net_ring_dep],
     include_directories: inc_src,

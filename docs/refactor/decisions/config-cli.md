@@ -48,13 +48,16 @@ Decisions:
 16. Duplicate `--config` is rejected by argparse and mapped to `UnexpectedArgument`.
 17. `CliResult` is `std::variant<CliCommand, CliAction>`; a run result therefore always carries its command, while
     help/version results cannot accidentally carry one.
+18. Module 9 amends the CLI source rule for DPDK only: the first exact `--` separates Shinku arguments from native EAL
+    arguments. `CliCommand` retains the suffix verbatim; backend selection remains TOML-owned.
 
 Constraint:
 
-- Documentation and startup errors must be explicit that TOML is the only supported configuration source in this phase. CLI and env hooks must not be accidentally read until support is intentionally introduced.
+- TOML remains the source for Shinku configuration. Native DPDK EAL arguments after `--` are an explicit Module 9
+  exception and do not become fields in the Shinku Config model.
 - Backend selection must stay in TOML and must not be reintroduced through CLI flags in this module.
 - CLI syntax diagnostics must not include TOML field-level knowledge.
-- `CliCommand` is not a runtime Config and must not duplicate TOML schema fields.
+- `CliCommand` is not a runtime Config and must not duplicate TOML schema fields; its DPDK suffix is opaque EAL input.
 - `main.cc` remains a temporary composition point until Process-control and Backend Interface modules move runtime concerns out of the CLI module.
 - Help and version actions exit before Config Loader is called.
 
@@ -63,9 +66,8 @@ Constraint:
 Decisions:
 
 1. eBPF Backend uses the minimum required config fields: `iface`, `arena_pages`, and `cleanup_interval`.
-2. Superseded by Module 9 decision 7. The initial schema used numeric `client_port` and `server_port`; the active DPDK
-   design binds client-side and service-side roles to required `[dpdk.client]` and `[dpdk.service]` typed Device Source
-   tables and resolves runtime Port IDs after EAL init. Module 9 decision 30 defines their exact shape.
+2. Superseded by Module 9 decisions 65-66. The initial numeric Port fields and later typed Device Source tables are both
+   inactive. The MVP fixes client/service to Port 0/1 and takes device creation and selection from native EAL arguments.
 3. Cache Policy is backend-neutral and belongs in the top-level `cache` section.
 4. The first `cache` fields are the minimum set: `max_entries`, `max_response_bytes`, and `cache_negative`.
 5. The Config File path has a default value: `./shinku.toml`.

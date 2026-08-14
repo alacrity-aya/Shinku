@@ -1,6 +1,6 @@
 # DPDK MVP Retains Default Telemetry
 
-Status: accepted
+Status: superseded by ADR-0070
 
 Module 9 retains DPDK's default Telemetry service. `DpdkNativeSession` does not supply `--no-telemetry`, allowing EAL to
 create its standard telemetry socket under the fixed `shinku` runtime directory and expose commands registered by the

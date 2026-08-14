@@ -29,6 +29,10 @@ Status: canonical execution plan entrypoint for the C++/DPDK refactor. The modul
 Current active module:
 
 - [Module 9: DPDK Backend Module](refactor/modules/09-dpdk-backend-module.md)
+- Completed slice: 9A DPDK Transport and Lifecycle. Native EAL arguments after `--`, fixed Port 0/1 roles, one-lcore
+  cooperative forwarding, EAL/ethdev/queue/pool ownership, and the production `net_ring` smoke pass. Physical PCI
+  evidence remains unexecuted because the development host has no suitable interfaces.
+- Active slice: 9B DPDK Cache Path.
 - Completed slice: 8A eBPF Resource Ownership (`EbpfNativeSession` design).
 - Completed slice: 8B Backend-neutral Cache Domain.
 - Completed slice: 8C DNS Policy Engine.

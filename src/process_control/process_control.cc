@@ -19,7 +19,7 @@ namespace {
 volatile sig_atomic_t shutdown_requested_flag = 0;
 bool signal_handlers_installed = false;
 
-void handle_shutdown_signal([[maybe_unused]] int signal_number) noexcept {
+void handle_shutdown_signal(int _) noexcept {
     shutdown_requested_flag = 1;
 }
 

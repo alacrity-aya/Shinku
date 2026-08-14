@@ -1,6 +1,6 @@
 # DPDK Config Binds Device Identity Rather Than Port ID
 
-Status: accepted
+Status: superseded by ADR-0070
 
 The DPDK Config assigns the client-side and DNS-service-side roles to typed DPDK Device Sources, using stable PCI BDFs
 or supported virtual-device identities. After EAL initialization, `DpdkNativeSession` resolves those identities to the

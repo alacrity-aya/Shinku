@@ -4,11 +4,12 @@ Goal:
 
 - Add the DPDK Backend after common runtime, config, and cache interfaces are stable.
 
-Design status: accepted through Decision 64. Implementation has not started.
+Design status: accepted through Decision 68. Slice 9A is implemented and verified on the virtual-device development
+host; Slice 9B implementation is in progress.
 
 Scope:
 
-- Implement minimum configured client-side and service-side DPDK Device Source behavior first.
+- Accept native DPDK EAL arguments after `--` and use fixed Port 0/1 client/service roles in the MVP.
 - Keep eBPF backend runnable.
 - Do not reintroduce observability unless explicitly scoped later.
 - Introduce pinned `spdlog` 1.17.0 through Meson for minimal synchronous DPDK lifecycle logging; leave the unified
@@ -19,8 +20,8 @@ Scope:
 ### 9A: DPDK Transport and Lifecycle
 
 - Establish real EAL, port, queue, packet-pool, and Backend Lifecycle ownership.
-- Receive and transparently forward packets in both directions between the configured client-side and service-side
-  DPDK Device Sources after resolving their runtime Port IDs.
+- Receive and transparently forward packets in both directions between client Port 0 and service Port 1 after EAL
+  exposes exactly two available ports.
 - Keep the MVP on the synchronous Runner/main lcore. Each `poll()` handles one nonblocking burst of at most 32 packets
   per direction, performs immediate TX, and returns to Runner. Internally separate Client and Service Packet Paths from
   the later Cache and Pending Cleanup tasks behind one cooperative scheduler; do not implement them inline as one large
@@ -34,7 +35,46 @@ Scope:
 - Require the mandatory two-sided `net_ring` smoke test before starting the Cache Path slice; real PCI evidence remains
   due when suitable hardware is available.
 
+9A implementation result (2026-08-11):
+
+- TOML retains only `backend = "dpdk"` as the Backend selector. Every token after the CLI `--` separator is passed to
+  EAL unchanged; Shinku generates no lcore, memory, PCI, vdev, process-type, file-prefix, or Telemetry option.
+- Added `DpdkBackend`, separate injectable EAL/Packet Pool/Port objects, two directional Packet Path tasks, and the
+  fixed-order cooperative scheduler. All four tasks are present in the final 9B composition; it launches no worker
+  lcore or thread.
+- The production resource objects initialize EAL, require exactly two available ports, assign Port 0 to client and Port
+  1 to service, configure independently adjusted queues and one shared Packet Pool, verify port start/promiscuous state,
+  sample Link State once without gating, and perform terminal EAL cleanup only after Port and Pool ownership is gone.
+- Each path performs one RX burst of at most 32 and one TX submission, preserves accepted-prefix ownership, immediately
+  releases every unaccepted suffix and invalid mbuf chain, and performs no parsing, mutation, Cache, or Pending work.
+- Cleanup closes Service before Client, continues independent cleanup after an error, releases the shared pool after
+  both ports, and calls terminal EAL cleanup exactly once.
+- Unit tests fake the narrow object-oriented EAL, Packet Pool, and Port contracts rather than a broad DPDK function table.
+  The production smoke supplies native `net_ring` vdev arguments from the test command and verifies representative
+  byte-preserving service-to-client forwarding through the real ethdev queue/burst path.
+- Focused verification passes with `./scripts/run-tests.py quick` and
+  `env ASAN_OPTIONS=detect_leaks=0 meson test -C build --no-rebuild --print-errorlogs 'DPDK Ring Smoke Test'`.
+- No physical PCI device was available on this host. Physical functional and performance evidence remains explicitly
+  unexecuted; launch-time device selection is owned by native EAL arguments.
+
 ### 9B: DPDK Cache Path
+
+9B implementation progress (2026-08-13):
+
+- Added fixed-capacity Cache and Pending stores backed by `rte_hash` indices and stable preallocated Entry arrays.
+  Cache admission implements free-list, never-used, and round-robin replacement; both cleanup paths inspect at most 32
+  slots per invocation.
+- Added Client Query eligibility, direct Cache Hit lookup and normalized response generation, pre-TX Pending remember,
+  Service Response correlation/claim, synchronous `DnsPolicy` classification and Cache Fill, and BOOTTIME sampling.
+- Installed Cache and Pending cleanup as independent deadline-driven tasks in the existing single-lcore cooperative
+  scheduler. The DPDK Cache cleanup interval is temporarily fixed at one second with a TODO until the CLI/config
+  boundary is revisited; Pending uses `pending_query_timeout / 2`.
+- Added a no-PCI EAL smoke covering Query Miss, Pending correlation, Response Fill, Question case normalization,
+  Transaction ID replacement, Cache Hit response generation, TTL/metadata normalization, store admission, claimed
+  tombstones, capacity pressure, and bounded cleanup. Existing 9A ring and port-count smokes remain passing.
+- `./scripts/run-tests.py quick` and the four focused DPDK tests pass on the virtual-device development host. Physical
+  PCI evidence and the remaining fault-injection/deadline/cross-backend verification cases below are still open, so 9B
+  is not yet marked complete.
 
 - Add the DPDK concrete Cache Store and direct Data Plane lookup path.
 - Use a complete fixed-length, explicitly serialized physical Cache Key in an `rte_hash` index whose data pointers refer
@@ -140,43 +180,26 @@ an accepted completion state.
 
 Decisions recorded:
 
-- Config binds the two sides of a transparent Cache Point to stable typed DPDK Device Sources. The native Session resolves
-  runtime Port IDs after EAL initialization; numeric Port IDs are not configuration. This supersedes ADR-0017; see
-  [ADR-0021](../../adr/0021-dpdk-config-binds-device-identity.md).
-- Represent those Device Sources as required `[dpdk.client]` and `[dpdk.service]` nested tables. Each selects
-  `kind = "pci" | "ring"` and supplies only its kind-specific `address` or `name`; the validated C++ model stores a
-  `std::variant<PciDeviceSource, RingDeviceSource>`. Do not accept inline-table or prefixed-string aliases.
-- Create every ring Device Source from distinct Session-owned ingress and egress `rte_ring` objects and wrap them with
-  `rte_eth_from_rings()`. Do not use the bare EAL `--vdev=net_ringX` loopback topology. Keep ring handles behind an
-  internal smoke-test fixture; production callers see only the Backend interface.
+- Pass every token after the Shinku CLI `--` separator unchanged to EAL. TOML retains only `backend = "dpdk"`; the MVP
+  has no effective `[dpdk]` fields and temporarily ignores obsolete ones. Require exactly two available ethdev ports,
+  with Port 0 fixed as client and Port 1 fixed as service. See
+  [ADR-0070](../../adr/0070-dpdk-eal-arguments-are-cli-owned.md).
+- Keep DPDK calls inside separate object-oriented production EAL, Packet Pool, and Port objects. Do not restore the broad
+  per-function `DpdkNativeOperations` injection table or a mixed Session façade; unit tests fake each narrow contract and
+  real smoke tests exercise the production adapters. See [ADR-0071](../../adr/0071-dpdk-resources-have-independent-ownership.md).
 - Implement the Backend in two ordered slices: first a real forwarding-only transport/lifecycle slice, then the complete
   DPDK Cache Path. Do not mix initial EAL/port bring-up with Cache semantics debugging.
-- `DpdkBackend` exclusively owns EAL, ports, queues, and packet pools through a private injectable native Session.
-  Initialize EAL in `start()`, keep `probe()` side-effect-free, perform idempotent reverse-order cleanup in `stop()`, and
-  do not promise a second EAL initialization in the same process. See
-  [ADR-0018](../../adr/0018-dpdk-backend-owns-eal-lifecycle.md).
-- Represent EAL settings as typed TOML Config fields. Do not accept arbitrary `eal_args`, CLI EAL options, or EAL
-  environment variables. See [ADR-0019](../../adr/0019-typed-dpdk-eal-configuration.md).
-- Support typed physical PCI and virtual DPDK Device Sources. Current mandatory packet-I/O smoke uses a virtual pair;
-  record physical smoke as not executed until a two-port host is available rather than treating a hardware skip as
-  passing evidence. See [ADR-0020](../../adr/0020-dpdk-supports-physical-and-virtual-devices.md).
+- `DpdkBackend` exclusively owns EAL, ports, queues, and the shared packet pool through injectable resource objects.
+  Initialize EAL in `start()`, keep `probe()` side-effect-free, perform idempotent dependency-ordered cleanup in `stop()`,
+  and do not promise a second EAL initialization in the same process. See
+  [ADR-0018](../../adr/0018-dpdk-backend-owns-eal-lifecycle.md) and
+  [ADR-0071](../../adr/0071-dpdk-resources-have-independent-ownership.md).
+- Support physical PCI and virtual DPDK devices selected by native EAL arguments. Current mandatory packet-I/O smoke
+  uses a virtual pair; record physical smoke as unexecuted until a two-port host is available rather than treating a
+  hardware skip as passing evidence. See [ADR-0020](../../adr/0020-dpdk-supports-physical-and-virtual-devices.md).
 - Treat PCI driver binding and kernel-module preparation as deployment policy. Shinku neither binds devices to
-  `vfio-pci` nor restores prior drivers; it reports configured BDF and actionable preparation context when EAL cannot
-  probe a device. See [ADR-0037](../../adr/0037-dpdk-does-not-manage-pci-driver-binding.md).
-- Restrict EAL PCI discovery to configured PCI Device Sources through generated allowlist entries, and use `--no-pci`
-  for ring/ring startup. Do not probe unrelated host devices or expose raw allowlist controls. See
-  [ADR-0038](../../adr/0038-dpdk-eal-probes-only-configured-pci-devices.md).
-- Run each DPDK Backend as an independent EAL primary process. Do not support `auto`, secondary attachment, or shared
-  DPDK resource ownership in Module 9. See [ADR-0039](../../adr/0039-dpdk-mvp-is-primary-process-only.md).
-- Fix EAL `--file-prefix=shinku` and support one active Shinku DPDK primary per host/runtime directory in the MVP. Do
-  not add instance identity Config or automatic PID suffixes. See
-  [ADR-0040](../../adr/0040-dpdk-mvp-uses-fixed-file-prefix.md).
-- Retain DPDK's default Telemetry socket and native commands. Module 9 adds no custom telemetry command or Backend
-  interface and makes no stable schema promise; Module 10 may later adopt it as a Diagnostics adapter. See
-  [ADR-0041](../../adr/0041-dpdk-mvp-retains-default-telemetry.md).
-- Allow each side to select its Device Source independently, including PCI/vdev mixed pairs. Negotiate port capabilities
-  and descriptors independently, enable no optional offloads in 9A, and record non-ring combinations as unverified on
-  the current host.
+  `vfio-pci` nor restores prior drivers; native EAL arguments select PCI devices and startup preserves the available
+  DPDK failure context. See [ADR-0037](../../adr/0037-dpdk-does-not-manage-pci-driver-binding.md).
 - Use one RX/TX queue pair per port, with queue ID zero. `poll()` performs bounded RX/TX work in both directions on the
   Runner/main lcore and then returns. Runner immediately begins the next iteration after successful quantum completion.
   See [ADR-0034](../../adr/0034-dpdk-mvp-keeps-one-execution-lcore.md).
@@ -188,13 +211,6 @@ Decisions recorded:
   [ADR-0046](../../adr/0046-dpdk-cooperative-scheduler-is-client-first.md).
 - Fix the Poll Quantum burst limit at 32 packets per direction. Keep this as an internal constant rather than Config and
   do not adaptively drain additional bursts.
-- Treat process CPU affinity as deployment policy rather than DPDK Config. Before EAL initialization, select the lowest
-  CPU allowed by `sched_getaffinity()` and map sole MAIN lcore ID zero to it. Expose no CPU/lcore Config fields; the
-  benchmark runner is responsible for constraining and recording affinity. See
-  [ADR-0034](../../adr/0034-dpdk-mvp-keeps-one-execution-lcore.md).
-- Require typed `dpdk.memory_mode = "hugepages" | "no_huge"`. Translate it to private EAL arguments once, never retry
-  EAL with a fallback mode, use `no_huge` for mandatory ring/ring smoke, and recommend `hugepages` for physical or mixed
-  deployment. See [ADR-0025](../../adr/0025-dpdk-memory-mode-is-explicit.md).
 - Request 1024 RX and 1024 TX descriptors per port as internal constants, let each PMD adjust its counts independently,
   retain actual values for queue setup and mempool sizing, and reject adjustment failure or an actual count below 32.
   Do not expose descriptor tuning in Config without physical performance evidence.
@@ -217,8 +233,8 @@ Decisions recorded:
   the remaining burst. Do not linearize it or promote the packet-local violation to `PollFailed`. See
   [ADR-0043](../../adr/0043-dpdk-drops-frame-contract-violations.md).
 - Derive shared Packet Pool capacity from all adjusted RX/TX descriptor counts plus two 32-packet bursts and a fixed
-  256-object lcore cache, rounding up to the smallest fitting `2^N - 1` count with checked arithmetic. Do not expose pool
-  size in Config. See [ADR-0026](../../adr/0026-dpdk-uses-one-shared-packet-pool.md).
+  256-object lcore cache, rounding up to the smallest fitting `2^N - 1` count. Do not expose pool size in Config. See
+  [ADR-0026](../../adr/0026-dpdk-uses-one-shared-packet-pool.md).
 - Treat `rte_eal_cleanup()` as a terminal boundary whether it succeeds or fails. Record its result and make every later
   cleanup attempt a DPDK-free idempotent result so Runner's destructor retry cannot call DPDK after EAL cleanup.
 - During reverse cleanup, continue every independent release after an error but retain failed ownership and defer EAL
@@ -239,10 +255,9 @@ Verification:
 - DPDK-specific smoke tests where available.
 - Mandatory virtual-device smoke proves bidirectional packet correctness and lifecycle cleanup; it has no performance
   threshold and must exercise the same ethdev queue/burst path used by PCI devices.
-- The ring smoke injects and captures packets through distinct external ring endpoints, proves TX cannot loop back into
-  the same Shinku RX path, and covers partial ring/ethdev creation cleanup without exposing handles publicly.
-- Transport tests prove byte-for-byte bidirectional forwarding for representative ARP, IPv6, TCP, VLAN, non-DNS UDP,
-  malformed DNS, and unsupported DNS frames; 9B tests prove those Bypasses create no Cache or Pending state.
+- The production ring smoke uses two EAL-created `net_ring` vdevs, injects representative frames on service Port 1,
+  captures them after client Port 0 TX, and compares every byte. The default net_ring loopback topology limits this
+  host-only smoke to service-to-client direction; fake Session tests prove both scheduled directions and TX ownership.
 - Fake and virtual-device tests cover zero, partial, and complete TX acceptance without leaks, double frees, retries, or
   `PollFailed` promotion.
 - Fake tests cover empty, short, and full 32-packet RX bursts, including both directions full in one Poll Quantum.
@@ -250,36 +265,16 @@ Verification:
   continuation, and that no task creates a thread, worker lcore, or cross-task packet queue.
 - Scheduler trace tests require the fixed client/service/cache/pending order across empty, full-burst, due, and
   `more_work` combinations, including a Query and matching Response arriving in the same quantum.
-- Unit tests cover lowest-CPU selection from sparse inherited affinity masks and empty/read-failure mapping without
-  mutating the test process's actual affinity.
-- Config tests cover required `dpdk.memory_mode`, both accepted values, and missing, mistyped, and unknown values;
-  Session tests prove the selected mode produces one EAL initialization attempt with no fallback.
-- Config tests cover PCI/PCI, ring/ring, and mixed nested Device Sources; missing side tables, unknown kinds, empty or
-  contradictory identity fields, duplicate identities, old numeric Port ID keys, and rejected alternate syntaxes.
-- Fake Session tests prove a PCI probe failure retains the configured BDF in `StartFailed` and performs no driver-binding
-  operation; physical evidence records the externally prepared driver/PMD state when suitable hardware is available.
-- EAL-argument tests cover PCI/PCI, PCI/ring, ring/PCI, and ring/ring discovery sets, including `--no-pci`; resolution
-  tests reject missing or duplicate configured PCI devices and prove unrelated BDFs are never emitted.
-- EAL-argument tests require `--proc-type=primary` and prove no Config or generated path can select `auto` or secondary.
-- EAL-argument tests require the fixed `--file-prefix=shinku`; startup-collision mapping is `StartFailed` and never
-  retries with a generated alternate prefix.
-- EAL-argument tests prove Module 9 does not emit `--no-telemetry`; no Module 9 test depends on a custom telemetry
-  command or treats the DPDK command schema as a Shinku interface.
-- Session tests cover unchanged and independently adjusted descriptor counts, PMD adjustment failure, and adjusted RX or
-  TX values below Shinku's 32-descriptor support baseline.
-- Session tests prove one shared pool is created after descriptor adjustment, both RX queues receive it, and partial
-  queue setup releases it exactly once in reverse acquisition order.
-- Session tests prove each port is queried exactly once after both ports start and pass promiscuous verification, startup
-  succeeds with either or both reported down, and no later `poll()` performs a Link State query or registers a callback.
-- Link-query tests prove every negative return logs once, does not skip the other port, does not retry, and never becomes
-  `StartFailed`.
+- CLI tests prove tokens after `--` are retained byte-for-byte and Shinku options before it remain independently parsed.
+  Backend tests prove the opaque EAL suffix crosses composition unchanged; an empty suffix is allowed.
+- Config tests prove `backend = "dpdk"` needs no `[dpdk]` table and obsolete `[dpdk]` fields are temporarily silent.
+- Production smoke proves two vdev arguments create exactly two ports that start as fixed client Port 0 and service Port
+  1. Production Session rejects every other available-port count before queue configuration.
 - Session/Backend tests cover standard-MTU capability and configuration failure, single-segment forwarding, and complete
   chain release if a fake Session violates the contract by returning a multi-segment packet. Violation tests cover the
   beginning, middle, and end of a burst, one warning only, continued valid forwarding, and successful quantum completion.
-- Pool-capacity tests cover the default 8191-mbuf result, asymmetric descriptor adjustment, `2^N - 1` rounding
-  boundaries, and checked-arithmetic failure.
-- Cleanup fault-injection tests cover every release stage, continued independent cleanup, retained ownership, selective
-  retry, first-error preservation, EAL deferral, and exactly one terminal EAL cleanup attempt.
+- Production smoke covers descriptor adjustment, one shared pool, queue setup, promiscuous verification, one initial
+  Link State sample, reverse port/pool cleanup, and terminal EAL cleanup against the installed DPDK version.
 - Use the installed `net_ring` PMD for mandatory virtual-device smoke; do not require rebuilding DPDK with `net_pcap`.
 - Existing eBPF/cache/parser tests still pass.
 - Module 9B Store tests prove byte-order-stable zero-filled physical-key encoding, inequality across every logical key

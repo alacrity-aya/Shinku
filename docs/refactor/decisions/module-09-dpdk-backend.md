@@ -10,12 +10,12 @@ Decisions:
    transparent forwarding with no cache lookup or admission. 9B adds the DPDK concrete Store, Cache Hit Path,
    miss/Response correlation, Cache Fill, cleanup, and shared Cache Contract evidence. Both slices are required before
    Module 9 is complete; a compile/probe-only stub is not an accepted completion state.
-3. `DpdkBackend` exclusively owns the process-wide EAL lifecycle through one private, injectable `DpdkNativeSession`.
-   `start()` initializes EAL and acquires ports, queues, and packet pools; `stop()` releases partial or complete state in
-   reverse order and is idempotent. `probe()` must not call `rte_eal_init()` or retain DPDK resources, so actual ethdev
-   availability is a `start()` check. Production runs one DPDK Backend Lifecycle per process and does not promise EAL
-   reinitialization after cleanup. BackendRunner remains the only production lifecycle controller, and tests inject a
-   fake Session rather than initializing EAL.
+3. `DpdkBackend` exclusively owns the process-wide EAL lifecycle through injectable `DpdkEal`, `DpdkPacketPool`, and
+   `DpdkPort` objects. `start()` initializes EAL, configures both ports, creates the shared pool, and starts the ports;
+   `stop()` closes Service then Client, the pool, and EAL in dependency order, retaining partial ownership for retry.
+   `probe()` must not call `rte_eal_init()` or retain DPDK resources, so actual ethdev availability is a `start()` check.
+   Production runs one DPDK Backend Lifecycle per process and does not promise EAL reinitialization after cleanup.
+   BackendRunner remains the only production lifecycle controller, and tests inject the narrow resource objects.
 4. DPDK EAL configuration is represented by explicit typed Config fields. The Backend does not accept an arbitrary
    `eal_args` array and does not read EAL settings from CLI arguments or environment variables. The minimum field set
    and the supported physical/vdev device sources remain the next design decision; every accepted field must be validated
@@ -49,7 +49,7 @@ Decisions:
    poll processes a bounded burst from each direction and then returns so Runner can check the Stop Condition. The
    quantum either succeeds or returns `BackendError`; packet activity is not part of the public result. Decision 42
    later removes the unused `PollStatus` type from the shared Backend interface.
-10. EAL cleanup is terminal even when `rte_eal_cleanup()` reports failure. `DpdkNativeSession` records that the cleanup
+10. EAL cleanup is terminal even when `rte_eal_cleanup()` reports failure. `ProductionDpdkEal` records that the cleanup
     call was attempted before returning its result, and no later `stop()`, destructor, or Runner cleanup retry may invoke
     any DPDK function. A later idempotent `stop()` returns the recorded cleanup outcome without touching DPDK. This makes
     BackendRunner's one destructor retry compatible with DPDK's prohibition on API calls after EAL cleanup.
@@ -214,14 +214,12 @@ Decisions:
     suppressed rather than logged per packet. Module 9 does not call `rte_pktmbuf_linearize()`, retry the packet, forward
     a partial first segment, or return `PollFailed`. Fake tests cover violations at the beginning, middle, and end of a
     burst and prove complete-chain release plus continued valid-packet forwarding. See ADR-0043.
-39. `DpdkNativeSession::release()` attempts every independently releasable resource in reverse acquisition order even
-    after one step fails, records the first cleanup error for the caller, and retains explicit ownership state only for
-    resources whose release did not succeed. It does not call `rte_eal_cleanup()` while any pre-EAL DPDK resource remains
-    owned. A later idempotent `stop()` retries only those retained resources. Once all pre-EAL resources have released,
-    Session calls `rte_eal_cleanup()` exactly once; that call is terminal whether it succeeds or fails, as required by
-    decision 10. Subsequent stop/destructor attempts perform no DPDK calls and return the recorded terminal result. Tests
-    inject failures at each release stage and prove independent progress, selective retry, first-error preservation, and
-    the absence of premature or repeated EAL cleanup. See ADR-0044.
+39. `DpdkBackend::stop()` closes each independently releasable Port, then the shared Packet Pool, then EAL, even after
+    one step fails. Each resource records the ownership state needed for a later retry; the first cleanup error is
+    returned to BackendRunner. EAL cleanup is not attempted while a Port or Packet Pool still owns resources. Once all
+    pre-EAL resources have released, `ProductionDpdkEal` calls `rte_eal_cleanup()` exactly once; that call is terminal
+    whether it succeeds or fails. Subsequent stop/destructor attempts return the recorded terminal result without
+    repeating terminal DPDK calls. See ADR-0044 and ADR-0071.
 40. Module 9 separates DPDK runtime work into four independently testable bounded tasks: Client Packet Path, Service
     Packet Path, Cache Cleanup, and Pending Cleanup. One private cooperative scheduler invokes them on the sole
     Runner/MAIN lcore; `DpdkBackend::poll()` remains the external lifecycle interface and does not contain the four
@@ -397,13 +395,13 @@ Decisions:
     VLAN tags, RSS/hash data, and TX-offload length metadata while preserving only mbuf allocator/ownership fields and
     the exact single-segment data layout. Module 9B requests no checksum or other TX offload and has no PMD-dependent
     output variant. See ADR-0066.
-62. DPDK startup creates Session/EAL resources before the concrete Cache Store and Pending table because both own
-    `rte_hash` allocations that require a live EAL. It then constructs `DnsPolicy`, the two Packet Path tasks, both
-    maintenance tasks, and their private scheduler before `start()` succeeds; no packet poll occurs against partial
-    composition. Normal and partial-start cleanup first destroys the scheduler/tasks and Policy, then Pending and Cache
-    hash owners, and only then calls `DpdkNativeSession::release()`. Session may reach terminal `rte_eal_cleanup()` only
-    after these Backend-owned pre-EAL resources are gone. No Store/Pending hash is placed inside Session merely to make
-    cleanup ordering implicit. See ADR-0067.
+62. DPDK startup initializes `DpdkEal`, configures the two `DpdkPort` objects, and creates their shared `DpdkPacketPool`
+    before the concrete Cache Store and Pending table because both own `rte_hash` allocations that require a live EAL.
+    It then constructs `DnsPolicy`, the two Packet Path tasks, both maintenance tasks, and their private scheduler before
+    `start()` succeeds; no packet poll occurs against partial composition. Normal and partial-start cleanup first
+    destroys the scheduler/tasks and Policy, then Pending and Cache hash owners, then closes Service/Client, the shared
+    pool, and EAL. No Store/Pending hash is placed inside a native resource object merely to make cleanup ordering
+    implicit. See ADR-0067 and ADR-0071.
 63. `DpdkCacheStore` owns one mutex that serializes its single `store()` caller with its potentially concurrent
     `cleanup()` caller, as required by the shared Cache Store contract and conformance suite. The direct concrete
     `lookup()` used by Client Packet Path does not acquire this mutex and is not promised concurrent execution with
@@ -419,3 +417,19 @@ Decisions:
     No path reuses stale time or selects an alternate clock. Each of the three failure categories emits at most one
     `spdlog::warn()` per Backend lifetime; Module 10 may replace this minimal suppression with unified Diagnostics.
     See ADR-0069.
+65. Module 9A accepts native DPDK EAL arguments only after the Shinku CLI `--` separator and passes them unchanged to
+    `rte_eal_init()`, apart from prepending the required program name. Shinku generates no lcore, memory, PCI, vdev,
+    process-type, file-prefix, or Telemetry option, and an empty EAL argument list is valid. TOML keeps only
+    `backend = "dpdk"`; it has no effective `[dpdk]` fields in this MVP. Obsolete `[dpdk]` tables are temporarily ignored
+    with a Config Loader TODO for the final migration policy. This supersedes decisions 4, 7, 13, 14, 30, 31, 33-36
+    where they require typed Device Sources or Shinku-generated EAL arguments. See ADR-0070.
+66. The MVP requires exactly two available ethdev ports after EAL initialization and fixes Port 0 as client and Port 1
+    as service. The launch command owns the native EAL options that establish this exact device set and enumeration
+    order. Zero, one, or more than two available ports is `StartFailed`; there is no TOML or Shinku-side port override.
+    See ADR-0070.
+67. Superseded by decision 68. The previous production Session boundary and broad `DpdkNativeOperations` function-pointer
+    table are both removed; the production adapter is covered by the real EAL/net_ring smoke.
+68. `DpdkEal`, `DpdkPacketPool`, and `DpdkPort` are separate narrow object-oriented resource boundaries. Unit tests fake
+    those objects independently; no per-function DPDK operation table or mixed Session façade is introduced. Non-null
+    internal dependencies use ordinary C++ references, nullable test-only cache context uses a raw pointer, and DPDK's
+    C handles remain behind the production resource adapters. See ADR-0071.

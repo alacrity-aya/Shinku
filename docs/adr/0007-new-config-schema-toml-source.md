@@ -1,5 +1,10 @@
 # New Config Schema with TOML Source
 
+Status: accepted, amended by ADR-0070
+
+ADR-0070 removes effective DPDK fields from TOML for the Module 9 MVP and adds a native EAL argument suffix after the
+CLI `--` separator. The original schema discussion below remains the historical basis for the eBPF and cache sections.
+
 Shinku will introduce a new C++ Config Schema instead of treating the existing CLI flags as the canonical model. Configuration comes from a TOML Config File selected by `shinku run [--config path/to/file.toml]` until after the DPDK backend lands; env vars are not read in this phase. If no path is provided, the default Config File is `./shinku.toml`. The model is one top-level `Config` with simple top-level TOML tables `[ebpf]`, `[dpdk]`, and `[cache]`, validated according to the selected backend by an independent `src/config/` Config Loader. The parser dependency is `toml++`, and the public Config Loader API is `load_config(path, sink)`.
 
 **Considered Options**

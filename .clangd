@@ -57,4 +57,4 @@ CompileFlags:
   Compiler: clang++
   Add:
     - "-xc++"
-    - "-std=c++23"
+    - "-std=c++26"

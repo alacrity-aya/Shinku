@@ -1,14 +1,17 @@
 // SPDX-License-Identifier: GPL-2.0-only OR Apache-2.0
-#include "backend/dpdk/dpdk_backend.h"
 #include "backend/backend_runner.h"
-#include "backend/dpdk/dpdk_native_session.h"
+#include "backend/dpdk/dpdk_backend.h"
+#include "backend/dpdk/dpdk_eal.h"
 #include "backend/dpdk/dpdk_packet_path.h"
+#include "backend/dpdk/dpdk_packet_pool.h"
+#include "backend/dpdk/dpdk_port.h"
 #include "backend/dpdk/dpdk_scheduler.h"
 #include "config/config.h"
 
 #include <algorithm>
 #include <array>
 #include <catch2/catch_test_macros.hpp>
+#include <chrono>
 #include <cstdint>
 #include <deque>
 #include <expected>
@@ -30,9 +33,12 @@ using shinku::backend::BackendRunner;
 using shinku::backend::StopCondition;
 using shinku::backend::StopReason;
 using shinku::backend::StopRequest;
-using shinku::backend::dpdk::DpdkNativeError;
-using shinku::backend::dpdk::DpdkNativeSession;
-using shinku::backend::dpdk::PortSide;
+using shinku::backend::dpdk::DpdkDescriptorCounts;
+using shinku::backend::dpdk::DpdkEal;
+using shinku::backend::dpdk::DpdkError;
+using shinku::backend::dpdk::DpdkPacketPool;
+using shinku::backend::dpdk::DpdkPort;
+using shinku::backend::dpdk::DnsPacketDirection;
 
 class SequencedStopCondition final: public StopCondition {
 public:
@@ -49,61 +55,124 @@ private:
     size_t next_ = 0;
 };
 
-class FakeDpdkNativeSession final: public DpdkNativeSession {
+class FakeDpdkEal final: public DpdkEal {
 public:
-    std::expected<void, DpdkNativeError> start_result;
-    std::expected<void, DpdkNativeError> release_result;
-    std::array<std::deque<rte_mbuf*>, 2> incoming;
-    std::array<uint16_t, 2> tx_limits { UINT16_MAX, UINT16_MAX };
+    std::expected<void, DpdkError> initialize_result;
+    std::expected<void, DpdkError> close_result;
+    std::vector<std::string> arguments;
     std::vector<std::string> calls;
-    std::vector<std::string> eal_arguments;
+
+    std::expected<void, DpdkError> initialize(std::span<const std::string> eal_arguments) override {
+        calls.emplace_back("initialize");
+        arguments.assign(eal_arguments.begin(), eal_arguments.end());
+        return initialize_result;
+    }
+
+    int main_socket_id() const noexcept override {
+        return -1;
+    }
+
+    std::expected<void, DpdkError> close() override {
+        calls.emplace_back("close");
+        return close_result;
+    }
+};
+
+class FakeDpdkPacketPool final: public DpdkPacketPool {
+public:
+    std::expected<void, DpdkError> create_result;
+    std::expected<void, DpdkError> close_result;
+    bool owns = false;
+
+    std::expected<void, DpdkError>
+    create(const std::array<DpdkDescriptorCounts, 2>&, int) override {
+        if (create_result)
+            owns = true;
+        return create_result;
+    }
+
+    bool owns_resources() const noexcept override {
+        return owns;
+    }
+
+    std::expected<void, DpdkError> close() override {
+        auto result = close_result;
+        if (result)
+            owns = false;
+        return result;
+    }
+};
+
+class FakeDpdkPort final: public DpdkPort {
+public:
+    explicit FakeDpdkPort(std::string identity): identity_(std::move(identity)) {}
+
+    std::expected<DpdkDescriptorCounts, DpdkError> configure_result {
+        DpdkDescriptorCounts { .rx = 32, .tx = 32 }
+    };
+    std::expected<void, DpdkError> setup_result;
+    std::expected<void, DpdkError> start_result;
+    std::expected<void, DpdkError> close_result;
+    std::deque<rte_mbuf*> incoming;
+    std::vector<rte_mbuf*> transmitted;
     std::vector<rte_mbuf*> freed;
-    std::array<std::vector<rte_mbuf*>, 2> transmitted;
-    std::array<std::vector<uint16_t>, 2> receive_capacities;
-    std::expected<void, DpdkNativeError> start(std::span<const std::string> arguments) override {
-        calls.emplace_back("start");
-        eal_arguments.assign(arguments.begin(), arguments.end());
+    std::vector<uint16_t> receive_capacities;
+    uint16_t tx_limit = UINT16_MAX;
+
+    std::expected<DpdkDescriptorCounts, DpdkError> configure() override {
+        if (configure_result)
+            owns = true;
+        return configure_result;
+    }
+
+    std::expected<void, DpdkError> setup_queues(int) override {
+        return setup_result;
+    }
+
+    std::expected<void, DpdkError> start() override {
         return start_result;
     }
 
-    uint16_t receive(PortSide side, rte_mbuf** packets, uint16_t capacity) noexcept override {
-        calls.push_back(side == PortSide::Client ? "rx-client" : "rx-service");
-        const size_t index = side_index(side);
-        receive_capacities[index].push_back(capacity);
-        const uint16_t count = std::min<uint16_t>(capacity, static_cast<uint16_t>(incoming[index].size()));
-        for (uint16_t packet = 0; packet < count; ++packet) {
-            packets[packet] = incoming[index].front();
-            incoming[index].pop_front();
+    void log_link_state() const noexcept override {}
+
+    uint16_t receive(std::span<rte_mbuf*> packets) noexcept override {
+        receive_capacities.push_back(static_cast<uint16_t>(packets.size()));
+        const uint16_t count = std::min<uint16_t>(static_cast<uint16_t>(packets.size()), incoming.size());
+        for (uint16_t index = 0; index < count; ++index) {
+            packets[index] = incoming.front();
+            incoming.pop_front();
         }
         return count;
     }
 
-    uint16_t transmit(PortSide side, rte_mbuf** packets, uint16_t count) noexcept override {
-        calls.push_back(side == PortSide::Client ? "tx-client" : "tx-service");
-        const size_t index = side_index(side);
-        const uint16_t accepted = std::min(count, tx_limits[index]);
-        transmitted[index].insert(transmitted[index].end(), packets, packets + accepted);
+    uint16_t transmit(std::span<rte_mbuf*> packets) noexcept override {
+        const uint16_t accepted = std::min<uint16_t>(static_cast<uint16_t>(packets.size()), tx_limit);
+        transmitted.insert(transmitted.end(), packets.begin(), packets.begin() + accepted);
         return accepted;
     }
 
-    void free_packet(rte_mbuf* packet) noexcept override {
-        calls.emplace_back("free");
-        freed.push_back(packet);
+    void free_packet(rte_mbuf& packet) noexcept override {
+        freed.push_back(&packet);
     }
 
-    std::string_view port_identity(PortSide side) const noexcept override {
-        return side == PortSide::Client ? "fake-client" : "fake-service";
+    std::string_view identity() const noexcept override {
+        return identity_;
     }
 
-    std::expected<void, DpdkNativeError> release() override {
-        calls.emplace_back("release");
-        return release_result;
+    bool owns_resources() const noexcept override {
+        return owns;
+    }
+
+    std::expected<void, DpdkError> close() override {
+        auto result = close_result;
+        if (result)
+            owns = false;
+        return result;
     }
 
 private:
-    static size_t side_index(PortSide side) noexcept {
-        return side == PortSide::Client ? 0 : 1;
-    }
+    std::string identity_;
+    bool owns = false;
 };
 
 rte_mbuf single_segment_packet(uint16_t size = 64) {
@@ -117,72 +186,94 @@ rte_mbuf single_segment_packet(uint16_t size = 64) {
 
 class TraceTask final: public shinku::backend::dpdk::DpdkPollTask {
 public:
-    TraceTask(std::vector<int>& trace, int value): trace_(&trace), value_(value) {}
+    TraceTask(std::vector<int>& trace, int value): trace_(trace), value_(value) {}
 
     std::expected<void, BackendError> run() override {
-        trace_->push_back(value_);
+        trace_.push_back(value_);
         return result;
     }
 
     std::expected<void, BackendError> result;
 
 private:
-    std::vector<int>* trace_;
+    std::vector<int>& trace_;
     int value_;
 };
 
-std::unique_ptr<shinku::backend::dpdk::DpdkBackend>
-make_backend(std::unique_ptr<DpdkNativeSession> session, std::span<const std::string> arguments = {}) {
-    return std::make_unique<shinku::backend::dpdk::DpdkBackend>(arguments, std::move(session));
+std::unique_ptr<shinku::backend::dpdk::DpdkBackend> make_backend(
+    std::unique_ptr<FakeDpdkEal> eal,
+    std::unique_ptr<FakeDpdkPacketPool> packet_pool,
+    std::unique_ptr<FakeDpdkPort> client,
+    std::unique_ptr<FakeDpdkPort> service,
+    std::span<const std::string> arguments = {}
+) {
+    const auto cache_config = shinku::config::CacheConfig::create({
+        .max_entries = 4,
+        .max_response_bytes = 512,
+        .cache_negative = true,
+        .max_pending_queries = 4,
+        .pending_query_timeout = std::chrono::seconds(1),
+    });
+    REQUIRE(cache_config.has_value());
+    return std::make_unique<shinku::backend::dpdk::DpdkBackend>(
+        arguments,
+        *cache_config,
+        std::move(eal),
+        std::move(packet_pool),
+        std::move(client),
+        std::move(service)
+    );
 }
 
 } // namespace
 
 TEST_CASE("DPDK packet path closes burst ownership in one quantum") {
-    FakeDpdkNativeSession session;
-    shinku::backend::dpdk::DpdkPacketPath path(session, PortSide::Client, PortSide::Service);
+    FakeDpdkPort source("fake-client");
+    FakeDpdkPort destination("fake-service");
+    shinku::backend::dpdk::DpdkPacketForwarder path(source, destination, DnsPacketDirection::Query);
     std::array<rte_mbuf, 4> packets;
     for (rte_mbuf& packet: packets) {
         packet = single_segment_packet();
-        session.incoming[0].push_back(&packet);
+        source.incoming.push_back(&packet);
     }
 
     SECTION("complete TX transfers every packet") {
         REQUIRE(path.run().has_value());
-        CHECK(session.receive_capacities[0] == std::vector<uint16_t> { 32 });
-        CHECK(session.transmitted[1].size() == packets.size());
-        CHECK(session.freed.empty());
+        CHECK(source.receive_capacities == std::vector<uint16_t> { 32 });
+        CHECK(destination.transmitted.size() == packets.size());
+        CHECK(source.freed.empty());
     }
 
     SECTION("partial TX frees only the unaccepted suffix") {
-        session.tx_limits[1] = 2;
+        destination.tx_limit = 2;
         REQUIRE(path.run().has_value());
-        CHECK(session.transmitted[1].size() == 2);
-        CHECK(session.freed == std::vector<rte_mbuf*> { &packets[2], &packets[3] });
+        CHECK(destination.transmitted.size() == 2);
+        CHECK(source.freed == std::vector<rte_mbuf*> { &packets[2], &packets[3] });
     }
 
     SECTION("zero TX frees the complete burst") {
-        session.tx_limits[1] = 0;
+        destination.tx_limit = 0;
         REQUIRE(path.run().has_value());
-        CHECK(session.transmitted[1].empty());
-        CHECK(session.freed.size() == packets.size());
+        CHECK(destination.transmitted.empty());
+        CHECK(source.freed.size() == packets.size());
     }
 }
 
 TEST_CASE("DPDK packet path performs no TX for an empty burst") {
-    FakeDpdkNativeSession session;
-    shinku::backend::dpdk::DpdkPacketPath path(session, PortSide::Client, PortSide::Service);
+    FakeDpdkPort source("fake-client");
+    FakeDpdkPort destination("fake-service");
+    shinku::backend::dpdk::DpdkPacketForwarder path(source, destination, DnsPacketDirection::Query);
 
     REQUIRE(path.run().has_value());
-
-    CHECK(session.calls == std::vector<std::string> { "rx-client" });
-    CHECK(session.transmitted[1].empty());
-    CHECK(session.freed.empty());
+    CHECK(source.receive_capacities == std::vector<uint16_t> { 32 });
+    CHECK(destination.transmitted.empty());
+    CHECK(source.freed.empty());
 }
 
 TEST_CASE("DPDK packet path drops frame-contract violations and continues") {
-    FakeDpdkNativeSession session;
-    shinku::backend::dpdk::DpdkPacketPath path(session, PortSide::Client, PortSide::Service);
+    FakeDpdkPort source("fake-client");
+    FakeDpdkPort destination("fake-service");
+    shinku::backend::dpdk::DpdkPacketForwarder path(source, destination, DnsPacketDirection::Query);
     rte_mbuf valid_before = single_segment_packet();
     rte_mbuf multi_segment = single_segment_packet();
     rte_mbuf tail = single_segment_packet();
@@ -191,12 +282,11 @@ TEST_CASE("DPDK packet path drops frame-contract violations and continues") {
     multi_segment.pkt_len += tail.pkt_len;
     rte_mbuf oversized = single_segment_packet(1519);
     rte_mbuf valid_after = single_segment_packet();
-    session.incoming[0] = { &valid_before, &multi_segment, &oversized, &valid_after };
+    source.incoming = { &valid_before, &multi_segment, &oversized, &valid_after };
 
     REQUIRE(path.run().has_value());
-
-    CHECK(session.freed == std::vector<rte_mbuf*> { &multi_segment, &oversized });
-    CHECK(session.transmitted[1] == std::vector<rte_mbuf*> { &valid_before, &valid_after });
+    CHECK(source.freed == std::vector<rte_mbuf*> { &multi_segment, &oversized });
+    CHECK(destination.transmitted == std::vector<rte_mbuf*> { &valid_before, &valid_after });
 }
 
 TEST_CASE("DPDK scheduler preserves client service cache pending order") {
@@ -205,23 +295,24 @@ TEST_CASE("DPDK scheduler preserves client service cache pending order") {
     TraceTask service(trace, 2);
     TraceTask cache(trace, 3);
     TraceTask pending(trace, 4);
-    shinku::backend::dpdk::DpdkCooperativeScheduler scheduler({ &client, &service, &cache, &pending });
+    shinku::backend::dpdk::DpdkCooperativeScheduler scheduler(client, service, cache, pending);
 
     REQUIRE(scheduler.run_quantum().has_value());
     CHECK(trace == std::vector<int> { 1, 2, 3, 4 });
 }
 
-TEST_CASE("DPDK scheduler returns the first task failure without running later tasks") {
+TEST_CASE("DPDK scheduler returns the first task failure") {
     std::vector<int> trace;
     TraceTask client(trace, 1);
     TraceTask service(trace, 2);
     TraceTask cache(trace, 3);
+    TraceTask pending(trace, 4);
     service.result = std::unexpected(BackendError {
         .code = BackendErrorCode::PollFailed,
         .message = "service failed",
         .cause = std::nullopt,
     });
-    shinku::backend::dpdk::DpdkCooperativeScheduler scheduler({ &client, &service, &cache, nullptr });
+    shinku::backend::dpdk::DpdkCooperativeScheduler scheduler(client, service, cache, pending);
 
     auto result = scheduler.run_quantum();
 
@@ -230,32 +321,19 @@ TEST_CASE("DPDK scheduler returns the first task failure without running later t
     CHECK(trace == std::vector<int> { 1, 2 });
 }
 
-TEST_CASE("DPDK backend forwards native EAL arguments unchanged") {
-    auto session = std::make_unique<FakeDpdkNativeSession>();
-    auto* trace = session.get();
-    const std::vector<std::string> arguments {
-        "--no-huge",
-        "--no-pci",
-        "--vdev=net_ring0",
-        "--vdev=net_ring1",
-    };
-    BackendRunner runner(make_backend(std::move(session), arguments));
-    SequencedStopCondition stop({ std::nullopt, StopRequest { .reason = StopReason::Manual } });
-
-    REQUIRE(runner.run(stop).has_value());
-    CHECK(trace->eal_arguments == arguments);
-    CHECK(trace->calls == std::vector<std::string> { "start", "release" });
-}
-
-TEST_CASE("DPDK backend maps lifecycle failures and preserves cleanup") {
-    auto session = std::make_unique<FakeDpdkNativeSession>();
-    auto* trace = session.get();
-    trace->start_result = std::unexpected(DpdkNativeError {
+TEST_CASE("DPDK backend forwards native EAL arguments to the EAL component") {
+    auto eal = std::make_unique<FakeDpdkEal>();
+    auto* eal_trace = eal.get();
+    auto pool = std::make_unique<FakeDpdkPacketPool>();
+    auto client = std::make_unique<FakeDpdkPort>("fake-client");
+    client->configure_result = std::unexpected(DpdkError {
         .operation = "port validation",
         .detail = "configured DPDK Port ID 3 does not exist",
         .cause = std::make_error_code(std::errc::no_such_device),
     });
-    BackendRunner runner(make_backend(std::move(session)));
+    auto service = std::make_unique<FakeDpdkPort>("fake-service");
+    const std::vector<std::string> arguments { "--no-huge", "--no-pci", "--vdev=net_ring0" };
+    BackendRunner runner(make_backend(std::move(eal), std::move(pool), std::move(client), std::move(service), arguments));
     SequencedStopCondition stop({ std::nullopt });
 
     auto result = runner.run(stop);
@@ -263,47 +341,27 @@ TEST_CASE("DPDK backend maps lifecycle failures and preserves cleanup") {
     REQUIRE_FALSE(result.has_value());
     CHECK(result.error().code == BackendErrorCode::StartFailed);
     CHECK(result.error().message.contains("Port ID 3"));
-    CHECK(trace->calls == std::vector<std::string> { "start", "release" });
+    CHECK(eal_trace->arguments == arguments);
+    CHECK(eal_trace->calls == std::vector<std::string> { "initialize", "close" });
 }
 
-TEST_CASE("DPDK backend runs one bounded client-first quantum") {
-    auto session = std::make_unique<FakeDpdkNativeSession>();
-    auto* trace = session.get();
-    std::array<rte_mbuf, 64> packets;
-    for (size_t index = 0; index < packets.size(); ++index) {
-        packets[index] = single_segment_packet();
-        trace->incoming[index < 32 ? 0 : 1].push_back(&packets[index]);
-    }
-    BackendRunner runner(make_backend(std::move(session)));
-    SequencedStopCondition stop({ std::nullopt, std::nullopt, StopRequest { .reason = StopReason::Manual } });
-
-    REQUIRE(runner.run(stop).has_value());
-    CHECK(trace->receive_capacities[0] == std::vector<uint16_t> { 32 });
-    CHECK(trace->receive_capacities[1] == std::vector<uint16_t> { 32 });
-    CHECK(trace->transmitted[1].size() == 32);
-    CHECK(trace->transmitted[0].size() == 32);
-    CHECK(
-        trace->calls
-        == std::vector<std::string> { "start", "rx-client", "tx-service", "rx-service", "tx-client", "release" }
-    );
-}
-
-TEST_CASE("DPDK backend reports native release failure") {
-    auto session = std::make_unique<FakeDpdkNativeSession>();
-    auto* trace = session.get();
-    trace->release_result = std::unexpected(DpdkNativeError {
-        .operation = "port close",
-        .detail = "fake-service",
-        .cause = std::make_error_code(std::errc::device_or_resource_busy),
+TEST_CASE("DPDK backend maps EAL initialization failure") {
+    auto eal = std::make_unique<FakeDpdkEal>();
+    auto* eal_trace = eal.get();
+    eal->initialize_result = std::unexpected(DpdkError {
+        .operation = "EAL initialization",
+        .detail = "fake failure",
+        .cause = std::make_error_code(std::errc::permission_denied),
     });
-    BackendRunner runner(make_backend(std::move(session)));
-    SequencedStopCondition stop({ std::nullopt, StopRequest { .reason = StopReason::Manual } });
+    auto pool = std::make_unique<FakeDpdkPacketPool>();
+    auto client = std::make_unique<FakeDpdkPort>("fake-client");
+    auto service = std::make_unique<FakeDpdkPort>("fake-service");
+    BackendRunner runner(make_backend(std::move(eal), std::move(pool), std::move(client), std::move(service)));
+    SequencedStopCondition stop({ std::nullopt });
 
     auto result = runner.run(stop);
 
     REQUIRE_FALSE(result.has_value());
-    CHECK(result.error().code == BackendErrorCode::StopFailed);
-    CHECK(result.error().message.contains("port close"));
-    CHECK(result.error().message.contains("fake-service"));
-    CHECK(trace->calls == std::vector<std::string> { "start", "release" });
+    CHECK(result.error().code == BackendErrorCode::StartFailed);
+    CHECK(eal_trace->calls == std::vector<std::string> { "initialize", "close" });
 }

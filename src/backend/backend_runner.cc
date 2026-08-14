@@ -71,7 +71,7 @@ BackendRunner::BackendRunner(std::unique_ptr<Backend> backend) noexcept: backend
 
 BackendRunner::~BackendRunner() noexcept {
     if (backend_active_) {
-        [[maybe_unused]] auto stop_result = stop_backend();
+        auto _ = stop_backend();
     }
 }
 
@@ -102,7 +102,7 @@ std::expected<ShutdownReport, BackendError> BackendRunner::run(StopCondition& st
     auto start_result = backend_->start();
     if (!start_result) {
         state_ = BackendState::Failed;
-        [[maybe_unused]] auto stop_result = stop_backend();
+        auto _ = stop_backend();
         return std::unexpected(start_result.error());
     }
 
@@ -125,7 +125,7 @@ std::expected<ShutdownReport, BackendError> BackendRunner::run(StopCondition& st
         if (!poll_result) {
             state_ = BackendState::Failed;
             BackendError original_error = std::move(poll_result.error());
-            [[maybe_unused]] auto stop_result = stop_backend(); //TODO: need loggin here
+            auto _ = stop_backend(); //TODO: need loggin here
             return std::unexpected(std::move(original_error));
         }
     }

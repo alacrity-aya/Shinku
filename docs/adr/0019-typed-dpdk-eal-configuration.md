@@ -1,6 +1,6 @@
 # DPDK EAL Configuration Is Typed
 
-Status: accepted
+Status: superseded by ADR-0070
 
 DPDK EAL settings are part of the validated TOML Effective Config through explicit typed fields. Shinku does not pass
 through arbitrary `eal_args`, CLI flags, or environment variables because those inputs would bypass Config Validation,

@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only OR Apache-2.0
-#include "backend/dpdk/dpdk_native_session.h"
+#include "backend/dpdk/dpdk_eal.h"
+#include "backend/dpdk/dpdk_packet_pool.h"
+#include "backend/dpdk/dpdk_port.h"
 
 #include <cstddef>
 #include <print>
@@ -12,8 +14,11 @@ int main(int argc, char** argv) {
     for (int index = 1; index < argc; ++index)
         eal_arguments.emplace_back(argv[index]);
 
-    shinku::backend::dpdk::ProductionDpdkNativeSession session;
-    auto start_result = session.start(eal_arguments);
+    shinku::backend::dpdk::ProductionDpdkEal eal;
+    shinku::backend::dpdk::ProductionDpdkPacketPool packet_pool(eal);
+    shinku::backend::dpdk::ProductionDpdkPort client(0, "client Port ID 0", eal, packet_pool);
+    shinku::backend::dpdk::ProductionDpdkPort service(1, "service Port ID 1", eal, packet_pool);
+    auto start_result = eal.initialize(eal_arguments);
     if (start_result) {
         std::println(stderr, "DPDK Port count gate unexpectedly accepted a one-port topology");
         return 1;
@@ -23,7 +28,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    auto release_result = session.release();
+    auto release_result = eal.close();
     if (!release_result) {
         std::println(stderr, "DPDK Port count cleanup failed at {}", release_result.error().operation);
         return 1;

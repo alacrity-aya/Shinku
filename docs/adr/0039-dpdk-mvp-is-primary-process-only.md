@@ -1,6 +1,6 @@
 # DPDK MVP Is Primary-process Only
 
-Status: accepted
+Status: superseded by ADR-0070
 
 Each Module 9 DPDK Backend is one independent DPDK EAL primary process. `DpdkNativeSession` explicitly supplies
 `--proc-type=primary`; it does not use automatic process-role detection, start as a secondary process, or expose process

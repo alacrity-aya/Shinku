@@ -136,7 +136,7 @@ struct ProductionEbpfNativeSession::NativeResources {
 ProductionEbpfNativeSession::ProductionEbpfNativeSession(): resources_(std::make_unique<NativeResources>()) {}
 
 ProductionEbpfNativeSession::~ProductionEbpfNativeSession() {
-    [[maybe_unused]] auto result = release();
+    auto _ = release();
 }
 
 CapabilityProbeResult ProductionEbpfNativeSession::has_required_privileges() {
@@ -328,7 +328,7 @@ void ProductionEbpfNativeSession::close_packet_ring() noexcept {
     resources_->packet_consumer = nullptr;
 }
 
-std::expected<int, std::error_code> ProductionEbpfNativeSession::poll_log_ring([[maybe_unused]] int timeout_ms) {
+std::expected<int, std::error_code> ProductionEbpfNativeSession::poll_log_ring(int _) {
 #if SHINKU_BPF_LOG_ENABLED
     const int result = ring_buffer__poll(resources_->log_ring, timeout_ms);
     if (result < 0)

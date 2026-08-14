@@ -1,6 +1,6 @@
 # DPDK Memory Mode Is Explicit
 
-Status: accepted
+Status: superseded by ADR-0070
 
 The DPDK Backend requires a typed `dpdk.memory_mode` Config value of `hugepages` or `no_huge`. Config Loader validates
 the value and Effective Config retains it. Session converts it into private EAL arguments and performs one initialization

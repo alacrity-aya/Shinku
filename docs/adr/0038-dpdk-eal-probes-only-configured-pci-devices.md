@@ -1,6 +1,6 @@
 # DPDK EAL Probes Only Configured PCI Devices
 
-Status: accepted
+Status: superseded by ADR-0070
 
 The validated client-side and service-side Device Sources define the complete set of PCI devices Shinku permits EAL to
 probe. `DpdkNativeSession` generates one EAL allowlist entry for every configured PCI BDF and never emits an unrelated

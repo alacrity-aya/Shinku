@@ -121,7 +121,7 @@ struct log_options {
  *
  * @note Not thread-safe for concurrent output to stdout.
  */
-static inline int print_bpf_log(void* ctx, void* data, [[maybe_unused]] size_t len) {
+static inline int print_bpf_log(void* ctx, void* data, size_t _) {
     struct log_event* e = (struct log_event*)data;
     struct log_options* opts = (struct log_options*)ctx;
 

@@ -5,7 +5,8 @@
 Decisions:
 
 1. The first C++ `Backend` interface is synchronous: `start()`, `poll()`, and `stop()`.
-2. Backend construction receives one `BackendConfig` variant that contains either `EbpfConfig` or `DpdkConfig`.
+2. Superseded by decision 59. Backend construction originally received one `BackendConfig` variant containing either
+   `EbpfConfig` or `DpdkConfig`.
 3. Backends do not own hidden background threads in the first interface. The Host Runtime drives progress by calling `poll()`.
 4. `probe()` returns success only when the selected Backend is supported; unsupported capability, permission, wrong-config, and probe execution failures return `BackendError` with human-readable messages.
 5. Backend abstraction files live in `src/backend/`.
@@ -38,11 +39,15 @@ Decisions:
     completed; failure means runtime progress cannot continue. `PollStatus`, `WorkDone`, and `NoWork` are deleted because
     Runner never changed pacing or lifecycle behavior based on them. Backend activity facts stay private, and future
     Diagnostics uses meaningful backend-specific counters instead of a lifecycle activity bit. See ADR-0047.
+59. Backend construction receives the validated top-level `Config` and the DPDK EAL argument suffix captured by CLI.
+    `BackendConfig` contains `EbpfConfig` or the fieldless `DpdkBackendSelection` marker; DPDK runtime parameters are not
+    represented in Config. See ADR-0070.
 
 Constraint:
 
 - A synchronous `poll()` keeps lifecycle ownership visible while the eBPF backend is being adapted and the DPDK backend is still new.
-- `BackendConfig` variant is selected from the validated top-level `Config`; backend implementations must reject the wrong variant as a typed programmer/configuration error instead of reading raw TOML.
+- `BackendConfig` is selected from the validated top-level `Config`; the DPDK alternative is only a backend-selection
+  marker, while CLI-owned EAL arguments are passed separately to backend construction.
 - `BackendRunner` is the single place that enforces invalid lifecycle transitions. This prevents eBPF and DPDK implementations from drifting into different state-machine behavior.
 
 Probe role:
@@ -50,7 +55,7 @@ Probe role:
 - `probe()` is the pre-start capability gate. It is not a warm-up, not partial startup, and not a fallback mechanism.
 - `probe()` is not a health check or readiness check. It does not describe runtime liveness after `start()`.
 - eBPF examples: verify required kernel capabilities, usable BPF arena support, interface existence, and permissions that can be checked without attaching programs or creating production maps. BPF arena support may require a bounded create-and-close probe of a minimal arena map.
-- DPDK examples: verify DPDK support is compiled/available and configured port identifiers look usable without binding ports or reserving runtime resources.
+- DPDK `probe()` is side-effect-free in the MVP; EAL and its resulting port set can only be validated in `start()`.
 - Probe failures must be machine-readable and operator-readable. Example: `BackendErrorCode::Unsupported` plus `eBPF backend requires BPF arena support, but the target kernel does not provide it`.
 
 ## Segment 11: Runtime Loop Ownership
