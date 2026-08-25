@@ -10,10 +10,11 @@
 namespace shinku::backend::ebpf {
 namespace {
 
-constexpr uint32_t kDnsHeaderBytes = 12;
-constexpr uint32_t kMinimumQuestionBytes = 5;
-constexpr uint32_t kMinimumResourceRecordBytes = 11;
+constexpr uint32_t kDnsHeaderBytes = 12; ///< Fixed DNS message header size in bytes.
+constexpr uint32_t kMinimumQuestionBytes = 5; ///< Smallest DNS question (name, QTYPE, QCLASS) in bytes.
+constexpr uint32_t kMinimumResourceRecordBytes = 11; ///< Smallest resource record, bounding TTL-offset capacity.
 
+/// Compile-time checks pinning the layout math to the BPF ABI limits.
 static_assert(config::CacheConfig::kMaximumResponseBytes == SHINKU_EBPF_CACHE_MAX_RESPONSE_BYTES);
 static_assert(SHINKU_EBPF_CACHE_SLOT_ALIGNMENT > 0);
 static_assert((SHINKU_EBPF_CACHE_SLOT_ALIGNMENT & (SHINKU_EBPF_CACHE_SLOT_ALIGNMENT - 1U)) == 0);
@@ -25,6 +26,7 @@ static_assert(SHINKU_EBPF_CACHE_MAX_SLOT_STRIDE <= std::numeric_limits<uint32_t>
 
 } // namespace
 
+/// Project this layout into the BPF-side geometry struct shared with the program.
 ebpf_cache_bpf_layout EbpfCacheStorageLayout::bpf_layout() const noexcept {
     return {
         .entry_capacity = entry_capacity,
@@ -34,15 +36,20 @@ ebpf_cache_bpf_layout EbpfCacheStorageLayout::bpf_layout() const noexcept {
     };
 }
 
+/// Compute TTL-offset capacity, slot stride, and page-rounded arena size for
+/// the given cache configuration.
 EbpfCacheStorageLayout
 make_ebpf_cache_storage_layout(const config::CacheConfig& cache_config, size_t page_size) noexcept {
+    // Maximum TTL offsets is the number of minimal resource records that fit in a response.
     const auto ttl_capacity =
         (cache_config.max_response_bytes() - kDnsHeaderBytes - kMinimumQuestionBytes) / kMinimumResourceRecordBytes;
 
     const auto active_capacity = ebpf_cache_active_slot_size(cache_config.max_response_bytes(), ttl_capacity);
+    // Round the active slot size up to the arena slot alignment to form the stride.
     const size_t stride =
         (active_capacity + SHINKU_EBPF_CACHE_SLOT_ALIGNMENT - 1U) & ~(SHINKU_EBPF_CACHE_SLOT_ALIGNMENT - 1U);
     const size_t required_bytes = stride * cache_config.max_entries();
+    // Round the required arena bytes up to a whole number of pages.
     const size_t page_count = (required_bytes / page_size) + ((required_bytes % page_size != 0U) ? 1U : 0U);
 
     return EbpfCacheStorageLayout {

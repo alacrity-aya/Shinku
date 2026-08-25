@@ -7,24 +7,27 @@
 
 namespace shinku::config {
 
+/// Failure codes returned when loading or validating a configuration file.
 enum class ConfigErrorCode : uint8_t {
-    FileNotFound,
-    ReadError,
-    ParseError,
-    SchemaError,
-    ValidationError,
-    UnsupportedBackend,
+    FileNotFound, ///< The configuration file did not exist.
+    ReadError, ///< The file existed but could not be read.
+    ParseError, ///< The file could not be parsed as TOML.
+    SchemaError, ///< The TOML was valid but did not match the expected schema.
+    ValidationError, ///< A parsed value failed a semantic validation rule.
+    UnsupportedBackend, ///< The selected backend is not supported on this host.
 };
 
+/// Error returned by configuration loading, carrying the offending path and a message.
 struct ConfigError {
-    ConfigErrorCode code;
-    std::filesystem::path path;
-    std::string message;
+    ConfigErrorCode code; ///< The failure category.
+    std::filesystem::path path; ///< Path of the configuration file involved.
+    std::string message; ///< Human-readable description of the failure.
 };
 
+/// A non-fatal configuration issue surfaced during loading.
 struct ConfigWarning {
-    std::filesystem::path path;
-    std::string message;
+    std::filesystem::path path; ///< Path of the configuration file involved.
+    std::string message; ///< Human-readable description of the warning.
 };
 
 } // namespace shinku::config

@@ -11,6 +11,9 @@
 
 namespace shinku::backend::ebpf {
 
+/// Fill a fresh secret from the system RNG, retrying partial reads and EINTR
+/// until every byte is filled; any other getrandom failure is returned as an
+/// error.
 std::expected<ebpf_cache_secret, std::error_code> make_ebpf_cache_secret() noexcept {
     ebpf_cache_secret secret {};
     auto remaining = std::as_writable_bytes(std::span(&secret, 1));

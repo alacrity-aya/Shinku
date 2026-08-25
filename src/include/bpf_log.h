@@ -113,7 +113,7 @@ struct log_options {
  * @brief Print a BPF log event to stdout.
  * @param ctx Pointer to log_options structure (or NULL for defaults).
  * @param data Pointer to log_event structure.
- * @param len Length of data (unused, for callback signature compatibility).
+ * @param _ Length of data (unused, for callback signature compatibility).
  * @return Always returns 0.
  *
  * This function is used as a callback for ring_buffer__new() to process

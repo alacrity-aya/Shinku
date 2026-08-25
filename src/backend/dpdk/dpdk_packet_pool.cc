@@ -17,15 +17,18 @@
 namespace shinku::backend::dpdk {
 namespace {
 
-constexpr unsigned kMempoolCacheSize = 256;
-constexpr unsigned kBurstAllowance = 2 * 32;
+constexpr unsigned kMempoolCacheSize = 256; ///< Per-lcore mempool cache size.
+constexpr unsigned kBurstAllowance = 2 * 32; ///< Headroom for two ports' worth of burst polls.
 
+/// Capture the current rte_errno as an error_code, or nullopt if the API left it clear (no error).
 std::optional<std::error_code> dpdk_errno() noexcept {
     if (rte_errno == 0)
         return std::nullopt;
     return std::error_code(rte_errno, std::generic_category());
 }
 
+/// Compute the pool element count: the burst allowance and per-lcore cache, plus both ports'
+/// RX/TX descriptor counts, rounded up to one less than a power of two.
 unsigned packet_pool_capacity(const std::array<DpdkDescriptorCounts, 2>& descriptors) noexcept {
     unsigned required = kBurstAllowance + kMempoolCacheSize;
     for (const DpdkDescriptorCounts counts: descriptors) {
@@ -41,12 +44,16 @@ unsigned packet_pool_capacity(const std::array<DpdkDescriptorCounts, 2>& descrip
 
 } // namespace
 
+/// Remember the owning EAL so pool ownership can be registered and released in order.
 ProductionDpdkPacketPool::ProductionDpdkPacketPool(ProductionDpdkEal& eal) noexcept: eal_(eal) {}
 
+/// Best-effort close of the pool when it goes out of scope.
 ProductionDpdkPacketPool::~ProductionDpdkPacketPool() {
     auto _ = close();
 }
 
+/// Create the "shinku-packets" mbuf pool sized for the descriptor counts on @p socket_id,
+/// registering pool ownership with the EAL on success.
 std::expected<void, DpdkError> ProductionDpdkPacketPool::create(
     const std::array<DpdkDescriptorCounts, 2>& descriptors,
     int socket_id
@@ -72,10 +79,13 @@ std::expected<void, DpdkError> ProductionDpdkPacketPool::create(
     return {};
 }
 
+/// True while this pool owns its mempool.
 bool ProductionDpdkPacketPool::owns_resources() const noexcept {
     return pool_ != nullptr;
 }
 
+/// Release the mempool, refusing while ports still own queues backed by it; idempotent and
+/// safe to call repeatedly.
 std::expected<void, DpdkError> ProductionDpdkPacketPool::close() {
     if (pool_ == nullptr)
         return {};
@@ -92,6 +102,7 @@ std::expected<void, DpdkError> ProductionDpdkPacketPool::close() {
     return {};
 }
 
+/// The underlying mempool; requires a successful @ref create first.
 rte_mempool& ProductionDpdkPacketPool::native_pool() const noexcept {
     assert(pool_ != nullptr);
     return *pool_;

@@ -22,18 +22,22 @@ namespace {
 using cache::CacheStoreError;
 using cache::CacheStoreErrorCode;
 
+/// Build a StorageUnavailable error from @p cause (map access failures at the adapter).
 CacheStoreError storage_error(std::error_code cause) noexcept {
     return { .code = CacheStoreErrorCode::StorageUnavailable, .cause = cause };
 }
 
+/// Build a WriteFailed error from @p cause (map update/insert failures).
 CacheStoreError write_error(std::error_code cause) noexcept {
     return { .code = CacheStoreErrorCode::WriteFailed, .cause = cause };
 }
 
+/// Build a CleanupFailed error from @p cause (map erase failures during cleanup).
 CacheStoreError cleanup_error(std::error_code cause) noexcept {
     return { .code = CacheStoreErrorCode::CleanupFailed, .cause = cause };
 }
 
+/// Convert observed time plus a lifetime in seconds into the stored_at/expires_at nanosecond pair for the header.
 std::pair<uint64_t, uint64_t> timestamps(cache::CacheTime observed_at, cache::CacheLifetime lifetime) noexcept {
     constexpr uint64_t nanoseconds_per_second = 1'000'000'000ULL;
     const auto stored_at = static_cast<uint64_t>(observed_at.time_since_epoch().count());
@@ -41,6 +45,7 @@ std::pair<uint64_t, uint64_t> timestamps(cache::CacheTime observed_at, cache::Ca
     return { stored_at, stored_at + lifetime_ns };
 }
 
+/// Build the map value for @p slot_index and @p generation; reserved bytes stay zero.
 ebpf_cache_publication publication(uint32_t slot_index, uint64_t generation) noexcept {
     return {
         .slot_index = slot_index,
@@ -51,6 +56,7 @@ ebpf_cache_publication publication(uint32_t slot_index, uint64_t generation) noe
 
 } // namespace
 
+/// Move layout, binding, secret, and map into place, size slot bookkeeping, and value-initialize slot headers.
 EbpfCacheStore::EbpfCacheStore(
     EbpfCacheStorageLayout layout,
     EbpfNativeStorageBinding binding,
@@ -71,12 +77,14 @@ EbpfCacheStore::EbpfCacheStore(
     }
 }
 
+/// Production factory: bind the real BPF cache map, then delegate to create_for_testing with that map injected.
 std::unique_ptr<EbpfCacheStore>
 EbpfCacheStore::create(EbpfCacheStorageLayout layout, EbpfNativeStorageBinding binding, ebpf_cache_secret secret) {
     auto map = make_production_ebpf_cache_map(binding.cache_map_fd());
     return create_for_testing(layout, std::move(binding), secret, std::move(map));
 }
 
+/// Factory that hands the constructed store to a unique_ptr; tests inject a fake map via @p map.
 std::unique_ptr<EbpfCacheStore> EbpfCacheStore::create_for_testing(
     EbpfCacheStorageLayout layout,
     EbpfNativeStorageBinding binding,
@@ -86,6 +94,7 @@ std::unique_ptr<EbpfCacheStore> EbpfCacheStore::create_for_testing(
     return std::unique_ptr<EbpfCacheStore>(new EbpfCacheStore(layout, std::move(binding), secret, std::move(map)));
 }
 
+/// Build the hash-map key: network-order dest ip/port plus a fingerprint over wire question name, type, and class.
 ebpf_cache_physical_key EbpfCacheStore::physical_key(const cache::CacheKey& key) const noexcept {
     const auto name = key.question_name.wire();
     return {
@@ -102,16 +111,18 @@ ebpf_cache_physical_key EbpfCacheStore::physical_key(const cache::CacheKey& key)
     };
 }
 
+/// Arena pointer for @p slot_index (slot_index * slot_stride past the arena base); asserts the index is in range.
 std::byte* EbpfCacheStore::slot(uint32_t slot_index) noexcept {
     assert(slot_index < layout_.entry_capacity);
     return binding_.arena().data() + (static_cast<size_t>(slot_index) * layout_.slot_stride);
 }
 
-// overwrap
+/// Hand out the next generation (post-increment); unsigned wrap-around is defined and only ages older publications.
 uint64_t EbpfCacheStore::next_generation() noexcept {
     return next_generation_++;
 }
 
+/// Allocate a slot: free list, then never-used slots, then the round-robin replacement cursor (evicting an occupant).
 uint32_t EbpfCacheStore::allocate_slot() noexcept {
     if (free_head_ != kNoSlot) {
         const uint32_t result = free_head_;
@@ -127,6 +138,7 @@ uint32_t EbpfCacheStore::allocate_slot() noexcept {
     return result;
 }
 
+/// Reset the slot record and push it onto the free list so the next allocate_slot reuses it.
 void EbpfCacheStore::reclaim_slot(uint32_t slot_index) noexcept {
     SlotRecord& record = slots_[slot_index];
     record.key = {};
@@ -136,6 +148,11 @@ void EbpfCacheStore::reclaim_slot(uint32_t slot_index) noexcept {
     free_head_ = slot_index;
 }
 
+/**
+ * Publish the candidate into a slot under a seqlock: bump the sequence word to
+ * odd, write the header and response body (plus the TTL offset table), then
+ * release the seqlock back to even so readers only observe a consistent snapshot.
+ */
 void EbpfCacheStore::write_slot(
     uint32_t slot_index,
     const cache::CacheCandidate& candidate,
@@ -164,6 +181,7 @@ void EbpfCacheStore::write_slot(
     sequence.fetch_add(1, std::memory_order_release);
 }
 
+/// Copy the rolled-back body bytes back into the slot under the same seqlock discipline as write_slot.
 void EbpfCacheStore::restore_slot_body(uint32_t slot_index, size_t body_size) noexcept {
     std::byte* const bytes = slot(slot_index);
     auto* const header = reinterpret_cast<ebpf_cache_slot_header*>(bytes);
@@ -174,6 +192,13 @@ void EbpfCacheStore::restore_slot_body(uint32_t slot_index, size_t body_size) no
     sequence.fetch_add(1, std::memory_order_release);
 }
 
+/**
+ * Store @p candidate under the mutex. When the key is already published, refresh
+ * its slot in place (backing up the old body so a failed map update can roll it
+ * back). Otherwise allocate a slot, erasing the current occupant from the map
+ * first when reuse requires an eviction, then insert. Every failure path undoes
+ * its partial work so the arena and the map stay consistent.
+ */
 std::expected<cache::StoreOutcome, cache::CacheStoreError> EbpfCacheStore::store(
     const cache::CacheCandidate& candidate,
     cache::CacheTime observed_at,
@@ -268,6 +293,12 @@ std::expected<cache::StoreOutcome, cache::CacheStoreError> EbpfCacheStore::store
     return cache::StoreOutcome::Replaced;
 }
 
+/**
+ * Bounded sweep: examine up to kCleanupBatchSize slots starting at the cleanup
+ * cursor, erasing and reclaiming the expired ones, and report whether more work
+ * remains for the next call. The cursor and the remaining budget persist across
+ * calls; a fresh round begins once the budget is exhausted.
+ */
 std::expected<cache::CleanupResult, cache::CacheStoreError> EbpfCacheStore::cleanup(cache::CacheTime now) noexcept {
     const auto time = now.time_since_epoch().count();
     const auto now_ns = static_cast<uint64_t>(time);

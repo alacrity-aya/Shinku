@@ -14,10 +14,18 @@
 
 namespace shinku::cache {
 
+/// Hold the response-size limit and negative-caching switch for classification.
 DnsPolicy::DnsPolicy(uint32_t max_response_bytes, bool cache_negative) noexcept:
     max_response_bytes_(max_response_bytes),
     cache_negative_(cache_negative) {}
 
+/**
+ * @brief Classify a DNS response into a cacheable candidate or a bypass reason.
+ *
+ * Rejects messages that exceed the configured response-size limit or fail
+ * wire parsing, then defers the policy judgment to @ref dns::judge_response
+ * using the cached TTL-offset scratch space.
+ */
 std::expected<CacheCandidate, BypassReason>
 DnsPolicy::classify_response(std::span<const std::byte> message, CacheNamespace cache_namespace) noexcept {
     if (message.size() > max_response_bytes_)

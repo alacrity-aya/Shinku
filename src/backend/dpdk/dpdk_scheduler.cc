@@ -8,6 +8,7 @@
 
 namespace shinku::backend::dpdk {
 
+/// Store references to the four poll tasks that make up a scheduling quantum.
 DpdkCooperativeScheduler::DpdkCooperativeScheduler(
     DpdkPollTask& client,
     DpdkPollTask& service,
@@ -19,6 +20,8 @@ DpdkCooperativeScheduler::DpdkCooperativeScheduler(
     cache_(cache),
     pending_(pending) {}
 
+/// Run each poll task once in fixed order (client, service, cache, pending), aborting the
+/// quantum and propagating the first failure.
 std::expected<void, BackendError> DpdkCooperativeScheduler::run_quantum() {
     if (auto result = client_.run(); !result)
         return result;

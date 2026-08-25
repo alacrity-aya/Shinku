@@ -16,13 +16,17 @@
 namespace shinku::process_control {
 namespace {
 
+/// Set by a signal handler when shutdown was requested; the only async-safe shared flag.
 volatile sig_atomic_t shutdown_requested_flag = 0;
+/// True once SIGINT/SIGTERM handlers have been installed successfully.
 bool signal_handlers_installed = false;
 
+/// Async-signal-safe handler that records the shutdown request.
 void handle_shutdown_signal(int _) noexcept {
     shutdown_requested_flag = 1;
 }
 
+/// Build an unexpected @ref ProcessControlError describing a failed sigaction install.
 std::unexpected<ProcessControlError> signal_install_error(std::string_view signal_name, std::error_code error) {
     auto message = std::format("sigaction({}) failed: {}", signal_name, error.message());
 
@@ -35,6 +39,7 @@ std::unexpected<ProcessControlError> signal_install_error(std::string_view signa
     );
 }
 
+/// Install @ref handle_shutdown_signal for one signal, reporting failures with its name.
 std::expected<void, ProcessControlError> install_handler(int signal_number, std::string_view signal_name) {
     struct sigaction action {};
     action.sa_handler = handle_shutdown_signal;
@@ -48,19 +53,23 @@ std::expected<void, ProcessControlError> install_handler(int signal_number, std:
 
 } // namespace
 
+/// @return The process-wide singleton @ref ProcessControl instance.
 ProcessControl& ProcessControl::instance() noexcept {
     static ProcessControl control;
     return control;
 }
 
+/// Record that shutdown was requested; safe to call from signal context.
 void ProcessControl::request_shutdown() noexcept {
     shutdown_requested_flag = 1;
 }
 
+/// @return True once shutdown has been requested.
 bool ProcessControl::shutdown_requested() noexcept {
     return shutdown_requested_flag != 0;
 }
 
+/// @return A @ref backend::StopRequest when shutdown was requested, otherwise nullopt.
 std::optional<backend::StopRequest> ProcessControl::poll() noexcept {
     if (!shutdown_requested())
         return std::nullopt;
@@ -68,6 +77,7 @@ std::optional<backend::StopRequest> ProcessControl::poll() noexcept {
     return backend::StopRequest { .reason = backend::StopReason::Signal };
 }
 
+/// Install SIGINT and SIGTERM handlers once; later calls are idempotent.
 std::expected<void, ProcessControlError> ProcessControl::install_signal_handlers() {
     if (signal_handlers_installed)
         return {};
@@ -84,6 +94,7 @@ std::expected<void, ProcessControlError> ProcessControl::install_signal_handlers
     return {};
 }
 
+/// Clear the shutdown flag so tests can start from a clean process state.
 void ProcessControl::reset_for_tests() noexcept {
     shutdown_requested_flag = 0;
 }

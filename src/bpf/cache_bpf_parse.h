@@ -1,11 +1,18 @@
 // SPDX-License-Identifier: GPL-2.0-only
-/* Packet envelope and DNS question parsing for the cache BPF program. */
+/**
+ * @file cache_bpf_parse.h
+ * @brief Packet envelope and DNS question parsing for the cache BPF program.
+ *
+ * Validates the Ethernet/IPv4/UDP/DNS envelope and decodes the single question
+ * into canonical form, so the fingerprint and eligibility helpers can run.
+ */
 #pragma once
 
 // NOLINTBEGIN(readability-implicit-bool-conversion)
 
 #include "bpf/cache_bpf_common.h"
 
+/// @brief Return true if @p address is a unicast Ethernet MAC (not multicast, not all-zero).
 static __always_inline bool ethernet_unicast(const __u8* address) {
     if ((address[0] & 1U) != 0)
         return false;
@@ -16,11 +23,20 @@ static __always_inline bool ethernet_unicast(const __u8* address) {
     return any != 0;
 }
 
+/// @brief Return true if @p address is a unicast IPv4 address (not 0, broadcast, or multicast).
 static __always_inline bool ipv4_unicast(__be32 address) {
     const __u32 host = bpf_ntohl(address);
     return host != 0 && (host < 0xe0000000U || host > 0xefffffffU) && host != 0xffffffffU;
 }
 
+/**
+ * @brief Parse and validate the packet envelope into @p view.
+ * @param data Start of the packet (Ethernet header).
+ * @param data_end End of the packet buffer.
+ * @param query True if the packet is being parsed as a query (direction-aware port checks).
+ * @param view Receives the parsed header pointers and DNS payload size.
+ * @return True if the envelope is a valid DNS/UDP/IPv4 unicast frame.
+ */
 static __always_inline bool parse_envelope(void* data, void* data_end, bool query, struct packet_view* view) {
     struct ethhdr* eth = data;
     if ((void*)(eth + 1) > data_end || eth->h_proto != bpf_htons(SHINKU_ETH_P_IP))
@@ -67,6 +83,15 @@ static __always_inline bool parse_envelope(void* data, void* data_end, bool quer
     return true;
 }
 
+/**
+ * @brief Decode the single DNS question into canonical form in @p scratch.
+ * @param dns The parsed DNS header.
+ * @param packet_end End of the DNS payload.
+ * @param dns_size Number of DNS message bytes available.
+ * @param scratch Receives the canonical question bytes.
+ * @param facts Receives the question's wire size, type, and class.
+ * @return True if exactly one valid question was decoded.
+ */
 static __always_inline bool parse_question(
     struct dns_header* dns,
     void* packet_end,
@@ -121,6 +146,7 @@ static __always_inline bool parse_question(
     return true;
 }
 
+/// @brief Return true if @p view is an eligible cacheable query (RD set, single IN A question, etc.).
 static __always_inline bool eligible_query(const struct packet_view* view, const struct question_facts* question) {
     const __u16 flags = bpf_ntohs(view->dns->flags);
     if ((flags & (DNS_QR | DNS_OPCODE | DNS_TC | DNS_Z | DNS_AD | DNS_CD)) != 0 || (flags & DNS_RD) == 0)
@@ -131,6 +157,7 @@ static __always_inline bool eligible_query(const struct packet_view* view, const
         && view->dns_size == SHINKU_DNS_HEADER_BYTES + question->question_size;
 }
 
+/// @brief Return true if @p view is an eligible cacheable response (QR set, rcode 0 or 3, single question).
 static __always_inline bool response_question(const struct packet_view* view, const struct question_facts* question) {
     const __u16 flags = bpf_ntohs(view->dns->flags);
     const __u16 rcode = flags & DNS_RCODE;

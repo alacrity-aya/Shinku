@@ -7,14 +7,16 @@
 
 namespace shinku::process_control {
 
+/// Failure codes returned by @ref ProcessControl operations.
 enum class ProcessControlErrorCode : uint8_t {
-    SignalInstallFailed,
+    SignalInstallFailed, ///< A signal handler could not be installed.
 };
 
+/// Error returned by @ref ProcessControl, carrying the underlying system error.
 struct ProcessControlError {
-    ProcessControlErrorCode code;
-    std::error_code error;
-    std::string message;
+    ProcessControlErrorCode code; ///< The failure category.
+    std::error_code error; ///< Underlying system error.
+    std::string message; ///< Human-readable description of the failure.
 };
 
 } // namespace shinku::process_control

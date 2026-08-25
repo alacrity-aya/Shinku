@@ -15,6 +15,7 @@
 namespace shinku::backend {
 namespace {
 
+/// Returns a human-readable label for a @ref BackendState, used in error messages.
 std::string_view state_name(BackendState state) {
     switch (state) {
         case BackendState::Created:
@@ -29,6 +30,7 @@ std::string_view state_name(BackendState state) {
     std::unreachable();
 }
 
+/// Builds an InvalidState error describing that run() was called from @p state.
 std::unexpected<BackendError> invalid_state_error(BackendState state) {
     auto message = std::format("cannot run backend while runner is {}", state_name(state));
 
@@ -41,6 +43,7 @@ std::unexpected<BackendError> invalid_state_error(BackendState state) {
     );
 }
 
+/// Builds an InvalidState error for the case where the owned backend is absent.
 std::unexpected<BackendError> missing_backend_error() {
     return std::unexpected(
         BackendError {
@@ -51,6 +54,7 @@ std::unexpected<BackendError> missing_backend_error() {
     );
 }
 
+/// Builds a StopFailed error, naming the stop reason and the underlying failure.
 std::unexpected<BackendError> stop_failed_error(StopRequest request, const BackendError& error) {
     return std::unexpected(
         BackendError {
@@ -67,18 +71,22 @@ std::unexpected<BackendError> stop_failed_error(StopRequest request, const Backe
 
 } // namespace
 
+/// Constructs a runner that takes ownership of @p backend.
 BackendRunner::BackendRunner(std::unique_ptr<Backend> backend) noexcept: backend_(std::move(backend)) {}
 
+/// Stops an active backend on destruction so shutdown always reaches the backend.
 BackendRunner::~BackendRunner() noexcept {
     if (backend_active_) {
         auto _ = stop_backend();
     }
 }
 
+/// Returns the current lifecycle state.
 BackendState BackendRunner::state() const noexcept {
     return state_;
 }
 
+/// Drives the run loop: probe, start, poll, then stop on a shutdown request or poll failure.
 std::expected<ShutdownReport, BackendError> BackendRunner::run(StopCondition& stop_condition) {
     if (state_ != BackendState::Created)
         return invalid_state_error(state_);
@@ -131,6 +139,7 @@ std::expected<ShutdownReport, BackendError> BackendRunner::run(StopCondition& st
     }
 }
 
+/// Stops the owned backend; on success clears the active flag so the destructor does not stop it again.
 std::expected<void, BackendError> BackendRunner::stop_backend() {
     auto stop_result = backend_->stop();
     if (!stop_result)

@@ -11,6 +11,9 @@
 
 namespace shinku::backend::dpdk {
 
+/// Run one bounded cache-cleanup sweep once the interval deadline has elapsed; on a clock
+/// failure (warned once) or a failed sweep defer by one interval, and when the cache reports
+/// more work reset the deadline to now so the next quantum continues the sweep immediately.
 std::expected<void, BackendError> DpdkCacheCleanupTask::run() {
     const auto now = read_dpdk_boot_time();
     if (!now) {
@@ -40,6 +43,9 @@ std::expected<void, BackendError> DpdkCacheCleanupTask::run() {
     return {};
 }
 
+/// Run one bounded pending-query sweep once the half-timeout deadline has elapsed, deferring
+/// by that same interval on failure (warned once) and continuing immediately while more work
+/// remains.
 std::expected<void, BackendError> DpdkPendingCleanupTask::run() {
     const auto now = read_dpdk_boot_time();
     if (!now) {

@@ -7,26 +7,36 @@
 
 namespace shinku::cache {
 
+/// Reason a parsed DNS response was deliberately not cached by the policy layer.
 enum class BypassReason : uint8_t {
-    ResponseTooLarge,
-    MalformedResponse,
-    NotAResponse,
-    UnsupportedOpcode,
-    QuestionCountMismatch,
-    TruncatedResponse,
-    AdditionalSectionPresent,
-    RecursionNotDesired,
-    CheckingDisabled,
-    ReservedFlagSet,
-    UnsupportedQuestionEncoding,
-    UnsupportedQuestionType,
-    UnsupportedQuestionClass,
-    UnsupportedRcode,
-    NegativeCachingDisabled,
-    NoResourceRecordTtl,
-    ZeroLifetime,
+    ResponseTooLarge, ///< The response exceeded the configured size limit.
+    MalformedResponse, ///< The response failed to parse.
+    NotAResponse, ///< The message was not a response (QR bit clear).
+    UnsupportedOpcode, ///< The OPCODE is not a standard query.
+    QuestionCountMismatch, ///< The question count was not exactly one.
+    TruncatedResponse, ///< The TC bit was set, indicating a truncated response.
+    AdditionalSectionPresent, ///< An additional section was present and unsupported.
+    RecursionNotDesired, ///< The RD bit was not set by the client.
+    CheckingDisabled, ///< The CD bit was set, disabling DNSSEC validation.
+    ReservedFlagSet, ///< A reserved header flag was set.
+    UnsupportedQuestionEncoding, ///< The question name used an unsupported encoding.
+    UnsupportedQuestionType, ///< The QTYPE is not cacheable.
+    UnsupportedQuestionClass, ///< The QCLASS is not cacheable.
+    UnsupportedRcode, ///< The RCODE is not cacheable.
+    NegativeCachingDisabled, ///< The response is negative but negative caching is off.
+    NoResourceRecordTtl, ///< No resource record contributed a TTL.
+    ZeroLifetime, ///< The computed cache lifetime was zero or negative.
 };
 
+/**
+ * @brief Return a lowercase human-readable name for a @ref BypassReason.
+ *
+ * Used in operator-facing diagnostics and logs to explain why a response was
+ * not cached.
+ *
+ * @param reason The bypass reason to name.
+ * @return A stable string view naming the reason.
+ */
 [[nodiscard]] constexpr std::string_view bypass_reason_name(BypassReason reason) noexcept {
     switch (reason) {
         case BypassReason::ResponseTooLarge:

@@ -23,12 +23,14 @@
 namespace shinku::backend::dpdk {
 namespace {
 
+/// Build a @ref cache::CacheStoreError with the given code and underlying cause.
 cache::CacheStoreError error(cache::CacheStoreErrorCode code, std::error_code cause) noexcept {
     return { .code = code, .cause = cause };
 }
 
 } // namespace
 
+/// Construct the store over a preallocated entry vector and an empty hash table.
 DpdkCacheStore::DpdkCacheStore(
     uint32_t capacity,
     uint32_t maximum_response_bytes,
@@ -40,6 +42,11 @@ DpdkCacheStore::DpdkCacheStore(
     entries_(std::move(entries)),
     hash_(std::move(hash)) {}
 
+/// @brief Allocate the entry vector and hash table for the requested capacity.
+///
+/// The vector lives on the heap; the hash table is created on @p socket_id so
+/// its memory is NUMA-local to the DPDK data path. A failed hash-table creation
+/// or an allocation error is reported as @ref cache::CacheStoreErrorCode::StorageUnavailable.
 std::expected<std::unique_ptr<DpdkCacheStore>, cache::CacheStoreError>
 DpdkCacheStore::create(uint32_t capacity, uint32_t maximum_response_bytes, int socket_id) noexcept {
     try {
@@ -60,6 +67,10 @@ DpdkCacheStore::create(uint32_t capacity, uint32_t maximum_response_bytes, int s
 
 DpdkCacheStore::~DpdkCacheStore() = default;
 
+/// Serialize the cache key into the fixed physical-key layout the hash table keys on.
+///
+/// All fields except the name are converted to big-endian so that hashing and
+/// comparison work on the wire byte order used throughout the DPDK path.
 DpdkCacheStore::PhysicalKey DpdkCacheStore::physical_key(const cache::CacheKey& key) noexcept {
     PhysicalKey result {};
     const uint32_t destination_ipv4 = rte_cpu_to_be_32(key.cache_namespace.destination_ipv4);
@@ -77,6 +88,11 @@ DpdkCacheStore::PhysicalKey DpdkCacheStore::physical_key(const cache::CacheKey& 
     return result;
 }
 
+/// @brief Claim a cache slot, preferring freed entries, then unused ones, then the replacement cursor.
+///
+/// The free list is checked first so reclaimed slots are reused before fresh
+/// capacity; once the vector is exhausted, @ref replacement_cursor_ walks the
+/// slots so eviction is round-robin rather than pinned to one index.
 uint32_t DpdkCacheStore::allocate_entry() noexcept {
     if (free_head_ != kNoSlot) {
         const uint32_t index = free_head_;
@@ -89,6 +105,7 @@ uint32_t DpdkCacheStore::allocate_entry() noexcept {
     return replacement_cursor_;
 }
 
+/// Push a slot back onto the free list for `allocate_entry` to reuse.
 void DpdkCacheStore::reclaim_entry(uint32_t index) noexcept {
     Entry& entry = entries_[index];
     entry.occupied = false;
@@ -96,6 +113,7 @@ void DpdkCacheStore::reclaim_entry(uint32_t index) noexcept {
     free_head_ = index;
 }
 
+/// Populate a slot with the candidate's key, kind, timing, and fixed-extent payload copies.
 void DpdkCacheStore::write_entry(
     Entry& entry,
     const cache::CacheCandidate& candidate,
@@ -111,10 +129,21 @@ void DpdkCacheStore::write_entry(
     std::ranges::copy(candidate.ttl_offsets, entry.ttl_offsets.begin());
 }
 
+/// Remove the entry's physical key from the hash table, returning any DPDK failure.
 std::expected<void, std::error_code> DpdkCacheStore::erase_entry(Entry& entry) noexcept {
     return hash_.erase(entry.physical_key);
 }
 
+/**
+ * @brief Store or update one cache candidate.
+ *
+ * Rejects payloads that exceed the response or TTL-offset limits and candidates
+ * that are already expired at @p now. An existing live entry is updated only
+ * when it is not fresher than @p observed_at. A new slot is claimed via
+ * `allocate_entry`; if that slot was occupied, the stale entry is erased
+ * first so a hash collision cannot alias two physical keys. The hash insert is
+ * rolled back through `reclaim_entry` on failure.
+ */
 std::expected<cache::StoreOutcome, cache::CacheStoreError> DpdkCacheStore::store(
     const cache::CacheCandidate& candidate,
     cache::CacheTime observed_at,
@@ -161,6 +190,7 @@ std::expected<cache::StoreOutcome, cache::CacheStoreError> DpdkCacheStore::store
     return cache::StoreOutcome::Replaced;
 }
 
+/// @brief Return the live entry for a key, or null when absent, expired, or a DPDK lookup failed.
 const DpdkCacheStore::Entry* DpdkCacheStore::lookup(const cache::CacheKey& key, cache::CacheTime now) const noexcept {
     const PhysicalKey physical = physical_key(key);
     auto result = hash_.lookup(physical);
@@ -170,6 +200,14 @@ const DpdkCacheStore::Entry* DpdkCacheStore::lookup(const cache::CacheKey& key, 
     return entry->occupied && now < entry->expires_at ? entry : nullptr;
 }
 
+/**
+ * @brief Sweep a bounded batch of expired entries, keeping a cursor for the next call.
+ *
+ * Each invocation scans at most `kCleanupBatchSize` slots starting at
+ * `cleanup_cursor_` so cleanup work is spread across calls rather than done
+ * in one long pass. The scan re-arms whenever `cleanup_remaining_` reaches
+ * zero, making each call cover the whole table once per full sweep.
+ */
 std::expected<cache::CleanupResult, cache::CacheStoreError> DpdkCacheStore::cleanup(cache::CacheTime now) noexcept {
     const std::scoped_lock lock(mutex_);
     if (cleanup_remaining_ == 0)

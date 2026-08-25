@@ -24,16 +24,23 @@
 namespace shinku::backend::dpdk {
 namespace {
 
+/// Desired RX descriptor count before the device's own adjustment clamps it.
 constexpr uint16_t kRequestedRxDescriptors = 1024;
+/// Desired TX descriptor count before the device's own adjustment clamps it.
 constexpr uint16_t kRequestedTxDescriptors = 1024;
+/// Lower bound on the descriptor count a port may settle on after adjustment.
 constexpr uint16_t kMinimumDescriptors = 32;
+/// MTU the pipeline expects; the port is reconfigured to this exact value.
 constexpr uint16_t kFrameMtu = 1500;
+/// The single RX/TX queue index used for the data path.
 constexpr uint16_t kQueueId = 0;
 
+/// Convert a negative DPDK return value (a negated errno) into a std::error_code.
 std::error_code result_error(int result) noexcept {
     return { -result, std::generic_category() };
 }
 
+/// Build an unexpected @ref DpdkError describing a failed DPDK operation.
 std::unexpected<DpdkError>
 failure(std::string operation, std::string detail, std::optional<std::error_code> cause = std::nullopt) {
     return std::unexpected(DpdkError {
@@ -45,6 +52,7 @@ failure(std::string operation, std::string detail, std::optional<std::error_code
 
 } // namespace
 
+/// Bind a port to its ethdev id, EAL, and the packet pool that backs RX/TX.
 ProductionDpdkPort::ProductionDpdkPort(
     uint16_t id,
     std::string identity,
@@ -56,10 +64,20 @@ ProductionDpdkPort::ProductionDpdkPort(
     eal_(eal),
     packet_pool_(packet_pool) {}
 
+/// Destructor tears the port down so resources are released on unwind.
 ProductionDpdkPort::~ProductionDpdkPort() {
     auto _ = close();
 }
 
+/**
+ * @brief Validate and configure the ethdev, then adjust descriptor counts.
+ *
+ * Checks the port exists, exposes at least one RX/TX queue, and supports the
+ * required MTU. After @c rte_eth_dev_configure the MTU is verified and
+ * corrected, descriptor counts are adjusted down to what the device supports
+ * (guarding the lower bound), and the resulting counts are returned to size
+ * the shared packet pool.
+ */
 std::expected<DpdkDescriptorCounts, DpdkError> ProductionDpdkPort::configure() {
     if (rte_eth_dev_is_valid_port(id_) == 0) {
         return failure(
@@ -124,6 +142,13 @@ std::expected<DpdkDescriptorCounts, DpdkError> ProductionDpdkPort::configure() {
     return descriptors_;
 }
 
+/**
+ * @brief Set up the RX and TX queues on the port's NUMA node.
+ *
+ * Queue memory is placed on the port's own socket when known, falling back to
+ * @p fallback_socket_id (the EAL main socket) otherwise. The RX queue draws
+ * mbufs from the shared packet pool's native mempool.
+ */
 std::expected<void, DpdkError> ProductionDpdkPort::setup_queues(int fallback_socket_id) {
     rte_eth_dev_info info {};
     int result = rte_eth_dev_info_get(id_, &info);
@@ -153,6 +178,7 @@ std::expected<void, DpdkError> ProductionDpdkPort::setup_queues(int fallback_soc
     return {};
 }
 
+/// Start the device and confirm promiscuous mode took effect.
 std::expected<void, DpdkError> ProductionDpdkPort::start() {
     int result = rte_eth_dev_start(id_);
     if (result != 0)
@@ -172,6 +198,7 @@ std::expected<void, DpdkError> ProductionDpdkPort::start() {
     return {};
 }
 
+/// Log the current link state without blocking; startup continues on link-down.
 void ProductionDpdkPort::log_link_state() const noexcept {
     rte_eth_link link {};
     const int result = rte_eth_link_get_nowait(id_, &link);
@@ -191,28 +218,40 @@ void ProductionDpdkPort::log_link_state() const noexcept {
     }
 }
 
+/// @return The number of mbufs received from the RX queue into @p packets.
 uint16_t ProductionDpdkPort::receive(std::span<rte_mbuf*> packets) noexcept {
     assert(packets.size() <= std::numeric_limits<uint16_t>::max());
     return rte_eth_rx_burst(id_, kQueueId, packets.data(), static_cast<uint16_t>(packets.size()));
 }
 
+/// @return The number of mbufs accepted by the TX queue from @p packets.
 uint16_t ProductionDpdkPort::transmit(std::span<rte_mbuf*> packets) noexcept {
     assert(packets.size() <= std::numeric_limits<uint16_t>::max());
     return rte_eth_tx_burst(id_, kQueueId, packets.data(), static_cast<uint16_t>(packets.size()));
 }
 
+/// Return an mbuf to its mempool for reuse.
 void ProductionDpdkPort::free_packet(rte_mbuf& packet) noexcept {
     rte_pktmbuf_free(&packet);
 }
 
+/// @return The port's human-readable identity (e.g. "client" or "service").
 std::string_view ProductionDpdkPort::identity() const noexcept {
     return identity_;
 }
 
+/// @return True while this port still owns its ethdev resource.
 bool ProductionDpdkPort::owns_resources() const noexcept {
     return configured_;
 }
 
+/**
+ * @brief Tear the port down in reverse start order: promiscuous, stop, close.
+ *
+ * Idempotent: a port that was never configured (or already closed) is a no-op.
+ * The EAL's ownership count is released only after a successful close, keeping
+ * the EAL cleanup refusal honest.
+ */
 std::expected<void, DpdkError> ProductionDpdkPort::close() {
     if (!configured_)
         return {};

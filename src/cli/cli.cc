@@ -15,13 +15,20 @@
 namespace shinku::cli {
 namespace {
 
+/// The only supported subcommand.
 constexpr std::string_view kRun = "run";
+/// Long option selecting the TOML configuration path.
 constexpr std::string_view kConfig = "--config";
+/// Long option printing usage.
 constexpr std::string_view kHelp = "--help";
+/// Long option printing the version.
 constexpr std::string_view kVersion = "--version";
+/// Separator after which all remaining arguments belong to DPDK EAL.
 constexpr std::string_view kArgumentSeparator = "--";
+/// Configuration path used when none is supplied.
 constexpr std::string_view kDefaultConfigPath = "./shinku.toml";
 
+/// Build an unexpected @ref CliError from a code and message.
 std::unexpected<CliError> cli_error(CliErrorCode code, std::string message) {
     return std::unexpected(CliError {
         .code = code,
@@ -31,10 +38,20 @@ std::unexpected<CliError> cli_error(CliErrorCode code, std::string message) {
 
 } // namespace
 
+/// @return The one-line usage text shown on errors and with --help.
 std::string_view usage_text() {
     return "usage: shinku run [--config path] [-- <DPDK EAL arguments...>]\n";
 }
 
+/**
+ * @brief Parse the command line into an action or a run command.
+ *
+ * Splits off DPDK EAL arguments at the first "--" separator, then parses the
+ * remaining arguments with argparse: --help and --version resolve to their
+ * actions, and a used "run" subcommand resolves to a @ref CliCommand carrying
+ * the config path (defaulted to ./shinku.toml) and the EAL arguments. Unknown
+ * arguments and missing subcommands are reported as errors.
+ */
 std::expected<CliResult, CliError> parse_cli(int argc, char** argv) {
     int shinku_argc = argc;
     std::vector<std::string> dpdk_arguments;

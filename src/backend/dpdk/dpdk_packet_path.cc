@@ -30,19 +30,27 @@
 namespace shinku::backend::dpdk {
 namespace {
 
+/// Maximum packets drained per @ref run burst from either port.
 constexpr uint16_t kBurstSize = 32;
+/// Size of the Ethernet header (dst/src MAC plus ether type).
 constexpr size_t kEthernetBytes = sizeof(rte_ether_hdr);
+/// Size of the IPv4 header as built for synthesized replies.
 constexpr size_t kIpv4Bytes = sizeof(rte_ipv4_hdr);
+/// Size of the UDP header as built for synthesized replies.
 constexpr size_t kUdpBytes = sizeof(rte_udp_hdr);
+/// Byte offset of the DNS payload within an Ethernet/IPv4/UDP frame.
 constexpr size_t kDnsOffset = kEthernetBytes + kIpv4Bytes + kUdpBytes;
+/// Largest frame the forwarder will build: headers plus the maximum DNS message.
 constexpr size_t kMaxFrameBytes = kDnsOffset + cache::dns::kMaxDnsMessageBytes;
 
+/// True when the mbuf is a single contiguous segment within the maximum frame size.
 bool satisfies_frame_contract(const rte_mbuf& packet) noexcept {
     constexpr uint32_t maximum_frame_bytes = RTE_ETHER_MAX_VLAN_FRAME_LEN - RTE_ETHER_CRC_LEN;
     return packet.nb_segs == 1 && packet.next == nullptr && packet.pkt_len == packet.data_len
         && packet.pkt_len <= maximum_frame_bytes;
 }
 
+/// Derive the pending key that correlates a query to its matching response.
 DpdkPendingKey pending_key(const ParsedDnsPacket& packet) noexcept {
     return {
         .source_ipv4 = packet.ipv4().src_addr,
@@ -53,6 +61,7 @@ DpdkPendingKey pending_key(const ParsedDnsPacket& packet) noexcept {
     };
 }
 
+/// Derive the cache key from the packet, converting wire-order addresses to host order.
 cache::CacheKey cache_key(const ParsedDnsPacket& packet) noexcept {
     return {
         .cache_namespace = {
@@ -65,6 +74,16 @@ cache::CacheKey cache_key(const ParsedDnsPacket& packet) noexcept {
     };
 }
 
+/**
+ * @brief Rewrite the mbuf into a cached response frame for the given query.
+ *
+ * Builds a fresh Ethernet/IPv4/UDP header with the query's source and
+ * destination swapped, copies the cached response body, overwrites the header
+ * ID and question with the query's values, and decrements each cached TTL by
+ * the time the entry has been stored. The mbuf is resized to the new frame
+ * length. Returns false (leaving the packet untouched) when the entry is not
+ * live, the payload is malformed, or the resize fails.
+ */
 bool build_hit(
     rte_mbuf& packet,
     const ParsedDnsPacket& query,
@@ -133,6 +152,7 @@ bool build_hit(
 
 } // namespace
 
+/// Construct a forwarder bound to a cache context so it can reply to queries and observe responses.
 DpdkPacketForwarder::DpdkPacketForwarder(
     DpdkPort& source,
     DpdkPort& destination,
@@ -144,6 +164,7 @@ DpdkPacketForwarder::DpdkPacketForwarder(
     direction_(direction),
     cache_context_(&cache_context) {}
 
+/// Construct a transparent forwarder with no cache context; it only moves packets.
 DpdkPacketForwarder::DpdkPacketForwarder(DpdkPort& source, DpdkPort& destination, DnsPacketDirection direction) noexcept
     :
     source_(source),
@@ -151,6 +172,7 @@ DpdkPacketForwarder::DpdkPacketForwarder(DpdkPort& source, DpdkPort& destination
     direction_(direction),
     cache_context_(nullptr) {}
 
+/// Log a frame-contract violation once per forwarder, describing the offending mbuf.
 void DpdkPacketForwarder::warn_frame_violation(const rte_mbuf* packet) {
     if (frame_warning_emitted_)
         return;
@@ -169,6 +191,13 @@ void DpdkPacketForwarder::warn_frame_violation(const rte_mbuf* packet) {
     frame_warning_emitted_ = true;
 }
 
+/**
+ * @brief Try to answer a query from the cache; otherwise record it as pending.
+ *
+ * A live cache hit is rewritten into a reply frame in place. A miss or a
+ * build failure leaves the packet to be forwarded and remembers the pending
+ * query so the matching response can be observed and cached.
+ */
 DpdkPacketForwarder::PacketDisposition
 DpdkPacketForwarder::process_query(rte_mbuf& packet, const ParsedDnsPacket& query) {
     auto now = read_dpdk_boot_time();
@@ -191,6 +220,13 @@ DpdkPacketForwarder::process_query(rte_mbuf& packet, const ParsedDnsPacket& quer
     return PacketDisposition::Forward;
 }
 
+/**
+ * @brief Cache a response when it matches a pending query.
+ *
+ * The response's pending key is direction-flipped to recover the query key;
+ * only a pending query within the timeout can be claimed. The policy classifies
+ * the response into a candidate, which is then stored.
+ */
 void DpdkPacketForwarder::observe_response(const ParsedDnsPacket& response) {
     auto now = read_dpdk_boot_time();
     if (!now) {
@@ -224,6 +260,15 @@ void DpdkPacketForwarder::observe_response(const ParsedDnsPacket& response) {
     auto _ = context.cache.store(*candidate, *now, *now);
 }
 
+/**
+ * @brief Decide what to do with one received packet.
+ *
+ * Dropped packets (null or frame-contract violations) are logged once. With no
+ * cache context every packet is forwarded unchanged. Otherwise the frame is
+ * parsed in the forwarder's direction and queries are answered from cache
+ * while responses are observed for caching; parse failures fall back to
+ * forwarding.
+ */
 DpdkPacketForwarder::PacketDisposition DpdkPacketForwarder::disposition(rte_mbuf* packet) {
     if (packet == nullptr || !satisfies_frame_contract(*packet)) {
         warn_frame_violation(packet);
@@ -243,6 +288,7 @@ DpdkPacketForwarder::PacketDisposition DpdkPacketForwarder::disposition(rte_mbuf
     return PacketDisposition::Forward;
 }
 
+/// Transmit a packet span, freeing any packet the destination did not accept.
 void DpdkPacketForwarder::transmit_or_release(DpdkPort& destination, std::span<rte_mbuf*> packets) {
     if (packets.empty())
         return;
@@ -251,6 +297,13 @@ void DpdkPacketForwarder::transmit_or_release(DpdkPort& destination, std::span<r
         source_.free_packet(*packet);
 }
 
+/**
+ * @brief Drain one burst from the source port and process each packet.
+ *
+ * Forwarded packets are collected and transmitted to the destination; replies
+ * go back out the source port; dropped packets are freed immediately. Any
+ * packets the destination rejects are freed via the source port's pool.
+ */
 std::expected<void, BackendError> DpdkPacketForwarder::run() {
     std::array<rte_mbuf*, kBurstSize> received {};
     const uint16_t received_count = source_.receive(received);

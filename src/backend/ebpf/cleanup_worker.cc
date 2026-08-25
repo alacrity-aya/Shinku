@@ -16,6 +16,7 @@
 
 namespace shinku::backend::ebpf {
 
+/// Spawn the worker thread, returning the thread-creation error on failure.
 std::expected<void, std::error_code> CleanupWorker::start(
     cache::CacheStore& store,
     PendingQueryCleaner& pending,
@@ -32,6 +33,10 @@ std::expected<void, std::error_code> CleanupWorker::start(
     return {};
 }
 
+/// Loop until stop is requested: wait until the earlier of the cache and
+/// pending deadlines, then run whichever sweep is due (alternating when both
+/// are due). A sweep reporting more_work reschedules it immediately so stale
+/// entries drain without waiting out the full interval.
 void CleanupWorker::run(
     std::stop_token token,
     cache::CacheStore& store,
@@ -48,6 +53,7 @@ void CleanupWorker::run(
     while (!token.stop_requested()) {
         {
             std::unique_lock lock(wait_mutex);
+            // Wait until the earlier deadline, waking early only to observe a stop request.
             const auto deadline = std::min(next_cache, next_pending);
             wake.wait_until(lock, token, deadline, [&token] { return token.stop_requested(); });
             if (token.stop_requested())
@@ -57,11 +63,13 @@ void CleanupWorker::run(
         const auto current = std::chrono::steady_clock::now();
         const bool cache_due = current >= next_cache;
         const bool pending_due = current >= next_pending;
+        // When both sweeps are due, alternate turns so neither starves the other.
         const bool run_cache = cache_due && (!pending_due || cache_turn);
         cache_turn = !run_cache;
         const auto now = cache::boot_time();
         if (run_cache) {
             auto result = store.cleanup(now);
+            // Reschedule immediately while a sweep reports more work; otherwise wait out the interval.
             next_cache = result && result->more_work ? std::chrono::steady_clock::now()
                                                      : std::chrono::steady_clock::now() + cache_interval;
         } else {

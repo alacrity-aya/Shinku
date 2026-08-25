@@ -6,6 +6,7 @@
 
 namespace shinku::backend {
 
+/// Map a @ref StopReason to the stable diagnostic name used in runner error messages.
 std::string_view stop_reason_name(StopReason reason) noexcept {
     switch (reason) {
         case StopReason::Signal:

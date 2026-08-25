@@ -15,8 +15,20 @@ namespace shinku::backend::ebpf {
 
 class CleanupWorker;
 
+/**
+ * @brief eBPF-backed @ref Backend driving the XDP/TC packet path.
+ *
+ * Owns the native libbpf session, the eBPF cache store, the pending-query
+ * cleaner, the DNS policy, the correlated-DNS event consumer, and the
+ * background cleanup worker that sweeps expired cache and pending entries
+ * between packet-ring polls.
+ */
 class EbpfBackend final: public Backend {
 public:
+    /// @brief Construct the eBPF backend from its config and native session.
+    /// @param ebpf_config The validated eBPF backend configuration.
+    /// @param cache_config The backend-neutral cache configuration.
+    /// @param native_session The libbpf native session owning BPF resources.
     EbpfBackend(
         config::EbpfConfig ebpf_config,
         config::CacheConfig cache_config,
@@ -31,14 +43,14 @@ protected:
     [[nodiscard]] std::expected<void, BackendError> stop() override;
 
 private:
-    config::EbpfConfig config_;
-    config::CacheConfig cache_config_;
-    std::unique_ptr<EbpfNativeSession> native_session_;
-    std::unique_ptr<EbpfCacheStore> cache_store_;
-    std::unique_ptr<PendingQueryCleaner> pending_cleaner_;
-    std::unique_ptr<cache::DnsPolicy> dns_policy_;
-    std::unique_ptr<CorrelatedDnsEventConsumer> event_consumer_;
-    std::unique_ptr<CleanupWorker> cleanup_worker_;
+    config::EbpfConfig config_; ///< Validated eBPF backend configuration.
+    config::CacheConfig cache_config_; ///< Backend-neutral cache configuration.
+    std::unique_ptr<EbpfNativeSession> native_session_; ///< libbpf session owning BPF resources.
+    std::unique_ptr<EbpfCacheStore> cache_store_; ///< eBPF map-backed cache store.
+    std::unique_ptr<PendingQueryCleaner> pending_cleaner_; ///< Pending-query cleaner.
+    std::unique_ptr<cache::DnsPolicy> dns_policy_; ///< DNS cache policy.
+    std::unique_ptr<CorrelatedDnsEventConsumer> event_consumer_; ///< Correlated-DNS ring consumer.
+    std::unique_ptr<CleanupWorker> cleanup_worker_; ///< Background cleanup worker thread.
 };
 
 } // namespace shinku::backend::ebpf

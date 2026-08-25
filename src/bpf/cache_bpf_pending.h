@@ -4,6 +4,17 @@
 
 #include "bpf/cache_bpf_fingerprint.h"
 
+/**
+ * @brief Record or refresh a pending-query entry for a query just passed through.
+ *
+ * Inserts with BPF_NOEXIST so a racing same-key query keeps the first entry;
+ * otherwise the last-seen timestamp is advanced by CAS, retried once, provided
+ * the entry is unclaimed and its fingerprint matches. Skipped entirely when @p now
+ * collides with the claimed bit (top bit set).
+ * @param key The pending-query key (4-tuple plus transaction id).
+ * @param fingerprint Fingerprint of the pending question.
+ * @param now Current boot time in nanoseconds.
+ */
 static __always_inline void remember_pending(
     const struct ebpf_pending_query_key* key,
     const struct ebpf_cache_fingerprint* fingerprint,

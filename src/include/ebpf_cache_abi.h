@@ -6,8 +6,18 @@
     #include <stddef.h>
 #endif
 
+/**
+ * @file ebpf_cache_abi.h
+ * @brief Frozen C ABI shared between the Shinku host runtime and the BPF cache program.
+ *
+ * Every struct, macro, and offset assertion in this header is part of the
+ * wire/arena ABI between the host store and the BPF data plane. Layout
+ * changes here must be made in lockstep with both sides and reflected in the
+ * ABI asserts at the bottom of the file.
+ */
+
 /* Primitive sizing inputs: these define the ABI and cannot be derived from any
- * struct — they size the fixed arrays inside the layout structs below. */
+ * struct - they size the fixed arrays inside the layout structs below. */
 #define SHINKU_EBPF_CACHE_MAX_RESPONSE_BYTES 512U
 #define SHINKU_EBPF_CACHE_MAX_TTL_OFFSETS 45U
 
@@ -15,79 +25,90 @@
 #define SHINKU_EBPF_PENDING_CLAIMED (1ULL << 63)
 #define SHINKU_EBPF_PENDING_TIME_MASK (SHINKU_EBPF_PENDING_CLAIMED - 1ULL)
 
+/// 128-bit fingerprint of a cache key (SipHash-2-4 output), used as the hash key.
 struct ebpf_cache_fingerprint {
-    __u64 first;
-    __u64 second;
+    __u64 first;  ///< First 64 bits of the fingerprint.
+    __u64 second; ///< Second 64 bits of the fingerprint.
 };
 
+/// 128-bit secret used to salt the cache fingerprint; generated once at startup.
 struct ebpf_cache_secret {
-    __u64 first;
-    __u64 second;
+    __u64 first;  ///< First 64 bits of the secret.
+    __u64 second; ///< Second 64 bits of the secret.
 };
 
+/// Physical cache key: transport namespace plus the keyed fingerprint.
 struct ebpf_cache_physical_key {
-    __be32 destination_ipv4;
-    __be16 destination_port;
-    __u16 reserved;
-    struct ebpf_cache_fingerprint fingerprint;
+    __be32 destination_ipv4;                    ///< Destination IPv4 address (network order).
+    __be16 destination_port;                    ///< Destination port (network order).
+    __u16 reserved;                             ///< Padding to align the fingerprint to 8 bytes.
+    struct ebpf_cache_fingerprint fingerprint;  ///< The salted fingerprint of the question.
 };
 
+/// Publication record stored in the BPF hash map, pointing at an arena slot.
 struct ebpf_cache_publication {
-    __u32 slot_index;
-    __u32 reserved;
-    __u64 generation;
+    __u32 slot_index; ///< Index of the arena slot holding this entry.
+    __u32 reserved;    ///< Padding to align generation to 8 bytes.
+    __u64 generation;  ///< Monotone generation to detect stale publications.
 };
 
+/// Header of a cache slot in the arena, preceding the response and TTL offsets.
 struct ebpf_cache_slot_header {
-    __u32 sequence;
-    __u16 response_size;
-    __u16 ttl_offset_count;
-    __u64 generation;
-    __u64 stored_at_ns;
-    __u64 expires_at_ns;
+    __u32 sequence;         ///< Sequence number for publication ordering.
+    __u16 response_size;    ///< Number of valid response bytes in the slot.
+    __u16 ttl_offset_count; ///< Number of valid TTL offsets in the slot.
+    __u64 generation;       ///< Generation matching the publication's generation.
+    __u64 stored_at_ns;     ///< Time the entry was stored, in nanoseconds since boot.
+    __u64 expires_at_ns;    ///< Time the entry expires, in nanoseconds since boot.
 };
 
+/// Geometry of the arena cache storage, shared with the BPF program via rodata.
 struct ebpf_cache_bpf_layout {
-    __u32 entry_capacity;
-    __u32 response_capacity;
-    __u32 ttl_offset_capacity;
-    __u32 slot_stride;
+    __u32 entry_capacity;      ///< Maximum number of cache entries.
+    __u32 response_capacity;   ///< Maximum response size in bytes per slot.
+    __u32 ttl_offset_capacity; ///< Maximum TTL offsets stored per slot.
+    __u32 slot_stride;          ///< Bytes between consecutive slot starts.
 };
 //NOLINTBEGIN
+/// Scratch buffer sized to hold one full slot, used by the BPF hit path.
 struct ebpf_cache_hit_scratch {
-    struct ebpf_cache_slot_header header;
-    __u8 response[SHINKU_EBPF_CACHE_MAX_RESPONSE_BYTES];
-    __u16 ttl_offsets[SHINKU_EBPF_CACHE_MAX_TTL_OFFSETS];
+    struct ebpf_cache_slot_header header;                              ///< The slot header.
+    __u8 response[SHINKU_EBPF_CACHE_MAX_RESPONSE_BYTES];               ///< The response payload.
+    __u16 ttl_offsets[SHINKU_EBPF_CACHE_MAX_TTL_OFFSETS];              ///< The TTL byte offsets.
 };
 
+/// Key for a pending-query entry: the 4-tuple plus DNS transaction id.
 struct ebpf_pending_query_key {
-    __be32 source_ipv4;
-    __be32 destination_ipv4;
-    __be16 source_port;
-    __be16 destination_port;
-    __be16 transaction_id;
-    __u16 reserved;
+    __be32 source_ipv4;      ///< Source IPv4 address (network order).
+    __be32 destination_ipv4; ///< Destination IPv4 address (network order).
+    __be16 source_port;      ///< Source UDP port (network order).
+    __be16 destination_port; ///< Destination UDP port (network order).
+    __u16 transaction_id;    ///< DNS transaction id (network order).
+    __u16 reserved;          ///< Padding to reach 16 bytes.
 };
 
+/// Value for a pending-query entry: the question fingerprint plus packed state.
 struct ebpf_pending_query_value {
-    struct ebpf_cache_fingerprint fingerprint;
-    __u64 state_and_last_seen_ns;
+    struct ebpf_cache_fingerprint fingerprint;       ///< Fingerprint of the pending question.
+    __u64 state_and_last_seen_ns;                    ///< Packed claimed-flag and last-seen nanoseconds (see @ref SHINKU_EBPF_PENDING_CLAIMED).
 };
 
+/// A correlated DNS response event emitted from BPF to userspace via the ring buffer.
 struct ebpf_correlated_dns_event {
-    __u64 response_observed_at_ns;
-    __be32 destination_ipv4;
-    __be16 destination_port;
-    __be16 response_size;
-    __u8 response[SHINKU_EBPF_CACHE_MAX_RESPONSE_BYTES];
+    __u64 response_observed_at_ns;                   ///< Time the response was observed, in nanoseconds since boot.
+    __be32 destination_ipv4;                          ///< Destination IPv4 address (network order).
+    __be16 destination_port;                          ///< Destination port (network order).
+    __u16 response_size;                             ///< Number of valid response bytes following.
+    __u8 response[SHINKU_EBPF_CACHE_MAX_RESPONSE_BYTES]; ///< The DNS response payload.
 };
 
 //NOLINTEND
 
+/// Configuration embedded in the BPF skeleton rodata section at load time.
 struct ebpf_skeleton_rodata_config {
-    struct ebpf_cache_bpf_layout cache_layout;
-    struct ebpf_cache_secret secret;
-    __u64 pending_timeout_ns;
+    struct ebpf_cache_bpf_layout cache_layout; ///< Arena cache storage geometry.
+    struct ebpf_cache_secret secret;           ///< Secret salting the fingerprint.
+    __u64 pending_timeout_ns;                   ///< Pending-query timeout in nanoseconds since boot.
 };
 
 /* Derived layout constants: reverse-derived from the structs above so a layout

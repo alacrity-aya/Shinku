@@ -15,16 +15,20 @@
 namespace shinku::backend::dpdk::detail {
 namespace {
 
-constexpr uint32_t kMinimumHashEntries = 8;
+constexpr uint32_t kMinimumHashEntries = 8; ///< Smallest rte_hash entry count to accept.
 
 } // namespace
 
+/// Free a DPDK hash table instance.
 void DpdkHashTableStorage::Deleter::operator()(rte_hash* hash) const noexcept {
     rte_hash_free(hash);
 }
 
+/// Adopt ownership of the given rte_hash.
 DpdkHashTableStorage::DpdkHashTableStorage(std::unique_ptr<rte_hash, Deleter> hash) noexcept: hash_(std::move(hash)) {}
 
+/// Create a rte_hash sized for @p capacity entries (never fewer than kMinimumHashEntries),
+/// clearing rte_errno first so a failure is attributed to this create call.
 std::expected<DpdkHashTableStorage, std::error_code>
 DpdkHashTableStorage::create(const char* name, uint32_t capacity, uint32_t key_size, int socket_id) noexcept {
     const rte_hash_parameters parameters {
@@ -46,6 +50,8 @@ DpdkHashTableStorage::create(const char* name, uint32_t capacity, uint32_t key_s
     return DpdkHashTableStorage(std::move(hash));
 }
 
+/// Look up the stored value pointer for @p key; a missing key returns nullptr (no error),
+/// and only an invalid argument is surfaced as an error.
 std::expected<void*, std::error_code> DpdkHashTableStorage::lookup(const void* key) const noexcept {
     void* value = nullptr;
     const int result = rte_hash_lookup_data(hash_.get(), key, &value);
@@ -58,6 +64,7 @@ std::expected<void*, std::error_code> DpdkHashTableStorage::lookup(const void* k
     return std::unexpected(std::make_error_code(std::errc::invalid_argument));
 }
 
+/// Insert or update the value pointer for @p key; a full table maps to a no-space error.
 std::expected<void, std::error_code> DpdkHashTableStorage::insert(const void* key, void* value) noexcept {
     const int result = rte_hash_add_key_data(hash_.get(), key, value);
     if (result == 0)
@@ -69,6 +76,7 @@ std::expected<void, std::error_code> DpdkHashTableStorage::insert(const void* ke
     return std::unexpected(std::make_error_code(std::errc::no_space_on_device));
 }
 
+/// Erase the entry for @p key; a missing key is reported as an error, not silent success.
 std::expected<void, std::error_code> DpdkHashTableStorage::erase(const void* key) noexcept {
     const int result = rte_hash_del_key(hash_.get(), key);
     if (result >= 0)

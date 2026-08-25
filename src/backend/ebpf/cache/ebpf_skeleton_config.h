@@ -8,11 +8,12 @@
 
 namespace shinku::backend::ebpf {
 
+/// Configuration handed to the BPF skeleton at open time.
 struct EbpfSkeletonConfig {
-    EbpfCacheStorageLayout cache_layout;
-    ebpf_cache_secret secret;
-    uint32_t pending_capacity;
-    uint64_t pending_timeout_ns;
+    EbpfCacheStorageLayout cache_layout; ///< Geometry of the cache arena storage.
+    ebpf_cache_secret secret; ///< Secret salting the physical-key fingerprint.
+    uint32_t pending_capacity; ///< Maximum number of pending queries.
+    uint64_t pending_timeout_ns; ///< Pending-query timeout in nanoseconds since boot.
 };
 
 } // namespace shinku::backend::ebpf

@@ -30,6 +30,7 @@
 namespace shinku::backend::ebpf {
 namespace {
 
+/// Build an unexpected error from the current errno; a zero errno is reported as a generic I/O error.
 std::unexpected<std::error_code> current_errno_error() {
     const int value = errno;
     if (value == 0)
@@ -37,10 +38,12 @@ std::unexpected<std::error_code> current_errno_error() {
     return std::unexpected(std::error_code { value, std::generic_category() });
 }
 
+/// Convert a libbpf-style negative-errno result into an unexpected error_code (e.g. -EACCES -> EACCES).
 std::unexpected<std::error_code> negative_errno_error(int result) {
     return std::unexpected(std::error_code { -result, std::generic_category() });
 }
 
+/// A zeroed legacy TC hook defaulting to the egress attach point; used before any real hook is created.
 bpf_tc_hook empty_legacy_tc_hook() noexcept {
     return bpf_tc_hook {
         .sz = sizeof(bpf_tc_hook),
@@ -52,6 +55,7 @@ bpf_tc_hook empty_legacy_tc_hook() noexcept {
     };
 }
 
+/// Derive detach options from the recorded attach opts; legacy TC detach needs the original handle and priority.
 bpf_tc_opts legacy_tc_detach_opts(const bpf_tc_opts& attached_opts) noexcept {
     bpf_tc_opts opts {};
     opts.sz = sizeof(bpf_tc_opts);
@@ -60,17 +64,20 @@ bpf_tc_opts legacy_tc_detach_opts(const bpf_tc_opts& attached_opts) noexcept {
     return opts;
 }
 
+/// Destroy the clsact qdisc this session created, covering both ingress and egress attach points.
 int destroy_owned_clsact(const bpf_tc_hook& legacy_hook) noexcept {
     bpf_tc_hook qdisc_hook = legacy_hook;
     qdisc_hook.attach_point = static_cast<bpf_tc_attach_point>(BPF_TC_INGRESS | BPF_TC_EGRESS);
     return bpf_tc_hook_destroy(&qdisc_hook);
 }
 
+/// libbpf ring callback trampoline: re-cast @p context to the consumer and forward the sample as a byte span.
 int packet_event_trampoline(void* context, void* data, size_t size) noexcept {
     static_cast<PacketEventConsumer*>(context)->consume(std::span(static_cast<const std::byte*>(data), size));
     return 0;
 }
 
+/// Return whether @p capability is set in the effective set of @p capabilities, or an errno error.
 CapabilityProbeResult effective_capability_is_set(cap_t capabilities, cap_value_t capability) {
     cap_flag_value_t value = CAP_CLEAR;
     if (cap_get_flag(capabilities, capability, CAP_EFFECTIVE, &value) != 0)
@@ -78,7 +85,7 @@ CapabilityProbeResult effective_capability_is_set(cap_t capabilities, cap_value_
     return value == CAP_SET;
 }
 
-// libbpf supplies a printf-style va_list and invokes this callback through a C ABI.
+/// libbpf supplies a printf-style va_list and invokes this callback through a C ABI.
 // NOLINTBEGIN(modernize-use-std-print)
 int libbpf_print_callback(libbpf_print_level level, const char* format, va_list args) noexcept {
     std::array<char, 16> timestamp {};
@@ -115,30 +122,34 @@ int libbpf_print_callback(libbpf_print_level level, const char* format, va_list 
 
 } // namespace
 
+/// Pimpl bundle holding every libbpf object handle owned by one native session.
 struct ProductionEbpfNativeSession::NativeResources {
-    cache_bpf* skeleton = nullptr;
-    bpf_link* xdp = nullptr;
-    bpf_link* tcx = nullptr;
-    bpf_tc_hook legacy_hook = empty_legacy_tc_hook();
-    bpf_tc_opts legacy_opts {};
-    bool legacy_attached = false;
-    bool owns_clsact = false;
-    ring_buffer* log_ring = nullptr;
-    ring_buffer* packet_ring = nullptr;
-    PacketEventConsumer* packet_consumer = nullptr;
-    log_options log_config {
+    cache_bpf* skeleton = nullptr; ///< Opened/loaded BPF skeleton, or null once destroyed.
+    bpf_link* xdp = nullptr; ///< XDP link handle, or null when not attached.
+    bpf_link* tcx = nullptr; ///< TCX link handle, or null when not attached.
+    bpf_tc_hook legacy_hook = empty_legacy_tc_hook(); ///< Legacy TC hook used by the fallback attach path.
+    bpf_tc_opts legacy_opts {}; ///< Legacy TC attach options (handle/priority) needed to detach.
+    bool legacy_attached = false; ///< Whether the legacy TC program is currently attached.
+    bool owns_clsact = false; ///< Whether this session created the clsact qdisc and must destroy it.
+    ring_buffer* log_ring = nullptr; ///< BPF log ring buffer, or null when logging is disabled.
+    ring_buffer* packet_ring = nullptr; ///< Packet event ring buffer.
+    PacketEventConsumer* packet_consumer = nullptr; ///< Consumer that packet ring samples are forwarded to.
+    log_options log_config { ///< Formatting options passed to the log ring callback.
         .min_level = LOG_INFO,
         .show_timestamp = true,
         .use_color = true,
     };
 };
 
+/// Start with an empty NativeResources bundle; all libbpf objects are created lazily.
 ProductionEbpfNativeSession::ProductionEbpfNativeSession(): resources_(std::make_unique<NativeResources>()) {}
 
+/// RAII teardown: release() runs so an unwinding session never leaks BPF objects; its result is discarded.
 ProductionEbpfNativeSession::~ProductionEbpfNativeSession() {
     auto _ = release();
 }
 
+/// Effective root short-circuits to true; otherwise all of CAP_BPF, CAP_NET_ADMIN, and CAP_SYS_ADMIN must be effective.
 CapabilityProbeResult ProductionEbpfNativeSession::has_required_privileges() {
     if (geteuid() == 0)
         return true;
@@ -164,6 +175,7 @@ CapabilityProbeResult ProductionEbpfNativeSession::has_required_privileges() {
     return *has_bpf && *has_net_admin && *has_sys_admin;
 }
 
+/// Resolve via if_nametoindex; ENOENT/ENODEV/ENXIO (or a missing errno) mean the interface does not exist.
 CapabilityProbeResult ProductionEbpfNativeSession::interface_exists(std::string_view iface) {
     const std::string name(iface);
     errno = 0;
@@ -174,6 +186,7 @@ CapabilityProbeResult ProductionEbpfNativeSession::interface_exists(std::string_
     return current_errno_error();
 }
 
+/// Ask libbpf whether BPF_MAP_TYPE_ARENA is probeable on this kernel (1 = supported, 0 = not).
 CapabilityProbeResult ProductionEbpfNativeSession::arena_supported() {
     const int result = libbpf_probe_bpf_map_type(BPF_MAP_TYPE_ARENA, nullptr);
     if (result == 1)
@@ -183,6 +196,7 @@ CapabilityProbeResult ProductionEbpfNativeSession::arena_supported() {
     return negative_errno_error(result);
 }
 
+/// Resolve the interface name via if_nametoindex, surfacing any errno as the error.
 std::expected<uint32_t, std::error_code> ProductionEbpfNativeSession::interface_index(std::string_view iface) {
     const std::string name(iface);
     errno = 0;
@@ -192,6 +206,11 @@ std::expected<uint32_t, std::error_code> ProductionEbpfNativeSession::interface_
     return current_errno_error();
 }
 
+/**
+ * Open the skeleton, bake @p config into its rodata and map sizes, then load and
+ * attach it. Autoattach is disabled for xdp_rx and tc_tx so they are attached
+ * explicitly later; the returned binding exposes the cache map and arena slots.
+ */
 std::expected<EbpfNativeBinding, std::error_code>
 ProductionEbpfNativeSession::prepare_skeleton(const EbpfSkeletonConfig& config) {
     libbpf_set_print(libbpf_print_callback);
@@ -232,6 +251,7 @@ ProductionEbpfNativeSession::prepare_skeleton(const EbpfSkeletonConfig& config) 
     );
 }
 
+/// Create the log ring only when BPF logging is compiled in; otherwise a no-op success.
 std::expected<void, std::error_code> ProductionEbpfNativeSession::create_log_ring() {
 #if SHINKU_BPF_LOG_ENABLED
     errno = 0;
@@ -247,6 +267,7 @@ std::expected<void, std::error_code> ProductionEbpfNativeSession::create_log_rin
     return {};
 }
 
+/// Attach xdp_rx to @p ifindex and store the returned link so release() can destroy it.
 std::expected<void, std::error_code> ProductionEbpfNativeSession::attach_xdp(uint32_t ifindex) {
     errno = 0;
     bpf_link* link = bpf_program__attach_xdp(resources_->skeleton->progs.xdp_rx, static_cast<int>(ifindex));
@@ -256,6 +277,7 @@ std::expected<void, std::error_code> ProductionEbpfNativeSession::attach_xdp(uin
     return {};
 }
 
+/// Attach tc_tx via TCX to @p ifindex and store the returned link for release().
 std::expected<void, std::error_code> ProductionEbpfNativeSession::attach_tcx(uint32_t ifindex) {
     errno = 0;
     bpf_link* link = bpf_program__attach_tcx(resources_->skeleton->progs.tc_tx, static_cast<int>(ifindex), nullptr);
@@ -265,6 +287,12 @@ std::expected<void, std::error_code> ProductionEbpfNativeSession::attach_tcx(uin
     return {};
 }
 
+/**
+ * Legacy fallback for attach_tcx: create the clsact qdisc when this session does
+ * not already own one (EEXIST is tolerated), then attach tc_tx with handle and
+ * priority 1. On failure a clsact created here is torn down so nothing leaks;
+ * on success the hook and options are recorded for the later detach.
+ */
 std::expected<void, std::error_code> ProductionEbpfNativeSession::attach_legacy_tc(uint32_t ifindex) {
     bpf_tc_hook hook = resources_->owns_clsact ? resources_->legacy_hook : empty_legacy_tc_hook();
     bool owns_clsact = resources_->owns_clsact;
@@ -306,6 +334,7 @@ std::expected<void, std::error_code> ProductionEbpfNativeSession::attach_legacy_
     return {};
 }
 
+/// Record the consumer, then create the packet ring over the packet map and its callback.
 std::expected<void, std::error_code> ProductionEbpfNativeSession::create_packet_ring(PacketEventConsumer& consumer) {
     resources_->packet_consumer = &consumer;
     errno = 0;
@@ -320,6 +349,7 @@ std::expected<void, std::error_code> ProductionEbpfNativeSession::create_packet_
     return {};
 }
 
+/// Free the packet ring if present and drop the consumer pointer, leaving the session cleanly re-attachable.
 void ProductionEbpfNativeSession::close_packet_ring() noexcept {
     if (resources_->packet_ring != nullptr) {
         ring_buffer__free(resources_->packet_ring);
@@ -328,6 +358,7 @@ void ProductionEbpfNativeSession::close_packet_ring() noexcept {
     resources_->packet_consumer = nullptr;
 }
 
+/// Poll the log ring when BPF logging is compiled in; otherwise a no-op that reports no events.
 std::expected<int, std::error_code> ProductionEbpfNativeSession::poll_log_ring(int _) {
 #if SHINKU_BPF_LOG_ENABLED
     const int result = ring_buffer__poll(resources_->log_ring, timeout_ms);
@@ -339,6 +370,10 @@ std::expected<int, std::error_code> ProductionEbpfNativeSession::poll_log_ring(i
 #endif
 }
 
+/**
+ * Drain up to a fixed batch of samples non-blocking; if none arrived, block on
+ * the ring's epoll fd for up to @p timeout_ms and drain again once woken.
+ */
 std::expected<int, std::error_code> ProductionEbpfNativeSession::poll_packet_ring(int timeout_ms) {
     constexpr size_t batch_limit = 64;
     int result = ring_buffer__consume_n(resources_->packet_ring, batch_limit);
@@ -368,11 +403,18 @@ std::expected<int, std::error_code> ProductionEbpfNativeSession::poll_packet_rin
     return result;
 }
 
+/// Block the caller for @p duration; used to pace the poll loop and back off between attach retries.
 std::expected<void, std::error_code> ProductionEbpfNativeSession::wait_for(std::chrono::milliseconds duration) {
     std::this_thread::sleep_for(duration);
     return {};
 }
 
+/**
+ * Idempotent teardown in reverse bring-up order: packet ring, log ring, XDP
+ * link, TCX link, legacy TC detach, the owned clsact qdisc, and finally the
+ * skeleton once no legacy attachment still references it. Every object is
+ * released even on failure; the first error encountered is reported.
+ */
 std::expected<void, std::error_code> ProductionEbpfNativeSession::release() {
     std::expected<void, std::error_code> release_result;
     const auto record = [&release_result](int result) {

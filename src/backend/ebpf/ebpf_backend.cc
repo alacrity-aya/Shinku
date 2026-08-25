@@ -28,10 +28,11 @@
 namespace shinku::backend::ebpf {
 namespace {
 
-constexpr int kAttachAttempts = 5;
-constexpr auto kAttachBaseDelay = std::chrono::milliseconds(50);
-constexpr auto kAttachMaxDelay = std::chrono::milliseconds(800);
+constexpr int kAttachAttempts = 5; ///< Max attach retries per program before start() fails.
+constexpr auto kAttachBaseDelay = std::chrono::milliseconds(50); ///< Exponential backoff base for attach retries.
+constexpr auto kAttachMaxDelay = std::chrono::milliseconds(800); ///< Backoff delay cap so retries stay bounded.
 
+/// Build an unexpected BackendError from its code, message, and optional underlying cause.
 std::unexpected<BackendError>
 make_error(BackendErrorCode code, std::string message, std::optional<std::error_code> cause = std::nullopt) {
     return std::unexpected(
@@ -43,19 +44,23 @@ make_error(BackendErrorCode code, std::string message, std::optional<std::error_
     );
 }
 
+/// Build a BackendError whose message names the failed @p operation and the cause description.
 std::unexpected<BackendError>
 operation_error(BackendErrorCode code, std::string_view operation, std::error_code cause) {
     return make_error(code, std::format("eBPF {} failed: {}", operation, cause.message()), cause);
 }
 
+/// Exponential backoff for the given attempt: base doubled per attempt, capped at kAttachMaxDelay.
 std::chrono::milliseconds retry_delay(int attempt) {
     return std::min(kAttachBaseDelay * (1 << attempt), kAttachMaxDelay);
 }
 
+/// True when @p error is EINTR; the poll loop treats that as benign and returns without failing.
 bool is_interrupted(std::error_code error) {
     return error == std::errc::interrupted;
 }
 
+/// True when @p error means TCX is unavailable on this kernel, which triggers the legacy TC fallback.
 bool is_tcx_unsupported(std::error_code error) {
     return error == std::errc::operation_not_supported || error == std::errc::invalid_argument
         || error == std::errc::function_not_supported;
@@ -63,6 +68,7 @@ bool is_tcx_unsupported(std::error_code error) {
 
 } // namespace
 
+/// Move the configs and native session into place; nothing touches the kernel until start().
 EbpfBackend::EbpfBackend(
     config::EbpfConfig ebpf_config,
     config::CacheConfig cache_config,
@@ -72,8 +78,10 @@ EbpfBackend::EbpfBackend(
     cache_config_(cache_config),
     native_session_(std::move(native_session)) {}
 
+/// Defaulted; the store, worker, and native session members own their own teardown.
 EbpfBackend::~EbpfBackend() = default;
 
+/// Pre-flight checks before start(): privileges, interface existence, and BPF arena support, mapped to typed errors.
 std::expected<void, BackendError> EbpfBackend::probe() {
     auto privileges = native_session_->has_required_privileges();
     if (!privileges)
@@ -106,6 +114,13 @@ std::expected<void, BackendError> EbpfBackend::probe() {
     return {};
 }
 
+/**
+ * Bring the data path up in order: resolve the interface, derive the cache
+ * layout and secret, prepare the skeleton and build the store, cleaner, policy
+ * and consumer objects, attach XDP with exponential-backoff retries, attach TC
+ * (falling back to legacy TC when TCX is unsupported), then create the packet
+ * ring and start the background cleanup worker.
+ */
 std::expected<void, BackendError> EbpfBackend::start() {
     auto ifindex = native_session_->interface_index(config_.iface());
     if (!ifindex)
@@ -196,6 +211,7 @@ std::expected<void, BackendError> EbpfBackend::start() {
     return {};
 }
 
+/// Non-blocking log-ring poll, then the packet ring bounded by the configured timeout; EINTR is swallowed.
 std::expected<void, BackendError> EbpfBackend::poll() {
     auto log_result = native_session_->poll_log_ring(0);
     if (!log_result && is_interrupted(log_result.error()))
@@ -210,6 +226,7 @@ std::expected<void, BackendError> EbpfBackend::poll() {
     return {};
 }
 
+/// Tear down in reverse start() order (worker, rings, consumer, store, cleaner) before releasing native resources.
 std::expected<void, BackendError> EbpfBackend::stop() {
     cleanup_worker_.reset();
     native_session_->close_packet_ring();

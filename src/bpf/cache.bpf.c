@@ -1,4 +1,15 @@
 // SPDX-License-Identifier: GPL-2.0-only
+/**
+ * @file cache.bpf.c
+ * @brief Cache data plane: XDP hit serving and TC response capture.
+ *
+ * This BPF program implements the cache data path. The XDP hook (xdp_rx)
+ * parses incoming DNS queries, fingerprints them, serves a cache hit directly
+ * to the client via XDP_TX, or records the query as pending and passes it
+ * through. The TC hook (tc_tx) watches egress DNS responses, correlates one
+ * against a pending query, and emits a correlated event to userspace through
+ * the packet ring buffer.
+ */
 #include "bpf/cache_bpf_state.h"
 
 char LICENSE[] SEC("license") = "GPL";
@@ -8,6 +19,15 @@ char LICENSE[] SEC("license") = "GPL";
 #include "bpf/cache_bpf_pending.h"
 #include "bpf/cache_bpf_snapshot.h"
 
+/**
+ * @brief Ingress (XDP) path: serve a cache hit or record the query as pending.
+ *
+ * Parses the UDP DNS query envelope and its single question, fingerprints the
+ * canonical question, and looks up the physical cache key. On a hit it sends
+ * the cached response straight back to the client (XDP_TX); otherwise it
+ * records the query in the pending map and returns XDP_PASS so the resolver
+ * still receives the packet.
+ */
 SEC("xdp")
 int xdp_rx(struct xdp_md* context) {
     void* data = (void*)(long)context->data;
@@ -39,6 +59,7 @@ int xdp_rx(struct xdp_md* context) {
         .fingerprint = fingerprint,
     };
     const struct ebpf_cache_publication* publication = bpf_map_lookup_elem(&cache_map, &cache_key);
+    // Publication found: try to serve the cached response, falling through to the pending path if declined.
     if (publication) {
         const int action = serve_hit(context, &query, &question, scratch, publication);
         if (action != XDP_PASS)
@@ -54,10 +75,20 @@ int xdp_rx(struct xdp_md* context) {
         .transaction_id = query_transaction_id,
         .reserved = 0,
     };
+    // No hit served: remember the query as pending so the response path can correlate it, then pass through.
     remember_pending(&pending_key, &fingerprint, now);
     return XDP_PASS;
 }
 
+/**
+ * @brief Egress (TC) path: correlate a DNS response with a pending query.
+ *
+ * Parses the egress DNS response, reverses the 4-tuple to recover the pending
+ * key, and verifies the question fingerprint matches. When the pending entry
+ * is present, unclaimed, and unexpired, copies the response into a ring-buffer
+ * event and atomically claims the entry so only one egress packet publishes
+ * the correlated event; the packet itself always passes through unchanged.
+ */
 SEC("tc")
 int tc_tx(struct __sk_buff* skb) {
     void* data = (void*)(long)skb->data;
@@ -68,6 +99,7 @@ int tc_tx(struct __sk_buff* skb) {
     __u32 response_size = response.dns_size;
     if (response_size > SHINKU_EBPF_CACHE_MAX_RESPONSE_BYTES)
         return SHINKU_TC_ACT_OK;
+    // Mask to a 10-bit range to bound the verifier's value tracking; the bounds are re-checked below.
     response_size &= 0x3ffU;
     barrier_var(response_size);
     if (response_size < SHINKU_DNS_HEADER_BYTES || response_size > SHINKU_EBPF_CACHE_MAX_RESPONSE_BYTES)
@@ -121,6 +153,8 @@ int tc_tx(struct __sk_buff* skb) {
         return SHINKU_TC_ACT_OK;
     }
 
+    // Atomically claim the pending entry (retrying once against a refreshed state) so exactly one
+    // egress packet publishes the correlated event.
     bool claimed = false;
 #pragma clang loop unroll(full)
     for (int attempt = 0; attempt < 2; ++attempt) {

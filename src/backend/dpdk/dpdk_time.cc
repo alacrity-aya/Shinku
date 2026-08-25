@@ -9,6 +9,7 @@
 
 namespace shinku::backend::dpdk {
 
+/// Read CLOCK_BOOTTIME into the cache time domain, or return empty if the clock read fails.
 std::optional<cache::CacheTime> read_dpdk_boot_time() noexcept {
     timespec value {};
     if (clock_gettime(CLOCK_BOOTTIME, &value) != 0)

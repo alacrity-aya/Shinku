@@ -21,6 +21,7 @@
 
 namespace shinku::backend {
 
+/// Builds the configured backend, wiring production EAL, packet pool, and ports for the DPDK path.
 std::expected<std::unique_ptr<Backend>, BackendError>
 make_backend(const config::Config& config, std::span<const std::string> dpdk_arguments) {
     if (const auto* ebpf_config = std::get_if<config::EbpfConfig>(&config.backend)) {

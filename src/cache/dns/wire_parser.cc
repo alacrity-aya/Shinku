@@ -17,28 +17,40 @@
 namespace shinku::cache::dns {
 namespace {
 
+/// Fixed size of the DNS message header in bytes (RFC 1035 §4.1.1).
 constexpr size_t kDnsHeaderSize = 12;
+/// Size of the fixed question fields (QTYPE/QCLASS) that follow the owner name.
 constexpr size_t kQuestionFieldsSize = 4;
+/// Size of the fixed resource-record fields (TYPE/CLASS/TTL/RDLENGTH) that follow the owner name.
 constexpr size_t kResourceRecordFieldsSize = 10;
+/// Smallest possible resource record: a one-byte root owner label plus the fixed fields.
 constexpr size_t kMinimumResourceRecordSize = 1 + kResourceRecordFieldsSize;
+/// DNS record type OPT (EDNS0), whose TTL field carries options rather than a cache lifetime.
 constexpr uint16_t kTypeOpt = 41;
+/// DNS record type SOA; an IN SOA in the authority section marks an NODATA response.
 constexpr uint16_t kTypeSoa = 6;
+/// DNS class IN (Internet); the only class accepted when detecting authority SOA records.
 constexpr uint16_t kClassIn = 1;
+/// High bit of a wire TTL that, when set, indicates an EDNS0 extended-rcode value instead of a real TTL.
 constexpr uint32_t kTtlHighBit = 0x8000'0000U;
 
+// The TTL scratch must be large enough for one offset per resource record in the largest valid message.
 static_assert((kMaxDnsMessageBytes - kDnsHeaderSize) / kMinimumResourceRecordSize <= kMaxTtlOffsets);
 
+/// Identifies the DNS section currently being walked while scanning resource records.
 enum class DnsSection : uint8_t {
-    Answer,
-    Authority,
-    Additional,
+    Answer, ///< The answer section.
+    Authority, ///< The authority section.
+    Additional, ///< The additional section.
 };
 
+/// Outcome of @ref scan_encoded_name: where the encoded name ends and whether it used a compression pointer.
 struct EncodedName {
-    size_t end_offset;
-    bool compressed;
+    size_t end_offset; ///< Offset of the first byte after the encoded name.
+    bool compressed; ///< True if the name terminated in a compression pointer, false if in a null label.
 };
 
+/// Scans a domain name at @p start, validating labels and following compression pointers without decoding it.
 std::expected<EncodedName, ParseError> scan_encoded_name(std::span<const std::byte> message, size_t start) noexcept {
     size_t cursor = start;
     while (cursor < message.size()) {

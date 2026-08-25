@@ -26,13 +26,16 @@
 namespace shinku::config {
 namespace {
 
+/// Top-level TOML key selecting which backend to configure.
 constexpr std::string_view kBackendKey = "backend";
 
+/// The backends a "backend" value may select.
 enum class BackendKind : uint8_t {
-    Ebpf,
-    Dpdk,
+    Ebpf, ///< Selects the eBPF backend.
+    Dpdk, ///< Selects the DPDK backend.
 };
 
+/// Builds a @ref ConfigError carrying the code, file path, and message.
 ConfigError make_error(ConfigErrorCode code, const std::filesystem::path& path, std::string message) {
     return ConfigError {
         .code = code,
@@ -41,6 +44,7 @@ ConfigError make_error(ConfigErrorCode code, const std::filesystem::path& path, 
     };
 }
 
+/// Emits a fatal error via the sink and returns it as a @ref std::unexpected result.
 std::unexpected<ConfigError>
 emit_error(DiagnosticSink& sink, ConfigErrorCode code, const std::filesystem::path& path, std::string message) {
     const ConfigError error = make_error(code, path, std::move(message));
@@ -48,6 +52,7 @@ emit_error(DiagnosticSink& sink, ConfigErrorCode code, const std::filesystem::pa
     return std::unexpected(error);
 }
 
+/// Maps a semantic validation failure to a user-facing message and emits it as a fatal error.
 std::unexpected<ConfigError>
 emit_validation_error(DiagnosticSink& sink, const std::filesystem::path& path, ConfigValidationError error) {
     switch (error) {
@@ -98,6 +103,7 @@ emit_validation_error(DiagnosticSink& sink, const std::filesystem::path& path, C
     std::unreachable();
 }
 
+/// Emits a non-fatal warning with the given message via the sink.
 void emit_warning(DiagnosticSink& sink, const std::filesystem::path& path, std::string message) {
     sink.warning(ConfigWarning {
         .path = path,
@@ -105,6 +111,7 @@ void emit_warning(DiagnosticSink& sink, const std::filesystem::path& path, std::
     });
 }
 
+/// Parses a TOML document from the stream, reporting parse failures as fatal errors.
 std::expected<toml::table, ConfigError>
 parse_toml(std::istream& input, const std::filesystem::path& path, DiagnosticSink& sink) {
     toml::parse_result result = toml::parse(input, path.string());
@@ -115,6 +122,7 @@ parse_toml(std::istream& input, const std::filesystem::path& path, DiagnosticSin
     return std::move(result).table();
 }
 
+/// Reads a key's value as a string, or nullopt when the key is absent or not a string.
 std::optional<std::string> string_value(const toml::table& table, std::string_view key) {
     const toml::node* node = table.get(key);
     if (node == nullptr)
@@ -122,6 +130,7 @@ std::optional<std::string> string_value(const toml::table& table, std::string_vi
     return node->value<std::string>();
 }
 
+/// Reads a key as an unsigned integer of type @p T, rejecting negatives and out-of-range values.
 template<std::unsigned_integral T>
 std::optional<T> unsigned_integer_value(const toml::table& table, std::string_view key) {
     const toml::node* node = table.get(key);
@@ -142,6 +151,7 @@ std::optional<T> unsigned_integer_value(const toml::table& table, std::string_vi
     return static_cast<T>(as_u64);
 }
 
+/// Reads a key's value as a boolean, or nullopt when the key is absent or not a boolean.
 std::optional<bool> bool_value(const toml::table& table, std::string_view key) {
     const toml::node* node = table.get(key);
     if (node == nullptr)
@@ -149,15 +159,18 @@ std::optional<bool> bool_value(const toml::table& table, std::string_view key) {
     return node->value<bool>();
 }
 
+/// Returns whether the table contains the given key.
 bool has_key(const toml::table& table, std::string_view key) {
     return table.get(key) != nullptr;
 }
 
+/// Returns the key's value as a table pointer, or nullptr when absent or not a table.
 const toml::table* subtable(const toml::table& table, std::string_view key) {
     const toml::node* node = table.get(key);
     return (node != nullptr) ? node->as_table() : nullptr;
 }
 
+/// Joins a prefix and key into a dotted "prefix.key" path, or the key alone when the prefix is empty.
 std::string join_key(std::string_view prefix, std::string_view key) {
     if (prefix.empty())
         return std::string(key);
@@ -165,6 +178,7 @@ std::string join_key(std::string_view prefix, std::string_view key) {
     return std::format("{}.{}", prefix, key);
 }
 
+/// Emits a warning for every key in @p table that is not present in @p allowed.
 void warn_unknown_keys(
     const toml::table& table,
     std::string_view prefix,
@@ -179,6 +193,7 @@ void warn_unknown_keys(
     }
 }
 
+/// Warns about unknown keys at the root and inside each known subtable.
 void warn_unknown_keys(const toml::table& root, DiagnosticSink& sink, const std::filesystem::path& path) {
     warn_unknown_keys(root, "", { "backend", "ebpf", "dpdk", "cache" }, sink, path);
 
@@ -197,6 +212,7 @@ void warn_unknown_keys(const toml::table& root, DiagnosticSink& sink, const std:
         );
 }
 
+/// Requires a key to be present and hold an unsigned integer, else emits a fatal schema error.
 template<typename T>
 std::expected<T, ConfigError> require_unsigned(
     const toml::table& table,
@@ -215,6 +231,7 @@ std::expected<T, ConfigError> require_unsigned(
     return value.value();
 }
 
+/// Requires a key to be present and hold a string, else emits a fatal schema error.
 std::expected<std::string, ConfigError> require_string(
     const toml::table& table,
     std::string_view key,
@@ -232,6 +249,7 @@ std::expected<std::string, ConfigError> require_string(
     return value.value();
 }
 
+/// Requires a key to be present and hold a boolean, else emits a fatal schema error.
 std::expected<bool, ConfigError> require_bool(
     const toml::table& table,
     std::string_view key,
@@ -249,6 +267,7 @@ std::expected<bool, ConfigError> require_bool(
     return value.value();
 }
 
+/// Parses a "123ms", "5s", or "2m" duration string into milliseconds, or nullopt when malformed or overflowing.
 std::optional<std::chrono::milliseconds> parse_duration(std::string_view text) {
     if (text.empty())
         return std::nullopt;
@@ -287,6 +306,7 @@ std::optional<std::chrono::milliseconds> parse_duration(std::string_view text) {
     return std::chrono::milliseconds(static_cast<std::chrono::milliseconds::rep>(amount * multiplier.count()));
 }
 
+/// Reads the required "backend" key and maps its value to the matching @ref BackendKind.
 std::expected<BackendKind, ConfigError>
 parse_backend_kind(const toml::table& root, const std::filesystem::path& path, DiagnosticSink& sink) {
     if (!has_key(root, kBackendKey))
@@ -305,6 +325,7 @@ parse_backend_kind(const toml::table& root, const std::filesystem::path& path, D
     return emit_error(sink, ConfigErrorCode::UnsupportedBackend, path, "unsupported backend: " + backend_value);
 }
 
+/// Parses and semantically validates the required "cache" table into a @ref CacheConfig.
 std::expected<CacheConfig, ConfigError>
 parse_cache_config(const toml::table& root, const std::filesystem::path& path, DiagnosticSink& sink) {
     const toml::table* cache = subtable(root, "cache");
@@ -356,6 +377,7 @@ parse_cache_config(const toml::table& root, const std::filesystem::path& path, D
     return *cache_config;
 }
 
+/// Parses and semantically validates the required "ebpf" table into an @ref EbpfConfig.
 std::expected<EbpfConfig, ConfigError>
 parse_ebpf_config(const toml::table& root, const std::filesystem::path& path, DiagnosticSink& sink) {
     const toml::table* ebpf = subtable(root, "ebpf");
@@ -416,18 +438,21 @@ parse_ebpf_config(const toml::table& root, const std::filesystem::path& path, Di
 
 } // namespace
 
+/// Writes a warning to standard error, prefixed with the config file path when known.
 void StderrDiagnosticSink::warning(const ConfigWarning& warning) {
     if (!warning.path.empty())
         std::print(stderr, "{}: ", warning.path.string());
     std::println(stderr, "warning: {}", warning.message);
 }
 
+/// Writes an error to standard error, prefixed with the config file path when known.
 void StderrDiagnosticSink::error(const ConfigError& error) {
     if (!error.path.empty())
         std::print(stderr, "{}: ", error.path.string());
     std::println(stderr, "error: {}", error.message);
 }
 
+/// Loads, parses, and validates the config file; any fatal issue aborts loading.
 std::expected<Config, ConfigError> load_config(const std::filesystem::path& path, DiagnosticSink& sink) {
     std::ifstream file(path);
     if (!file.is_open())

@@ -15,11 +15,17 @@
 
 namespace {
 
+/// Print a CLI parse error and its usage line to stderr.
 void print_cli_error(const shinku::cli::CliError& error) {
     std::println(stderr, "error: {}", error.message);
     std::print(stderr, "{}", shinku::cli::usage_text());
 }
 
+/// @brief Run the application, returning a process exit code.
+///
+/// Walks the CLI result: help/version actions print and exit cleanly, while a
+/// run command loads the config, installs signal handlers, constructs the
+/// selected backend, and drives it through the @ref shinku::backend::BackendRunner.
 int run_application(int argc, char** argv) {
     auto cli_result = shinku::cli::parse_cli(argc, argv);
     if (!cli_result) {
@@ -68,6 +74,7 @@ int run_application(int argc, char** argv) {
     return 0;
 }
 
+/// Print an unrecoverable error message to stderr; noexcept-safe for catch-all paths.
 void print_fatal_error(const char* message) noexcept {
     std::fputs("fatal error: ", stderr);
     std::fputs(message, stderr);
@@ -76,6 +83,7 @@ void print_fatal_error(const char* message) noexcept {
 
 } // namespace
 
+/// Program entry point; converts uncaught exceptions into a fatal error and exit code 1.
 int main(int argc, char** argv) {
     try {
         return run_application(argc, argv);

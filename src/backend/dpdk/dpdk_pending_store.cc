@@ -20,17 +20,22 @@
 namespace shinku::backend::dpdk {
 namespace {
 
+/// True when @p last_seen is not a valid past timestamp for @p now (clock skew) or has
+/// already aged past @p timeout.
 bool expired(cache::CacheTime last_seen, cache::CacheTime now, std::chrono::nanoseconds timeout) noexcept {
     return now < last_seen || now - last_seen >= timeout;
 }
 
 } // namespace
 
+/// Store the preallocated entry slab, backing hash table, and capacity.
 DpdkPendingStore::DpdkPendingStore(uint32_t capacity, std::vector<Entry> entries, HashTable hash) noexcept:
     capacity_(capacity),
     entries_(std::move(entries)),
     hash_(std::move(hash)) {}
 
+/// Allocate the entry slab and backing hash table, mapping allocation failure to a
+/// not-enough-memory error.
 std::expected<std::unique_ptr<DpdkPendingStore>, std::error_code>
 DpdkPendingStore::create(uint32_t capacity, int socket_id) noexcept {
     try {
@@ -44,8 +49,11 @@ DpdkPendingStore::create(uint32_t capacity, int socket_id) noexcept {
     }
 }
 
+/// Trivial default destructor; destroys the entry slab and backing hash table.
 DpdkPendingStore::~DpdkPendingStore() = default;
 
+/// Pop a free slot from the free list, or the next never-used slot; kNoSlot when the slab is
+/// fully occupied.
 uint32_t DpdkPendingStore::allocate_entry() noexcept {
     if (free_head_ != kNoSlot) {
         const uint32_t index = free_head_;
@@ -58,6 +66,7 @@ uint32_t DpdkPendingStore::allocate_entry() noexcept {
     return kNoSlot;
 }
 
+/// Return a slot to the free list, clearing its occupancy and claim state for reuse.
 void DpdkPendingStore::reclaim_entry(uint32_t index) noexcept {
     Entry& entry = entries_[index];
     entry.occupied = false;
@@ -66,6 +75,8 @@ void DpdkPendingStore::reclaim_entry(uint32_t index) noexcept {
     free_head_ = index;
 }
 
+/// Record or refresh a pending query: bump the timestamp of a matching unclaimed entry,
+/// otherwise insert a fresh slot (reclaimed again if the hash insert fails).
 DpdkPendingStoreResult DpdkPendingStore::remember(
     const DpdkPendingKey& key,
     const cache::dns::DnsQuestion& question,
@@ -99,6 +110,8 @@ DpdkPendingStoreResult DpdkPendingStore::remember(
     return DpdkPendingStoreResult::Inserted;
 }
 
+/// Claim an unclaimed, unexpired, question-matching entry for a response, marking it claimed
+/// so the response is processed exactly once.
 std::expected<bool, std::error_code> DpdkPendingStore::claim(
     const DpdkPendingKey& key,
     const cache::dns::DnsQuestion& question,
@@ -117,6 +130,8 @@ std::expected<bool, std::error_code> DpdkPendingStore::claim(
     return true;
 }
 
+/// Reap up to 32 expired entries per call, walking a round-robin cursor across the slab;
+/// more_work stays true until every slot has been swept this round.
 std::expected<cache::CleanupResult, std::error_code>
 DpdkPendingStore::cleanup(cache::CacheTime now, std::chrono::nanoseconds timeout) noexcept {
     if (cleanup_remaining_ == 0)

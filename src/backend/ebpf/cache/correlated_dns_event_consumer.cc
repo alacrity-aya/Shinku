@@ -10,6 +10,7 @@
 
 namespace shinku::backend::ebpf {
 
+/// Store the policy, store, and injected time source for the consumer.
 CorrelatedDnsEventConsumer::CorrelatedDnsEventConsumer(
     cache::DnsPolicy& policy,
     cache::CacheStore& store,
@@ -19,6 +20,9 @@ CorrelatedDnsEventConsumer::CorrelatedDnsEventConsumer(
     store_(store),
     time_source_(time_source) {}
 
+/// Validate and decode one correlated-DNS ring sample, classify it via the
+/// policy, and store the resulting candidate; malformed or unclassifiable
+/// samples are silently dropped.
 void CorrelatedDnsEventConsumer::consume(std::span<const std::byte> sample) noexcept {
     if (sample.size() != sizeof(ebpf_correlated_dns_event))
         return;

@@ -32,8 +32,10 @@
 namespace shinku::backend::dpdk {
 namespace {
 
+/// Default interval between DPDK cache-cleanup sweeps until a config-bound value exists.
 constexpr std::chrono::seconds kDefaultCacheCleanupInterval { 1 };
 
+/// Translate a @ref DpdkError into a @ref BackendError with the given category.
 std::unexpected<BackendError> dpdk_error(BackendErrorCode code, const DpdkError& error) {
     std::string message = std::format("DPDK {} failed", error.operation);
     if (!error.detail.empty())
@@ -45,6 +47,7 @@ std::unexpected<BackendError> dpdk_error(BackendErrorCode code, const DpdkError&
 
 } // namespace
 
+/// Adopt the EAL, ports, and pool; @p cache_config drives the cache and pending stores.
 DpdkBackend::DpdkBackend(
     std::span<const std::string> eal_arguments,
     const config::CacheConfig& cache_config,
@@ -67,10 +70,20 @@ DpdkBackend::DpdkBackend(
 
 DpdkBackend::~DpdkBackend() = default;
 
+/// DPDK probe is a no-op; capability checks happen during @ref start.
 std::expected<void, BackendError> DpdkBackend::probe() {
     return {};
 }
 
+/**
+ * @brief Initialize EAL, ports, pool, stores, and the forwarding pipeline.
+ *
+ * Ordering matters: EAL first, then both ports are configured so their
+ * descriptor counts can size the shared packet pool, queues are set up on the
+ * EAL's main socket, and the ports are started. Only then are the cache and
+ * pending stores, DNS policy, forwarders, cleanup tasks, and the cooperative
+ * scheduler constructed over them.
+ */
 std::expected<void, BackendError> DpdkBackend::start() {
     spdlog::info("starting DPDK backend");
     if (auto result = eal_->initialize(eal_arguments_); !result)
@@ -154,11 +167,20 @@ std::expected<void, BackendError> DpdkBackend::start() {
     return {};
 }
 
+/// Run one cooperative scheduling quantum over the client, service, cache, and pending tasks.
 std::expected<void, BackendError> DpdkBackend::poll() {
     assert(scheduler_ != nullptr);
     return scheduler_->run_quantum();
 }
 
+/**
+ * @brief Tear down the pipeline in reverse construction order.
+ *
+ * Destroys the scheduler and stores first (they reference the ports and EAL),
+ * then closes the service and client ports. The packet pool and EAL are closed
+ * only when no port still owns the resources, so ownership hand-off between
+ * EAL, pool, and ports is released exactly once.
+ */
 std::expected<void, BackendError> DpdkBackend::stop() {
     scheduler_.reset();
     pending_cleanup_task_.reset();

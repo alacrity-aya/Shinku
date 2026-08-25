@@ -4,16 +4,23 @@
 
 #include "bpf/cache_bpf_state.h"
 
+/// Scratch state shared by the response-copy and TTL-offset bpf_loop callbacks.
 struct shinku_snapshot_context {
-    struct packet_scratch* scratch;
-    __u64 slot_offset;
-    __u64 arena_bytes;
-    __u32 slot_stride;
-    __u32 response_size;
-    __u32 offset_table;
-    __u32 invalid;
+    struct packet_scratch* scratch; ///< Scratch buffer receiving the copied slot data.
+    __u64 slot_offset;              ///< Byte offset of the slot within the arena.
+    __u64 arena_bytes;              ///< Total arena byte size (capacity * stride).
+    __u32 slot_stride;              ///< Bytes between consecutive slot starts.
+    __u32 response_size;            ///< Number of response bytes to copy into the frame.
+    __u32 offset_table;             ///< Byte offset of the TTL-offset table within the slot.
+    __u32 invalid;                  ///< Set to 1 by a callback when a bounds check fails.
 };
 
+/**
+ * @brief bpf_loop callback copying one response byte from the arena slot into the scratch frame.
+ *
+ * Bounds-checks the copy against the response size, slot stride, and arena
+ * extent; marks the context invalid and aborts the loop on an out-of-range access.
+ */
 static long copy_response_callback(__u32 index, void* opaque) {
     struct shinku_snapshot_context* context = opaque;
     const __u32 byte_offset = sizeof(struct ebpf_cache_slot_header) + index;
@@ -28,6 +35,12 @@ static long copy_response_callback(__u32 index, void* opaque) {
     return 0;
 }
 
+/**
+ * @brief bpf_loop callback copying one __u16 TTL offset from the slot's offset table into scratch.
+ *
+ * Reads the entry relative to @ref shinku_snapshot_context.offset_table; marks
+ * the context invalid and aborts the loop on an out-of-range access.
+ */
 static long copy_ttl_offset_callback(__u32 index, void* opaque) {
     struct shinku_snapshot_context* context = opaque;
     const __u32 byte_offset = context->offset_table + (index * sizeof(__u16));
@@ -43,6 +56,20 @@ static long copy_ttl_offset_callback(__u32 index, void* opaque) {
     return 0;
 }
 
+/**
+ * @brief Copy a slot's response bytes and TTL-offset table into @p scratch.
+ *
+ * Runs two bpf_loop passes (response body then TTL offsets); any callback
+ * bounds failure marks the context invalid and makes this return false.
+ * @param scratch Scratch buffer receiving the copied data.
+ * @param slot_offset Byte offset of the slot within the arena.
+ * @param arena_bytes Total arena byte size.
+ * @param slot_stride Bytes between consecutive slot starts.
+ * @param response_size Number of response bytes to copy.
+ * @param ttl_count Number of TTL offsets to copy.
+ * @param offset_table Byte offset of the TTL-offset table within the slot.
+ * @return True if both copies completed in bounds.
+ */
 static __always_inline bool snapshot_slot(
     struct packet_scratch* scratch,
     __u64 slot_offset,
@@ -66,13 +93,22 @@ static __always_inline bool snapshot_slot(
     return bpf_loop(ttl_count, copy_ttl_offset_callback, &context, 0) >= 0 && context.invalid == 0;
 }
 
+/// Scratch state shared by the TTL-patching bpf_loop callback.
 struct ttl_context {
-    struct packet_scratch* scratch;
-    __u64 elapsed_seconds;
-    __u32 response_size;
-    __u32 invalid;
+    struct packet_scratch* scratch; ///< Scratch buffer holding the assembled frame and TTL offsets.
+    __u64 elapsed_seconds;          ///< Seconds elapsed since the entry was stored.
+    __u32 response_size;            ///< Number of response bytes in the frame.
+    __u32 invalid;                  ///< Set to 1 by the callback when a bounds check fails.
 };
 
+/**
+ * @brief bpf_loop callback that ages one TTL field in the assembled frame.
+ *
+ * Reads the TTL offset for this index, subtracts @ref ttl_context.elapsed_seconds
+ * (clamped at zero), and writes the patched value back in network byte order;
+ * marks the context invalid and aborts the loop if the offset leaves the
+ * response bounds.
+ */
 static long patch_ttl_callback(__u32 index, void* opaque) {
     struct ttl_context* context = opaque;
     if (index >= SHINKU_EBPF_CACHE_MAX_TTL_OFFSETS) {
@@ -95,6 +131,14 @@ static long patch_ttl_callback(__u32 index, void* opaque) {
     return 0;
 }
 
+/**
+ * @brief Age the TTLs of the assembled response by @p elapsed_seconds.
+ * @param scratch Scratch buffer with the frame and TTL offsets.
+ * @param response_size Number of response bytes in the frame.
+ * @param ttl_count Number of TTL offsets to patch.
+ * @param elapsed_seconds Seconds to subtract from each TTL.
+ * @return True if every TTL was patched in bounds.
+ */
 static __always_inline bool
 patch_ttls(struct packet_scratch* scratch, __u32 response_size, __u32 ttl_count, __u64 elapsed_seconds) {
     struct ttl_context context = {
@@ -106,6 +150,11 @@ patch_ttls(struct packet_scratch* scratch, __u32 response_size, __u32 ttl_count,
     return bpf_loop(ttl_count, patch_ttl_callback, &context, 0) >= 0 && context.invalid == 0;
 }
 
+/**
+ * @brief Compute the one's-complement IPv4 header checksum for a 20-byte header.
+ * @param ip The IPv4 header (must have ihl == 5).
+ * @return The checksum in network byte order.
+ */
 static __always_inline __sum16 ipv4_checksum(const struct iphdr* ip) {
     const __u8* bytes = (const __u8*)ip;
     __u32 sum = 0;
@@ -117,6 +166,21 @@ static __always_inline __sum16 ipv4_checksum(const struct iphdr* ip) {
     return bpf_htons((__u16)~sum);
 }
 
+/**
+ * @brief Serve a cached response for a query via XDP_TX, or decline with XDP_PASS.
+ *
+ * Reads the publication's arena slot under a seqlock (even sequence), copies the
+ * response and TTL offsets into the scratch frame, ages the TTLs, rebuilds a fresh
+ * Ethernet/IPv4/UDP/DNS frame with swapped source/destination and the query's
+ * transaction id, and returns XDP_TX. Declines with XDP_PASS whenever the slot is
+ * mid-update, stale, expired, or the frame cannot be constructed in bounds.
+ * @param context The XDP packet context (buffer loads and tail adjust).
+ * @param query The parsed query envelope (source of the transaction id).
+ * @param question Parsed question facts (size of the preserved question section).
+ * @param scratch Scratch buffer where the response frame is assembled.
+ * @param publication The cache-map publication pointing at the arena slot.
+ * @return XDP_TX on success, otherwise XDP_PASS (or XDP_DROP on a tail race).
+ */
 static __always_inline int serve_hit(
     struct xdp_md* context,
     const struct packet_view* query,

@@ -7,10 +7,11 @@
 
 namespace shinku::backend::dpdk {
 
+/// Error returned by DPDK backend operations, carrying an optional cause.
 struct DpdkError {
-    std::string operation;
-    std::string detail;
-    std::optional<std::error_code> cause;
+    std::string operation; ///< Name of the DPDK operation that failed.
+    std::string detail; ///< Human-readable description of the failure.
+    std::optional<std::error_code> cause; ///< Underlying system error, if any.
 };
 
 } // namespace shinku::backend::dpdk

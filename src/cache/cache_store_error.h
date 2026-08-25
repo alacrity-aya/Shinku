@@ -9,17 +9,25 @@
 
 namespace shinku::cache {
 
+/// Failure codes returned by @ref cache::CacheStore operations.
 enum class CacheStoreErrorCode : uint8_t {
-    StorageUnavailable,
-    WriteFailed,
-    CleanupFailed,
+    StorageUnavailable, ///< No storage backend is available to satisfy the request.
+    WriteFailed, ///< An attempt to write a cache entry failed.
+    CleanupFailed, ///< An attempt to remove expired entries failed.
 };
 
+/// Error returned by @ref cache::CacheStore operations, carrying an optional cause.
 struct CacheStoreError {
-    CacheStoreErrorCode code;
-    std::optional<std::error_code> cause;
+    CacheStoreErrorCode code; ///< The failure category.
+    std::optional<std::error_code> cause; ///< Underlying system error, if any.
 };
 
+/**
+ * @brief Return a lowercase human-readable name for a @ref CacheStoreErrorCode.
+ *
+ * @param code The error code to name.
+ * @return A stable string view naming the code.
+ */
 [[nodiscard]] constexpr std::string_view cache_store_error_name(CacheStoreErrorCode code) noexcept {
     switch (code) {
         case CacheStoreErrorCode::StorageUnavailable:

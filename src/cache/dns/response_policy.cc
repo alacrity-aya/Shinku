@@ -13,20 +13,41 @@
 namespace shinku::cache::dns {
 namespace {
 
+/// Response flag: a reply message (QR), not a query.
 constexpr uint16_t kFlagQr = 0x8000U;
+/// Mask isolating the opcode field within the flags word.
 constexpr uint16_t kOpcodeMask = 0x7800U;
+/// Response flag: the message was truncated (TC).
 constexpr uint16_t kFlagTc = 0x0200U;
+/// Query flag: recursion was desired (RD).
 constexpr uint16_t kFlagRd = 0x0100U;
+/// Response flag: the reserved Z bit, which must be clear.
 constexpr uint16_t kFlagZ = 0x0040U;
+/// Query flag: checking was disabled (CD).
 constexpr uint16_t kFlagCd = 0x0010U;
+/// Mask isolating the response-code field within the flags word.
 constexpr uint16_t kRcodeMask = 0x000fU;
+/// Response code 0: NOERROR.
 constexpr uint16_t kRcodeNoError = 0;
+/// Response code 3: NXDOMAIN, cached as a negative entry.
 constexpr uint16_t kRcodeNxDomain = 3;
+/// The only question type this cache serves: A.
 constexpr uint16_t kTypeA = 1;
+/// The only question class this cache serves: IN.
 constexpr uint16_t kClassIn = 1;
 
 } // namespace
 
+/**
+ * @brief Judge a parsed response against the cache policy.
+ *
+ * Validates the flags (a non-truncated reply with recursion desired, no
+ * reserved or CD bits, opcode 0), the single question in IN/A, and the
+ * response code (NOERROR or NXDOMAIN only). Negative kinds are accepted only
+ * when negative caching is enabled and require a nonzero minimum TTL. The
+ * returned candidate carries the response bytes and the TTL offsets to
+ * rewrite on a hit.
+ */
 std::expected<CacheCandidate, BypassReason>
 judge_response(const ParsedResponse& response, CacheNamespace cache_namespace, bool cache_negative) noexcept {
     if ((response.flags & kFlagQr) == 0)

@@ -4,13 +4,21 @@
 
 #include "bpf/cache_bpf_state.h"
 
+/// Scratch state shared by the SipHash block-compression bpf_loop callback.
 struct fingerprint_context {
-    struct shinku_siphash128_state state;
-    const __u8* canonical_question;
-    __u32 full_block_count;
-    __u32 invalid;
+    struct shinku_siphash128_state state; ///< Streaming SipHash state being fed 64-bit words.
+    const __u8* canonical_question;       ///< Canonical question bytes to hash.
+    __u32 full_block_count;               ///< Number of full 8-byte blocks in the input.
+    __u32 invalid;                        ///< Set to 1 by the callback when a bounds check fails.
 };
 
+/**
+ * @brief bpf_loop callback compressing one 8-byte block of the canonical question into the SipHash state.
+ *
+ * Loads the block little-endian and absorbs it via shinku_siphash128_compress;
+ * marks the context invalid and aborts the loop if the index exceeds the block
+ * count or the 32-block cap.
+ */
 static long fingerprint_block_callback(__u32 index, void* opaque) {
     struct fingerprint_context* context = opaque;
     if (index >= context->full_block_count || index >= 32U) {
@@ -25,6 +33,18 @@ static long fingerprint_block_callback(__u32 index, void* opaque) {
     return 0;
 }
 
+/**
+ * @brief Compute the SipHash-128 fingerprint of the canonical question.
+ *
+ * Appends the QTYPE and QCLASS in big-endian byte order to the canonical name,
+ * hashes the full 8-byte blocks via bpf_loop, absorbs the tail bytes, and
+ * finalizes the fingerprint. The host must derive the same value for identical
+ * inputs.
+ * @param scratch Scratch buffer holding the canonical question bytes.
+ * @param question Parsed question facts (name size, type, class).
+ * @param fingerprint Receives the 128-bit fingerprint on success.
+ * @return True if the input was a valid size and the hash completed in bounds.
+ */
 static __always_inline bool question_fingerprint(
     struct packet_scratch* scratch,
     const struct question_facts* question,
@@ -75,6 +95,11 @@ static __always_inline bool question_fingerprint(
     return true;
 }
 
+/**
+ * @brief Return true if two fingerprints are equal.
+ * @param lhs First fingerprint.
+ * @param rhs Second fingerprint.
+ */
 static __always_inline bool
 same_fingerprint(const struct ebpf_cache_fingerprint* lhs, const struct ebpf_cache_fingerprint* rhs) {
     return lhs->first == rhs->first && lhs->second == rhs->second;
